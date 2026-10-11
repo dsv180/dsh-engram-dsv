@@ -8,6 +8,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { EngramError } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 一次辅助调用的模型路由。 */
 export interface LlmRoute {
@@ -51,6 +52,49 @@ export function parseJsonArray(text: string): unknown[] | undefined {
   }
 }
 
+/**
+ * 从被截断的模型输出里抢救完整的 JSON 对象（数组开头那一段）。
+ *
+ * Русская доработка (A-17): ответ модели упирается в предел длины, и тогда
+ * `parseJsonArray` бессилен — массив оборван. Но то, что успело прийти целиком, всё
+ * равно полезно. Здесь ищется последний закрытый объект верхнего уровня (скобки внутри
+ * строк не считаются) и разбирается префикс массива до него.
+ *
+ * @returns 完整对象数组；一个都没闭合时返回 undefined。
+ */
+export function parseJsonArrayPrefix(text: string): unknown[] | undefined {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text)
+  const candidate = (fenced?.[1] ?? text).trim()
+  const start = candidate.indexOf('[')
+  if (start < 0) return undefined
+  let depth = 0
+  let inString = false
+  let escaped = false
+  let lastComplete = -1
+  for (let i = start + 1; i < candidate.length; i += 1) {
+    const char = candidate[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') { inString = true; continue }
+    if (char === '{' || char === '[') { depth += 1; continue }
+    if (char === '}' || char === ']') {
+      depth -= 1
+      if (depth === 0 && char === '}') lastComplete = i
+    }
+  }
+  if (lastComplete < 0) return undefined
+  try {
+    const parsed: unknown = JSON.parse(`${candidate.slice(start, lastComplete + 1)}]`)
+    return Array.isArray(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 终止原因转错误（session-title-llm 同款语义）。 */
 function finishError(finish: FinishReason): Error | undefined {
   switch (finish.kind) {
@@ -63,11 +107,11 @@ function finishError(finish: FinishReason): Error | undefined {
       return error
     }
     case 'max-tokens':
-      return new Error('dsh-engram: 辅助调用输出达到 maxTokens 上限')
+      return new Error(message('llm.finishMaxTokens'))
     case 'tool-calls':
-      return new Error('dsh-engram: 辅助调用意外请求工具')
+      return new Error(message('llm.finishUnexpectedToolCalls'))
     default:
-      return new Error(`dsh-engram: 不支持的终止原因 "${String((finish as { kind?: unknown }).kind)}"`)
+      return new Error(message('llm.finishUnsupported', { kind: String((finish as { kind?: unknown }).kind) }))
   }
 }
 
@@ -115,12 +159,20 @@ export async function streamText(
   for await (const chunk of ctx.llm.stream(options)) {
     assembler.push(chunk)
   }
-  const terminalError = finishError(assembler.finish)
-  if (terminalError !== undefined) throw terminalError
   const text = assembler.blocks()
     .filter(block => block.type === 'text')
     .map(block => block.text)
     .join('')
-  if (text.trim() === '') throw new EngramError('LLM_EMPTY_OUTPUT', '辅助调用返回空输出')
+  const terminalError = finishError(assembler.finish)
+  if (terminalError !== undefined) {
+    // Русская доработка (A-17): исход `max-tokens` — не приговор. У вызывающего есть шанс
+    // спасти целые записи из начала ответа, поэтому отдаём ему недосказанное вместе с
+    // ошибкой. Для остальных вызывающих ничего не меняется — ошибка по-прежнему бросается.
+    if (assembler.finish.kind === 'max-tokens') {
+      (terminalError as Error & { partialText?: string }).partialText = text
+    }
+    throw terminalError
+  }
+  if (text.trim() === '') throw new EngramError('LLM_EMPTY_OUTPUT', message('llm.emptyOutput'))
   return text
 }

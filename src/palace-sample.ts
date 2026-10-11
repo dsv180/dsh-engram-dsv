@@ -4,6 +4,7 @@
  * @module @kenz1117/dsh-engram/palace-sample
  */
 
+import { message } from './i18n/messages.ts'
 import type { EngramStore } from './store/interface.ts'
 import type { ImageryLabel } from './types.ts'
 
@@ -11,27 +12,47 @@ import type { ImageryLabel } from './types.ts'
 const SAMPLE_MEMORIES: readonly { kind: 'fact' | 'preference' | 'decision' | 'episode'; content: string; importance: number; imagery: ImageryLabel }[] = [
   {
     kind: 'preference',
-    content: '我喜欢简洁的命令行界面与键盘流胜过鼠标点击。',
+    content: message('core.samplePreference'),
     importance: 0.7,
-    imagery: { caption: '竹简翻页', sensoryTags: ['纸香', '木桌'], emotionalValence: 0.4, provisional: false },
+    imagery: {
+      caption: message('core.samplePreferenceCaption'),
+      sensoryTags: [message('core.samplePreferenceTag0'), message('core.samplePreferenceTag1')],
+      emotionalValence: 0.4,
+      provisional: false,
+    },
   },
   {
     kind: 'fact',
-    content: '默认使用 macOS，shell 是 zsh + oh-my-zsh，编辑用 Neovim。',
+    content: message('core.sampleFact'),
     importance: 0.6,
-    imagery: { caption: '磨砂铝机', sensoryTags: ['金属凉', '键声脆'], emotionalValence: 0.2, provisional: false },
+    imagery: {
+      caption: message('core.sampleFactCaption'),
+      sensoryTags: [message('core.sampleFactTag0'), message('core.sampleFactTag1')],
+      emotionalValence: 0.2,
+      provisional: false,
+    },
   },
   {
     kind: 'decision',
-    content: '2024 年起所有个人项目都用 TypeScript + pnpm 工作区，理由：单仓库多包协作最稳。',
+    content: message('core.sampleDecision'),
     importance: 0.8,
-    imagery: { caption: '白漆棋盘', sensoryTags: ['釉面凉'], emotionalValence: 0.3, provisional: false },
+    imagery: {
+      caption: message('core.sampleDecisionCaption'),
+      sensoryTags: [message('core.sampleDecisionTag0')],
+      emotionalValence: 0.3,
+      provisional: false,
+    },
   },
   {
     kind: 'episode',
-    content: '第一次完整读《记忆宫殿》那本书——上中学时在图书馆角落读完，窗外是雨。',
+    content: message('core.sampleEpisode'),
     importance: 0.5,
-    imagery: { caption: '雨窗铜铃', sensoryTags: ['钟声', '潮气'], emotionalValence: 0.7, provisional: false },
+    imagery: {
+      caption: message('core.sampleEpisodeCaption'),
+      sensoryTags: [message('core.sampleEpisodeTag0'), message('core.sampleEpisodeTag1')],
+      emotionalValence: 0.7,
+      provisional: false,
+    },
   },
 ]
 

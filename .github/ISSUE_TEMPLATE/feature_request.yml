@@ -1,0 +1,84 @@
+name: Feature request
+description: Propose a focused improvement to dsh-engram-dsv
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: search existing issues, read the roadmap in
+        [README.en.md](https://github.com/dsv180/dsh-engram-dsv/blob/main/README.en.md), and describe a
+        concrete workflow that fell short rather than a generated list of ideas.
+
+  - type: checkboxes
+    id: ai-disclosure
+    attributes:
+      label: AI Disclosure
+      description: |
+        Requests may be written with AI assistance, but a human must review the result and take
+        responsibility for it — see [AI_POLICY.md](https://github.com/dsv180/dsh-engram-dsv/blob/main/AI_POLICY.md).
+        Select **exactly one** authorship option, name the tools used below, and acknowledge the policy.
+      options:
+        - label: This request was written entirely by a human
+        - label: This request was written with AI assistance and **reviewed and edited by a human**
+        - label: I have read the AI Policy and agree to its terms
+          required: true
+    validations:
+      required: true
+
+  - type: input
+    id: ai-tools
+    attributes:
+      label: AI tool(s) used
+      description: List every AI tool used to research or write this request. If none were used, enter `None`.
+      placeholder: "e.g. a coding agent in DeepSeek Harness, or None"
+    validations:
+      required: true
+
+  - type: textarea
+    id: human-verification
+    attributes:
+      label: Human verification
+      description: |
+        Copy and paste the following phrase **exactly**:
+        `I have personally reviewed this request, verified that it addresses a real use case, and take responsibility for its contents.`
+      placeholder: "I have personally reviewed this request, verified that it addresses a real use case, and take responsibility for its contents."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: Describe the concrete workflow or limitation this request addresses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Explain the behaviour you want and why it solves the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or alternative designs you evaluated.
+
+  - type: textarea
+    id: upstream
+    attributes:
+      label: Does this belong upstream?
+      description: |
+        The engine, the palace and the retrieval logic come from
+        [kenz1117/dsh-engram](https://github.com/kenz1117/dsh-engram). If your request concerns those
+        rather than this fork's language support, embedder settings or installation, say so — it may be
+        better filed upstream.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Examples, screenshots or related issues that help explain the request.

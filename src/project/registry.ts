@@ -13,6 +13,7 @@
  */
 
 import { resolveProjectIdentity } from './identity.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 宿主机工作区注册表的窄视图（`ctx.workspaceRegistry.list()` 的子集）。 */
 export interface WorkspaceRef {
@@ -92,7 +93,7 @@ export function listProjectPalaces(input: {
     if (cwd === '') continue
     push(palaceFor(cwd, 'session', pathTitle(cwd)))
   }
-  push(palaceFor(input.processCwd, 'process', `${pathTitle(input.processCwd)}（进程目录）`))
+  push(palaceFor(input.processCwd, 'process', message('store.projectPalaceProcessDir', { title: pathTitle(input.processCwd) })))
   return palaces
 }
 

@@ -21,6 +21,8 @@ import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, save
 import { testJevConnection } from './jev/client.ts'
 import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
+import type { EngramLanguage } from './i18n/language.ts'
+import { messageIn } from './i18n/messages.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import { aggregateTelemetry } from './telemetry/aggregate.ts'
@@ -191,6 +193,8 @@ export interface RouteDeps {
   readonly dbDir: string
   /** 当前插件版本，写进备份 _meta.json 供恢复端校验。 */
   readonly pluginVersion: string
+  /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
+  readonly language: EngramLanguage
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
   readonly history: {
     /** 估算候选会话与轮数（不写库、不调 LLM）。 */
@@ -366,7 +370,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
             const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
             const detail = await (await storeFor(scope)).entityDetail(id as never, limit)
-            if (detail === undefined) { json(res, 404, { error: `未找到实体 ${id}` }); return }
+            if (detail === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.entityNotFound', { id }) }); return }
             json(res, 200, detail)
             return
           }
@@ -481,7 +485,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
             const store = await storeFor(scope)
             const record = await store.scheduleReview(body.id as never, grade)
-            if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
+            if (record === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
             json(res, 200, { id: record.id, review: record.review ?? null })
             return
           }
@@ -491,7 +495,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (id === null || id === '') { json(res, 400, { error: 'id required' }); return }
             const store = await storeFor(scope)
             const view = await store.review(id as never)
-            if (view === undefined) { json(res, 404, { error: `未找到条目 ${id}` }); return }
+            if (view === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id }) }); return }
             json(res, 200, view)
             return
           }
@@ -531,7 +535,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
             const record = await (await storeFor(scope)).scheduleReview(body.id as never, grade as ReviewGrade)
-            if (record === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
+            if (record === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
             json(res, 200, { record })
             return
           }
@@ -543,12 +547,18 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const body = format === 'json'
               ? JSON.stringify(data, null, 2)
               : [
-                  `# dsh-engram 导出（${scope}）`,
+                  messageIn(deps.language, 'misc.exportHeading', { scope }),
                   '',
                   ...data.records.map(record =>
-                    `- [${record.status}/${record.kind}] ${record.content}（id=${record.id}，importance ${record.importance}）`),
+                    messageIn(deps.language, 'misc.exportRecordLine', {
+                      status: record.status,
+                      kind: record.kind,
+                      content: record.content,
+                      id: record.id,
+                      importance: record.importance,
+                    })),
                   '',
-                  '## 关系边',
+                  messageIn(deps.language, 'misc.exportEdgesHeading'),
                   ...data.edges.map(edge => `- ${edge.from} --${edge.type}--> ${edge.to}`),
                   '',
                 ].join('\n')
@@ -565,7 +575,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const data = await (await storeFor(scope)).exportAll()
             const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
             const mirrorRoot = join(deps.mirrorDir, scope, stamp)
-            const report = await writeMirror(mirrorRoot, data)
+            const report = await writeMirror(mirrorRoot, data, deps.language)
             json(res, 200, { ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length })
             return
           }
@@ -688,7 +698,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
             const store = await storeFor(scope)
             const filter = await store.list({ scope, status: 'active', limit: 500, offset: 0 })
-            const suggestions = gatherRefurbSuggestions(filter.records, DEFAULT_REFURB_OPTIONS)
+            const suggestions = gatherRefurbSuggestions(filter.records, deps.language, DEFAULT_REFURB_OPTIONS)
             json(res, 200, {
               scope,
               count: suggestions.length,
@@ -734,7 +744,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
             const started = deps.history.start(historyRulesOf(body ?? {}))
-            if (!started.ok) { json(res, 409, { ok: false, error: started.reason ?? '无法启动回填' }); return }
+            if (!started.ok) { json(res, 409, { ok: false, error: started.reason ?? messageIn(deps.language, 'misc.backfillCannotStart') }); return }
             json(res, 200, { ok: true, status: deps.history.status() })
             return
           }
@@ -813,7 +823,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 路径安全：必须在 dbDir 子树内（防止任意文件覆盖）。
             const normalized = join(deps.dbDir, body.archivePath.replace(/^\/+/, ''))
             if (!normalized.startsWith(deps.dbDir + '/') && normalized !== deps.dbDir) {
-              json(res, 400, { error: 'archivePath 必须在 dbDir 内' })
+              json(res, 400, { error: messageIn(deps.language, 'misc.archivePathOutsideDbDir') })
               return
             }
             try {
@@ -821,7 +831,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 200, { restored: result.restored, meta: result.archiveMeta })
             } catch (restoreError: unknown) {
               const message = restoreError instanceof Error ? restoreError.message : String(restoreError)
-              json(res, 400, { error: `恢复失败：${message}` })
+              json(res, 400, { error: messageIn(deps.language, 'misc.restoreFailed', { message }) })
             }
             return
           }
@@ -835,7 +845,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             if (route === 'update') {
               if (typeof body.content !== 'string' || body.content.trim() === '') { json(res, 400, { error: 'content required' }); return }
               const old = await store.get(body.id as never)
-              if (old === undefined) { json(res, 404, { error: `未找到条目 ${body.id}` }); return }
+              if (old === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
               const record = await store.update({
                 id: body.id as never,
                 scope,

@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import styles from './panel.module.css'
-import { KIND_KEY, type EngramKey } from './locales.ts'
+import { KIND_KEY, type EngramKey } from './locales/index.ts'
 
 /** 走廊图使用的翻译函数（渲染器合成的窄签名）。 */
 type CorridorT = (key: EngramKey, params?: Record<string, unknown>) => string

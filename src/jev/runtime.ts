@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { ResolvedJevConfig } from '../config.ts'
 import type { MemoryJudge } from '../write-disposition.ts'
+import { message } from '../i18n/messages.ts'
 import { createMemoryJudge } from './client.ts'
 
 /** 面板可编辑的 Jev 连接字段；三阈值不在面板范围，保持 yml 高级配置。 */
@@ -98,35 +99,35 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
     timeoutMs?: number
   } = { ...current }
   if (patch['enabled'] !== undefined) {
-    if (typeof patch['enabled'] !== 'boolean') return 'invalid: jev.enabled 必须是布尔值'
+    if (typeof patch['enabled'] !== 'boolean') return message('misc.jevEnabledMustBeBoolean')
     merged.enabled = patch['enabled']
   }
   if (patch['apiKey'] !== undefined) {
-    if (typeof patch['apiKey'] !== 'string') return 'invalid: jev.apiKey 必须是字符串'
+    if (typeof patch['apiKey'] !== 'string') return message('misc.jevApiKeyMustBeString')
     // 空串 = 清除面板覆盖，回落 yml 值；非空去首尾空白。
     const trimmed = patch['apiKey'].trim()
     if (trimmed === '') delete merged.apiKey
     else merged.apiKey = trimmed
   }
   if (patch['baseUrl'] !== undefined) {
-    if (typeof patch['baseUrl'] !== 'string') return 'invalid: jev.baseUrl 必须是字符串'
+    if (typeof patch['baseUrl'] !== 'string') return message('misc.jevBaseUrlMustBeString')
     const value = patch['baseUrl'].trim()
     try {
       const url = new URL(value)
-      if (url.protocol !== 'https:' && url.protocol !== 'http:') return 'invalid: jev.baseUrl 必须是 http(s) URL'
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return message('misc.jevBaseUrlMustBeHttp')
     } catch {
-      return 'invalid: jev.baseUrl 必须是 http(s) URL'
+      return message('misc.jevBaseUrlMustBeHttp')
     }
     merged.baseUrl = value
   }
   if (patch['model'] !== undefined) {
-    if (typeof patch['model'] !== 'string' || patch['model'].trim() === '') return 'invalid: jev.model 不能为空'
+    if (typeof patch['model'] !== 'string' || patch['model'].trim() === '') return message('misc.jevModelMustNotBeEmpty')
     merged.model = patch['model'].trim()
   }
   if (patch['timeoutMs'] !== undefined) {
     const value = patch['timeoutMs']
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 1000 || value > 60000) {
-      return 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒'
+      return message('misc.jevTimeoutMsMustBeInteger')
     }
     merged.timeoutMs = value
   }

@@ -10,10 +10,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
-import { KIND_KEY, NS, en, zh, type EngramKey } from './locales.ts'
+import { KIND_KEY, NS, en, roomLabel, ru, zh, type EngramKey } from './locales/index.ts'
 import { CorridorMap } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
+import type { IngestSkipReason } from '../ingest/skip-reasons.ts'
 
 /**
  * 线性图标库（Phosphor 风）：统一 24px viewBox、stroke 1.75、round cap/join、
@@ -108,10 +109,20 @@ interface ReviewView {
 /** 面板内部传递的翻译函数（渲染器按注册的 locale 声明合成的 t 的窄化签名）。 */
 type T = (key: EngramKey, params?: Record<string, unknown>) => string
 
-/** 中英词典（面板级语言覆盖用），与 locales.ts 注册给宿主的两份词典同源。 */
-const DICTS: Record<'zh' | 'en', Record<EngramKey, string>> = { zh, en }
+/** 面板级语言覆盖支持的语言（与 locales/index.ts 注册给宿主的各语言包一一对应）。 */
+type PanelLang = 'zh' | 'en' | 'ru'
+/** 三份词典（面板级语言覆盖用），与 locales/index.ts 注册给宿主的语言包同源。 */
+const DICTS: Record<PanelLang, Record<EngramKey, string>> = { zh, en, ru }
+/** 面板级语言覆盖的合法值（持久化白名单）。 */
+const PANEL_LANGS: readonly PanelLang[] = ['zh', 'en', 'ru']
+/** 采样宿主词典文案判定宿主语言，让面板默认跟随宿主；未知语言回退英文。 */
+function hostPanelLang(sample: string): PanelLang {
+  if (sample === zh.scopeUser) return 'zh'
+  if (sample === ru.scopeUser) return 'ru'
+  return 'en'
+}
 /** 合成面板级 t：与宿主词典同款 {param} 插值，未知键回退键名本身。 */
-function makeT(lang: 'zh' | 'en'): T {
+function makeT(lang: PanelLang): T {
   const dict = DICTS[lang]
   return (key, params) => (dict[key] ?? String(key)).replace(/\{(\w+)\}/g, (raw: string, name: string) => {
     const value = params?.[name]
@@ -152,6 +163,9 @@ const OP_KEY: Record<string, EngramKey> = {
   superseded: 'opSuperseded',
   'ingest-request': 'opIngestRequest',
   'ingest-done': 'opIngestDone',
+  'ingest-skip': 'opIngestSkip',
+  'ingest-truncated': 'opIngestTruncated',
+  'ingest-nothing': 'opIngestNothing',
   'outcome-report': 'opOutcomeReport',
   assess: 'opAssess',
   consolidation: 'opConsolidation',
@@ -1132,9 +1146,9 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
         body: JSON.stringify({
           id: suggestion.primaryId,
           scope,
-          reason: '翻新清单降级',
-          affects: '无',
-          stillUseful: '可经 engram_restore 复原',
+          reason: t('refurbDemoteReason'),
+          affects: t('refurbDemoteAffects'),
+          stillUseful: t('refurbDemoteStillUseful'),
         }),
       })
         .then(() => {
@@ -1872,8 +1886,17 @@ interface BackfillStatusView {
   readonly error?: string
 }
 
-/** 跳过原因（摄取管线的英文枚举）→ 词典键。 */
-const SKIP_KEY: Record<string, EngramKey> = {
+/**
+ * 跳过原因（摄取管线枚举）→ 词典键。
+ *
+ * Русская доработка (A-18): ключи обязаны совпадать со списком конвейера
+ * (`INGEST_SKIP_REASONS` в `src/ingest/skip-reasons.ts`) буква в букву. Здесь стоял
+ * ключ `unparsable`, а конвейер возвращает `unparseable-output` — пара не находилась,
+ * и панель показывала сырое английское значение вместо русского «вывод не разбирается».
+ * Тип `Record<IngestSkipReason, EngramKey>` вместе с проверкой в `check-messages.mjs`
+ * держат соответствие: новую причину нельзя добавить, не переведя её.
+ */
+const SKIP_KEY: Record<IngestSkipReason, EngramKey> = {
   'low-activity': 'skipLowActivity',
   chitchat: 'skipChitchat',
   'capture-forbidden': 'skipForbidden',
@@ -1882,7 +1905,9 @@ const SKIP_KEY: Record<string, EngramKey> = {
   'no-such-turn': 'skipNoTurn',
   'no-previous-turn': 'skipNoTurn',
   'no-route-in-log': 'skipNoRoute',
-  unparsable: 'skipUnparsable',
+  'unparseable-output': 'skipUnparsable',
+  'failed': 'skipFailed',
+  'empty-unmarked': 'skipEmptyUnmarked',
 }
 
 /** 跳过原因的本地化标签（未知枚举回退原值）。 */
@@ -2415,8 +2440,8 @@ export type EngramSectionProps = PropsLocale<typeof NS> & {
 /** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成；面板级语言覆盖在组件内 shadow 之）。 */
 export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
-  /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN」段控强制覆盖。 */
-  const [lang, setLang] = usePersistedState<'zh' | 'en'>('library.lang', hostT('scopeUser') === zh.scopeUser ? 'zh' : 'en', ['zh', 'en'])
+  /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN | РУ」段控强制覆盖。 */
+  const [lang, setLang] = usePersistedState<PanelLang>('library.lang', hostPanelLang(hostT('scopeUser')), PANEL_LANGS)
   const t = useMemo<T>(() => makeT(lang), [lang])
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
@@ -2706,12 +2731,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             onClick={() => { reload(); refreshDue() }}>
             <Icon name="refresh" className={styles.brandIcon} />
           </button>
-          {/* 语言段控：面板级中英覆盖，与宿主语言设置相互独立；选择持久化在本机 */}
+          {/* 语言段控：面板级中英俄覆盖，与宿主语言设置相互独立；选择持久化在本机 */}
           <div className={styles.langSeg} role="group" aria-label="Language">
             <button type="button" className={lang === 'zh' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('zh') }}>中</button>
+              onClick={() => { setLang('zh') }}>ZH</button>
             <button type="button" className={lang === 'en' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
               onClick={() => { setLang('en') }}>EN</button>
+            <button type="button" className={lang === 'ru' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
+              onClick={() => { setLang('ru') }}>РУ</button>
           </div>
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
@@ -2890,7 +2917,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                       <span className={`${styles.pill} ${styles[`status${record.status.charAt(0).toUpperCase()}${record.status.slice(1)}`] ?? ''}`}>{t(STATUS_KEY[record.status])}</span>
                       <span className={roomPillClass(record.kind)}>{kindLabel(t, record.kind)}</span>
                       {record.slot !== undefined && (
-                        <span className={styles.pill}>{record.slot.room}#{record.slot.index}</span>
+                        <span className={styles.pill}>{roomLabel(record.slot.room, t)}#{record.slot.index}</span>
                       )}
                       {record.content.includes('[REDACTED:') && (
                         <span className={`${styles.pill} ${styles.redacted}`}>{t('tagRedacted')}</span>

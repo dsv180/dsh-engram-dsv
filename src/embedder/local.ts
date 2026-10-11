@@ -1,39 +1,60 @@
 /**
- * transformers.js 本地嵌入实现：Xenova/bge-small-zh-v1.5，量化权重（q8），离线推理。
- * 模型首次使用需联网下载到 cacheDir；之后完全离线，数据不出机。
+ * Локальный эмбеддер на transformers.js: вывод офлайн, веса скачиваются один раз
+ * в каталог кэша.
+ *
+ * По умолчанию модель — Xenova/bge-small-zh-v1.5 (китайская bge-модель, 512 измерений).
+ * Но выбор модели есть свойство развёртывания, а не свойство кода: для русских
+ * текстов нужна многоязычная модель, поэтому идентификатор и способ пулинга
+ * приходят из конфигурации.
  * @module @kenz1117/dsh-engram/embedder/local
  */
 
 import { mkdir } from 'node:fs/promises'
 import { EngramError } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 import type { EngramEmbedder } from './interface.ts'
 
-/** 模型标识（bge 中文小模型，512 维输出）。 */
+/** 模型标识（bge 中文小模型，512 维输出）；保留为默认值以兼容旧配置。 */
 export const ENGRAM_MODEL_ID = 'Xenova/bge-small-zh-v1.5'
 
+/**
+ * Способ сведения токенов в один вектор.
+ *
+ * bge-small-zh и большинство моделей sentence-transformers обучены на mean;
+ * bge-m3 и родственные XLM-R-модели требуют cls — с mean их вектор теряет качество.
+ */
+export type PoolingMode = 'mean' | 'cls'
+
 /** 进程内单例：重复调用 createLocalEmbedder 共享同一模型实例，避免重复加载权重。 */
-let cached: { dir: string; embedder: EngramEmbedder } | undefined
+let cached: { dir: string; model: string; pooling: PoolingMode; embedder: EngramEmbedder } | undefined
 
 /**
  * 创建本地嵌入器。
  * @param cacheDir - 模型缓存目录；不存在会自动创建（0o700）。
  * @param remoteHost - 模型下载端点；默认 huggingface.co，网络受限环境可配镜像（如 https://hf-mirror.com）。
+ * @param modelId - 模型标识；默认 ENGRAM_MODEL_ID。更换模型会让进程内单例失效并重新加载。
+ * @param pooling - 池化方式；默认 mean。
  * @returns 就绪的 EngramEmbedder。
  * @throws EngramError(code=EMBEDDER_DOWNLOAD_FAILED) 模型下载/加载失败（调用方据此降级）。
  */
-export async function createLocalEmbedder(cacheDir: string, remoteHost?: string): Promise<EngramEmbedder> {
-  if (cached?.dir === cacheDir) return cached.embedder
+export async function createLocalEmbedder(
+  cacheDir: string,
+  remoteHost?: string,
+  modelId: string = ENGRAM_MODEL_ID,
+  pooling: PoolingMode = 'mean',
+): Promise<EngramEmbedder> {
+  if (cached?.dir === cacheDir && cached.model === modelId && cached.pooling === pooling) return cached.embedder
   await mkdir(cacheDir, { recursive: true, mode: 0o700 })
   try {
     const { pipeline, env } = await import('@huggingface/transformers')
     env.cacheDir = cacheDir
     if (remoteHost !== undefined && remoteHost !== '') env.remoteHost = remoteHost
-    const extractor = await pipeline('feature-extraction', ENGRAM_MODEL_ID, { dtype: 'q8' })
+    const extractor = await pipeline('feature-extraction', modelId, { dtype: 'q8' })
     const embedder: EngramEmbedder = {
-      model: ENGRAM_MODEL_ID,
+      model: modelId,
       async embed(texts) {
         if (texts.length === 0) return []
-        const output = await extractor([...texts], { pooling: 'mean', normalize: true })
+        const output = await extractor([...texts], { pooling, normalize: true })
         const lists = output.tolist() as number[][]
         return lists.map(list => new Float32Array(list))
       },
@@ -42,9 +63,9 @@ export async function createLocalEmbedder(cacheDir: string, remoteHost?: string)
         if (cached?.embedder === embedder) cached = undefined
       },
     }
-    cached = { dir: cacheDir, embedder }
+    cached = { dir: cacheDir, model: modelId, pooling, embedder }
     return embedder
   } catch (error) {
-    throw new EngramError('EMBEDDER_DOWNLOAD_FAILED', '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试', { cause: error })
+    throw new EngramError('EMBEDDER_DOWNLOAD_FAILED', message('store.embedderDownloadFailed'), { cause: error })
   }
 }

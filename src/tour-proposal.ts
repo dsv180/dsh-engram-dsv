@@ -6,6 +6,7 @@
  * @module @kenz1117/dsh-engram/tour-proposal
  */
 
+import { message } from './i18n/messages.ts'
 import type { EngramScope, MemoryRecord } from './types.ts'
 
 /** 入殿建议结构。 */
@@ -43,8 +44,17 @@ export function buildTourProposal(
   }).slice(0, limit)
 
   const greeting = empty
-    ? `[${scope}] 宫殿尚空。建议：先放第一段记忆（例如一条 fact 或 preference），让后续会话有锚点可循。`
-    : `[${scope}] 宫殿现存 ${active.length} 条 active 记忆。建议开场巡游：${scored.map((r, i) => `第 ${i + 1} 站「${r.content.slice(0, 24)}${r.content.length > 24 ? '…' : ''}」`).join('；')}。`
+    ? message('core.tourEmpty', { scope })
+    : message('core.tourGreeting', {
+        scope,
+        count: active.length,
+        stops: scored
+          .map((r, i) => message('core.tourStop', {
+            index: i + 1,
+            preview: `${r.content.slice(0, 24)}${r.content.length > 24 ? '…' : ''}`,
+          }))
+          .join('; '),
+      })
 
   return { greeting, suggestedStops: scored, activeCount: active.length, empty }
 }

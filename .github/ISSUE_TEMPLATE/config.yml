@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and typical problems
+    url: https://github.com/dsv180/dsh-engram-dsv/blob/main/INSTALL.md
+    about: Read this first — build failures, missing embedder, wrong language and other setup traps are described there.
+  - name: The original project
+    url: https://github.com/kenz1117/dsh-engram
+    about: Engine, palace architecture and upstream documentation live there; bugs in the engine itself belong upstream.

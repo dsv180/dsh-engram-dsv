@@ -1,0 +1,123 @@
+name: Bug report
+description: Report a reproducible problem with dsh-engram-dsv
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: search existing issues, read [INSTALL.md](https://github.com/dsv180/dsh-engram-dsv/blob/main/INSTALL.md)
+        — most setup failures are described there — and make sure the problem reproduces on the current version.
+
+  - type: checkboxes
+    id: ai-disclosure
+    attributes:
+      label: AI Disclosure
+      description: |
+        Issues may be written with AI assistance, but a human must review the result and take
+        responsibility for it — see [AI_POLICY.md](https://github.com/dsv180/dsh-engram-dsv/blob/main/AI_POLICY.md).
+        Select **exactly one** authorship option, name the tools used below, and acknowledge the policy.
+      options:
+        - label: This issue was written entirely by a human
+        - label: This issue was written with AI assistance and **reviewed and edited by a human**
+        - label: I have read the AI Policy and agree to its terms
+          required: true
+    validations:
+      required: true
+
+  - type: input
+    id: ai-tools
+    attributes:
+      label: AI tool(s) used
+      description: List every AI tool used to research or write this issue. If none were used, enter `None`.
+      placeholder: "e.g. a coding agent in DeepSeek Harness, or None"
+    validations:
+      required: true
+
+  - type: textarea
+    id: human-verification
+    attributes:
+      label: Human verification
+      description: |
+        Copy and paste the following phrase **exactly**:
+        `I have personally reproduced this problem, reviewed the contents of this issue, and take responsibility for its accuracy.`
+      placeholder: "I have personally reproduced this problem, reviewed the contents of this issue, and take responsibility for its accuracy."
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happened, and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DeepSeek Harness version
+      description: Run `dsh --version`. We verified the plugin on `0.2.0-rc.2`; older versions are untested.
+      placeholder: "e.g. 0.2.0-rc.2"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: From `package.json`, or the commit you built from.
+      placeholder: "e.g. 0.7.15, commit 6ff3815"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: We have only ever run this on Windows ourselves.
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: embedder
+    attributes:
+      label: Embedder mode
+      options:
+        - local — transformers.js, model installed next to the plugin
+        - remote — an embeddings endpoint
+        - none — search by words only
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest deterministic reproduction you can give.
+      placeholder: |
+        1. Install as described in ...
+        2. Configure ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journal entries, logs or screenshots
+      description: |
+        The plugin journals its own work. Useful operation types: `ingest-request` (its `maxTokens`
+        field shows which build is loaded), `ingest-skip` (why a turn was skipped), `ingest-nothing`,
+        `ingest-truncated`, `ingest-done`. Remove secrets and personal data before posting.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else needed to understand or reproduce the problem.

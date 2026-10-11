@@ -9,16 +9,19 @@
  */
 
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
-import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
+import { parseJsonArray, parseJsonArrayPrefix, routeFromEvents } from '../llm/client.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramEntityKind, EngramKind, EngramScope, EntityMention, FactMention, FactWriteInput, MemoryId } from '../types.ts'
 import { normalizeEntityName } from '../types.ts'
+import { message } from '../i18n/messages.ts'
+import { chitchatPatterns, noCapturePatterns } from '../i18n/patterns.ts'
 import { sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import { hasRecallToolCalls, omitRecallToolResults } from '../security/recall.ts'
 import { applyMerge, confirmContradictions, decideWrite } from '../write-disposition.ts'
 import type { MemoryJudge } from '../write-disposition.ts'
+import type { IngestSkipReason } from './skip-reasons.ts'
 
 /** 摄取档位：off 关闭；light 只读用户消息、每轮上限 2 条；eager 用户+助手消息、上限 5 条。 */
 export type IngestMode = 'off' | 'light' | 'eager'
@@ -29,19 +32,98 @@ const MODE_LIMITS: Readonly<Record<Exclude<IngestMode, 'off'>, { maxCandidates: 
   eager: { maxCandidates: 5, confidence: 0.4, includeAssistant: true },
 }
 
-/** 摄取输出 token 上限（提取 JSON 数组，短输出足够）。 */
-const INGEST_MAX_TOKENS = 600
+/**
+ * 摄取输出 token 上限（提取 JSON 数组）。
+ *
+ * Русская доработка (A-17): здесь стояло 600, и наблюдение 2026-10-11 показало, что
+ * вспомогательный вызов упирался в этот предел, а исход `max-tokens` бросал исключение —
+ * записи в память не попадали вовсе. Подсказка теперь называет предел числа записей,
+ * а запас длины поднят, чтобы длинные формулировки не бились о потолок.
+ */
+const INGEST_MAX_TOKENS = 4000
 
 /** op_log 幂等键 op：该 (sessionId, turn) 已完成摄取。 */
 export const INGEST_DONE_OP = 'ingest-done'
 /** op_log pending 键 op：disposed 末轮摄取失败/超时，待下次会话重放补做。 */
 export const INGEST_PENDING_OP = 'ingest-pending'
+/**
+ * op_log 键 op：该 (sessionId, turn) 未摄取，detail 存原因。
+ *
+ * Русская доработка (A-17): причина пропуска известна в момент решения, но раньше
+ * никуда не сохранялась — телеметрия панели живёт в базе процесса и стирается при
+ * перезапуске, поэтому задним числом разобрать пропуск было нельзя.
+ */
+export const INGEST_SKIP_OP = 'ingest-skip'
+/**
+ * op_log 键 op: ответ упёрся в предел длины, но целые записи из начала ответа спасены.
+ *
+ * Русская доработка (A-17): сам по себе исход `max-tokens` больше не приговор (см.
+ * `parseJsonArrayPrefix`), однако обрезка — событие, о котором стоит знать: она означает,
+ * что модель опять не уложилась в бюджет, и часть сведений из хода потеряна.
+ */
+export const INGEST_TRUNCATED_OP = 'ingest-truncated'
+/**
+ * op_log 键 op：модель явно сказала, что в этом ходе нечего помнить долго.
+ *
+ * Русская доработка (A-17): подсказка получила право на дешёвый выход — предопределённый
+ * ответ вместо вымучивания записей из расплывчатого хода. Именно на таких ходах бюджет
+ * ответа уходил в рассуждение, и вызов падал исходом `max-tokens`. Отдельная операция
+ * нужна, чтобы «нечего помнить» было отличимо и от настоящей записи, и от поломки:
+ * пустота без метки попадает в причину пропуска `empty-unmarked`.
+ */
+export const INGEST_NOTHING_OP = 'ingest-nothing'
+/**
+ * Предопределённый ответ «здесь нечего помнить долго» в текстовом виде — для подсказки:
+ * модель должна воспроизвести его буквально.
+ */
+export const INGEST_NOTHING_JSON = '[{"nothing": true}]'
 /** disposed 末轮摄取的超时（fire-and-forget 观察器，进程退出可能打断，必须限时）。 */
 export const FINAL_INGEST_TIMEOUT_MS = 5000
+/**
+ * Живого извлечения предел времени (fire-and-forget: работа идёт уже после хода).
+ *
+ * Русская доработка (A-17): живой путь получал сигнал пре-шага, а тот гаснет вместе
+ * с шагом — ход завершался раньше ответа модели, вызов обрывался (`llm/client.ts`
+ * превращает исход `aborted` в исключение), и сбой не оставлял следов. Здесь, как и на
+ * пути последнего хода, у извлечения собственный предел времени вместо чужого сигнала.
+ */
+export const LIVE_INGEST_TIMEOUT_MS = 30_000
+/**
+ * Догрузки ожидающих предел времени — с запасом больше живого извлечения.
+ *
+ * Русская доработка (A-17): на входе у неё не один ход, а целые стенограммы прошлых
+ * сессий, и вызов модели на таком объёме идёт дольше тридцати секунд. Наблюдение
+ * 2026-10-11 в 20:15: запрос по ожидающему ходу обрывался по времени и не оставлял следа.
+ */
+export const REPLAY_INGEST_TIMEOUT_MS = 180_000
 
 /** 幂等键编码：`${sessionId}#${turn}`。 */
 export function encodeTurnKey(sessionId: string, turn: number): string {
   return `${sessionId}#${turn}`
+}
+
+/** Текст ошибки для журнала: имя, сообщение и код, если он есть. */
+function ingestErrorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const code = (error as Error & { code?: unknown }).code
+  return code === undefined ? `${error.name}: ${error.message}` : `${error.name}: ${error.message} (${String(code)})`
+}
+
+/**
+ * Записать в журнал сбой извлечения, вылетевший наружу из ingestPreviousTurn.
+ *
+ * Русская доработка (A-17): живой путь идёт уже после хода, и его отказ раньше был виден
+ * только предупреждением в консоли хоста — ни записи в памяти, ни строки в журнале,
+ * поэтому пропажу хода нельзя было разобрать. Теперь отказ так же наблюдаем, как пропуск:
+ * операция ingest-skip, причина failed, текст ошибки в detail.
+ */
+export async function recordIngestFailure(store: EngramStore, sessionId: string, turn: number, error: unknown): Promise<void> {
+  const detail = JSON.stringify({ turn, reason: 'failed', error: ingestErrorText(error) })
+  try {
+    await store.audit(INGEST_SKIP_OP, sessionId, detail)
+  } catch {
+    // Журнал не должен превращать сбой извлечения в сбой хода.
+  }
 }
 
 /** 幂等键解码；损坏的键返回 undefined（调用方直接出队）。 */
@@ -53,15 +135,13 @@ export function decodeTurnKey(detail: string): { sessionId: string; turn: number
   return { sessionId: detail.slice(0, sep), turn }
 }
 
-const INGEST_SYSTEM = [
-  '从对话记录中提取值得跨会话长期记住的用户信息（事实/偏好/决策/经历/做事方法）。',
-  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": 0到1的小数, "entities": [{"name": "实体名", "kind": "person|project|tool|concept|other", "aliases": ["别名"]}], "facts": [{"entity": "实体名", "content": "关于该实体的一句话事实"}]}。',
-  'entities 是这条记忆里提到的具体对象（人名/项目名/工具名/概念名），没有就省略该字段；实体名要短（专名本身，不超过 20 字），aliases 列出该实体的其他叫法，没有就省略。',
-  'facts 列出这条记忆中关于具体实体的客观事实（状态/归属/关系/数据），entity 必须取该条 entities 里出现过的实体名，一条一个知识点，没有就省略该字段。',
-  'scope 决定这条记忆进哪座宫殿：只跟当前项目/仓库有关的（技术选型、项目约定、架构决策、该项目自身的事实）用 project；与具体项目无关、跨项目通用的（个人偏好、习惯、用户本人的经历、通用事实）用 user。拿不准用 project。',
-  '只提取明确、可复用的信息；寒暄、临时上下文、你自己的回答不要提取。没有值得记的就输出 []。',
-  '不要输出 JSON 以外的任何内容。',
-].join('\n')
+/**
+ * Системная инструкция извлечения: текст живёт в словаре (`llm.ingestSystem`),
+ * берётся в момент вызова — язык становится известен только при сборке плагина.
+ */
+function ingestSystemPrompt(): string {
+  return message('llm.ingestSystem')
+}
 
 /** 实体提及 kind 的合法值集合（模型输出边界校验用）。 */
 const ENTITY_KINDS: readonly EngramEntityKind[] = ['person', 'project', 'tool', 'concept', 'other']
@@ -145,8 +225,8 @@ export interface IngestOutcome {
   readonly deferred: number
   /** DROP 处置数：空内容 / 同批重复等低熵候选。 */
   readonly dropped: number
-  /** 跳过原因；null = 正常完成。 */
-  readonly skipped: string | null
+  /** 跳过原因；null = 正常完成。取值来自 IngestSkipReason（两半共用一份名单）。 */
+  readonly skipped: IngestSkipReason | null
 }
 
 /** 摄取依赖：由 index.ts 闭包构造，hook 保持纯逻辑可测。 */
@@ -248,17 +328,37 @@ function collectTexts(events: readonly SessionEventLike[], includeAssistant: boo
   return { texts, minSeq }
 }
 
+/**
+ * Ответ-метка «нечего помнить долго»?
+ *
+ * Меткой считается только ответ, **все** элементы которого — объекты с `nothing: true`
+ * и без пригодного `content`. Объект, а не строка, выбран намеренно: строка вроде
+ * `["пусто"]` прошла бы разбор, не нашла бы у себя `content`, молча осела бы в счётчике
+ * отброшенных — и выглядела бы как поломка возвращалки, а не как осознанный отказ.
+ * Смешанный ответ меткой не признаётся: записи разбираются обычным путём.
+ */
+function isNothingAnswer(parsed: readonly unknown[]): boolean {
+  if (parsed.length === 0) return false
+  return parsed.every(item => {
+    if (typeof item !== 'object' || item === null) return false
+    const candidate = item as { nothing?: unknown; content?: unknown }
+    if (candidate.nothing !== true) return false
+    return typeof candidate.content !== 'string' || candidate.content.trim() === ''
+  })
+}
+
 /** 摄取切片模式：previous = 上一轮（新轮第一步触发）；last = 末轮到日志末尾（session/disposed 触发）；number = 指定轮次（pending 重放）。 */
 export type IngestSlice = 'previous' | 'last' | number
 
 /** 活动评分门槛：低于该值的上一轮不值得起一次辅助 LLM 摄取（四信号公式见 activityScore）。 */
 export const ACTIVITY_THRESHOLD = 5
 
-/** 寒暄正则：整段用户输入只含问候/感谢等无信息内容时跳过摄取。 */
-const CHITCHAT_RE = /^(?:你好|您好|嗨|哈喽|hello|hi|hey|谢谢|感谢|ok|okay|好的|在吗|收到|辛苦了)[!！,.，。?？~\s]*$/iu
-
-/** 显式禁记正则：用户明确要求不要记住本轮内容时跳过摄取（窄匹配整句指令，避免误伤）。 */
-const NO_CAPTURE_RE = /(?:不要|别|不用|无需)(?:把这?[个件些条]?|把上一?轮|把刚才)?(?:记|存)(?:住|录|下来|进去|到记忆|进记忆)|don'?t\s+(?:remember|record|save)\s+(?:this|that|it)/i
+/*
+ * Образцы болтовни и запрета запоминать переехали в языковой пакет
+ * (`i18n/patterns.ts`): это языковые данные, и меняться они должны вместе с пакетом.
+ * Форма авторских правил сохранена — болтовня привязана к сообщению целиком, запрет
+ * ищется в любом месте; заменены только сами слова.
+ */
 
 /** 上一轮的活动信号（摄取节流的输入）。 */
 export interface TurnSignals {
@@ -290,14 +390,27 @@ export function activityScore(signals: TurnSignals): number {
     + toolDiversity(signals.toolNames.size)
 }
 
-/** 判断用户输入是否为纯寒暄（无信息内容）。 */
+/**
+ * 判断用户输入是否为纯寒暄（无信息内容）。
+ *
+ * Русская доработка (F-10): слова берутся из языкового пакета и проверяются для
+ * английского набора и набора действующего языка. Привязка к сообщению целиком сохранена
+ * намеренно: срабатывание пропускает сообщение целиком, поэтому список должен оставаться
+ * узким — при сомнении лучше записать.
+ */
 export function isChitchat(text: string): boolean {
-  return CHITCHAT_RE.test(text.trim())
+  const trimmed = text.trim()
+  return chitchatPatterns().some((pattern) => pattern.test(trimmed))
 }
 
-/** 判断用户输入是否显式要求不要记住。 */
+/**
+ * 判断用户输入是否显式要求不要记住。
+ *
+ * Русская доработка (F-10): формы запрета тоже языковые. Отрицание в образцах обязательно:
+ * «запомни это» и «не запоминай это» — противоположные указания, путать их нельзя.
+ */
 export function forbidsCapture(text: string): boolean {
-  return NO_CAPTURE_RE.test(text)
+  return noCapturePatterns().some((pattern) => pattern.test(text))
 }
 
 /** 从事件切片提取活动信号（用户文本排除插件注入的快照消息）。 */
@@ -332,7 +445,7 @@ export function turnSignals(events: readonly SessionEventLike[]): TurnSignals {
  * 上一轮自动摄取的节流判定（只作用于 previous 切片；末轮/pending 重放补做不受限）。
  * @returns 跳过原因；null = 允许摄取。
  */
-export function throttleDecision(events: readonly SessionEventLike[]): string | null {
+export function throttleDecision(events: readonly SessionEventLike[]): IngestSkipReason | null {
   const signals = turnSignals(events)
   if (activityScore(signals) < ACTIVITY_THRESHOLD) return 'low-activity'
   const texts = collectTexts(events, false).texts
@@ -405,24 +518,32 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     slice = turnSlice(deps.events, sliceMode)
     round = sliceMode
   }
-  if (slice.length === 0) {
-    return { scannedEvents: 0, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: typeof sliceMode === 'number' ? 'no-such-turn' : 'no-previous-turn' }
-  }
-
   const store = await deps.openStore()
   // 幂等/审计键是会话级的（与写入落哪个宫殿无关）：固定落审计库，跨路径（实时/回填）共用一份。
   const auditStore = deps.openAuditStore === undefined ? store : await deps.openAuditStore()
   const doneKey = encodeTurnKey(deps.sessionId, round)
-  if (await auditStore.hasAudit(INGEST_DONE_OP, doneKey)) {
-    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'already-ingested' }
+
+  /**
+   * Единая точка выхода с пропуском: пишет причину в журнал операций и возвращает итог.
+   *
+   * Русская доработка (A-17): причина пропуска известна только в этот момент и больше
+   * нигде не сохраняется — телеметрия панели живёт в базе процесса и стирается при
+   * перезапуске, поэтому без этой записи разобрать пропуск задним числом невозможно.
+   * Пишем **все** причины, включая структурно ожидаемые: тогда отсутствие записи
+   * однозначно означает, что извлечение дошло до конца.
+   */
+  const skip = async (reason: IngestSkipReason): Promise<IngestOutcome> => {
+    await auditStore.audit(INGEST_SKIP_OP, deps.sessionId, JSON.stringify({ turn: round, reason }))
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: reason }
   }
+
+  if (slice.length === 0) return await skip(typeof sliceMode === 'number' ? 'no-such-turn' : 'no-previous-turn')
+  if (await auditStore.hasAudit(INGEST_DONE_OP, doneKey)) return await skip('already-ingested')
 
   // 节流（默认只限 previous 自动摄取）：低活动/寒暄/显式禁记的轮次不值得起一次辅助 LLM。
   if (sliceMode === 'previous' || deps.throttle === true) {
     const throttled = throttleDecision(slice)
-    if (throttled !== null) {
-      return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: throttled }
-    }
+    if (throttled !== null) return await skip(throttled)
   }
 
   // 召回占位先行：切片内召回工具的输出替换为占位文本，阻断记忆内容回流成新记忆。
@@ -430,29 +551,53 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   const { texts, minSeq } = collectTexts(scoped, limits.includeAssistant)
   // 入库前协议剥离 + 密钥脱敏；交给提取模型的 userText 同样脱敏。
   const cleaned = texts.map(text => redactSecrets(sanitizeProtocolText(text)))
-  if (cleaned.every(text => text === '')) {
-    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-user-content' }
-  }
+  if (cleaned.every(text => text === '')) return await skip('no-user-content')
 
   const route = deps.routeOverride ?? routeFromEvents(deps.events)
-  if (route === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'no-route-in-log' }
+  if (route === undefined) return await skip('no-route-in-log')
 
   // 防回声室附注：上一轮调用过召回工具时，提示提取模型既有记忆的复述不是新信息。
-  const recallNote = hasRecallToolCalls(scoped)
-    ? '（注意：上一轮调用过记忆召回工具（engram_search 等），其返回已省略；助手回答中复述的既有记忆不是新信息，不要提取。）'
-    : ''
-  const userText = `从下面这轮对话（JSON 数组）提取值得长期记住的信息：\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
+  const recallNote = hasRecallToolCalls(scoped) ? message('llm.ingestRecallNote') : ''
+  // Русская доработка (A-17): подсказка называет предел, который код и так применяет
+  // (`limits.maxCandidates`). Без этого модель писала длинный массив вслепую, упиралась
+  // в предел длины ответа, а плагин молча отбрасывал лишнее и падал на исходе `max-tokens`.
+  const userText = `${message('llm.ingestUserPrompt', { n: limits.maxCandidates, marker: INGEST_NOTHING_JSON })}\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
   deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
-  const raw = await deps.call({
-    route,
-    system: INGEST_SYSTEM,
-    userText,
-    maxTokens: INGEST_MAX_TOKENS,
-    purpose: 'engram-ingest',
-    signal: deps.signal,
-  })
-  const parsed = parseJsonArray(raw)
-  if (parsed === undefined) return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: 'unparseable-output' }
+  let parsed: unknown[] | undefined
+  let truncated = false
+  try {
+    const raw = await deps.call({
+      route,
+      system: ingestSystemPrompt(),
+      userText,
+      maxTokens: INGEST_MAX_TOKENS,
+      purpose: 'engram-ingest',
+      signal: deps.signal,
+    })
+    parsed = parseJsonArray(raw)
+  } catch (error) {
+    // Русская доработка (A-17): ответ упёрся в предел длины — не приговор. Целые записи из
+    // начала ответа полезнее пустоты, поэтому спасаем их и отдельной операцией отмечаем
+    // обрезку. Любой другой сбой по-прежнему вылетает наружу и попадает в журнал как failed.
+    const partial = (error as { partialText?: unknown } | null)?.partialText
+    if (typeof partial !== 'string') throw error
+    parsed = parseJsonArrayPrefix(partial)
+    truncated = parsed !== undefined && parsed.length > 0
+    if (!truncated) throw error
+  }
+  if (parsed === undefined) return await skip('unparseable-output')
+  if (truncated) {
+    await auditStore.audit(INGEST_TRUNCATED_OP, deps.sessionId, JSON.stringify({ turn: round, kept: parsed.length }))
+  }
+  // Осознанный отказ модели: запоминать нечего. Отмечаем отдельной операцией и выходим —
+  // это не пропуск и не поломка, а честный ответ, на который подсказка теперь даёт право.
+  if (isNothingAnswer(parsed)) {
+    await auditStore.audit(INGEST_NOTHING_OP, deps.sessionId, JSON.stringify({ turn: round, elements: parsed.length }))
+    return { scannedEvents: slice.length, candidates: 0, written: 0, merged: 0, deferred: 0, dropped: 0, skipped: null }
+  }
+  // Пустота без метки: модель не воспользовалась правом на отказ, но и записей не дала.
+  // Отдельная причина, чтобы «нечего помнить» никогда не смешивалось с поломкой возвращалки.
+  if (parsed.length === 0) return await skip('empty-unmarked')
 
   const embedder = await deps.embedder
   const writtenContents: string[] = []
@@ -531,6 +676,9 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
         ? [decision.neighbor]
         : (await confirmContradictions(deps.judge, content, [decision.neighbor])) ?? [decision.neighbor]
       for (const neighbor of neighbors) {
+        // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
+        // связь «противоречит сама себе» (см. то же место в tools/create.ts).
+        if (neighbor.id === record.id) continue
         await target.linkEdge(record.id, neighbor.id, 'contradicts')
       }
       deferred += 1
@@ -538,6 +686,12 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
     await linkEntities(record.id)
     writtenContents.push(content)
     written += 1
+  }
+  // Кандидаты были, а памяти не прибавилось (все отсеялись): тот же сигнал «возвращалка
+  // не сработала», что и пустой массив без метки, — и та же отдельная причина.
+  if (written === 0 && merged === 0) {
+    await auditStore.audit(INGEST_SKIP_OP, deps.sessionId, JSON.stringify({ turn: round, reason: 'empty-unmarked', candidates: parsed.length, dropped }))
+    return { scannedEvents: slice.length, candidates: parsed.length, written: 0, merged: 0, deferred, dropped, skipped: 'empty-unmarked' }
   }
   await auditStore.audit(INGEST_DONE_OP, deps.sessionId, doneKey)
   return { scannedEvents: slice.length, candidates: parsed.length, written, merged, deferred, dropped, skipped: null }
@@ -576,16 +730,16 @@ export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome |
         // pending 落库失败：摄取本就尽力而为，不再升级。
       }
     }
-    console.warn('[dsh-engram] 会话结束的末轮摄取失败（已记入待补做队列，不影响对话）：', error)
+    console.warn(message('llm.warnFinalIngestFailed'), error)
     return null
   }
 }
 
 /** 会话摘要提示词：一句话概括整场会话，供情景时间线的组头展示。 */
-const SESSION_SUMMARY_SYSTEM = [
-  '概括下面这段会话：用一句话（不超过 60 字）说明这场会话主要做了什么、达成了什么结果。',
-  '直接输出摘要本身，不要前缀、引号或任何解释。',
-].join('\n')
+function sessionSummarySystemPrompt(): string {
+  return message('llm.sessionSummarySystem')
+}
+
 /** 会话摘要输出 token 上限（一句话足够）。 */
 const SESSION_SUMMARY_MAX_TOKENS = 160
 /** 会话摘要的输入截断上限（字符）：摘要只需主题级信息，超长会话截尾。 */
@@ -651,12 +805,12 @@ export async function ensureSessionSummary(deps: SessionSummaryDeps): Promise<vo
   if (dialog === '') return
   const store = await deps.openStore()
   if (await store.getSessionSummary(deps.sessionId) !== undefined) return
-  const userText = `概括下面这段会话：\n${dialog}`
+  const userText = `${message('llm.sessionSummaryUserPrompt')}\n${dialog}`
   deps.logRequest({ route, round: deps.round ?? 0, userText, maxTokens: SESSION_SUMMARY_MAX_TOKENS, mode: deps.mode })
   try {
     const raw = await deps.call({
       route,
-      system: SESSION_SUMMARY_SYSTEM,
+      system: sessionSummarySystemPrompt(),
       userText,
       maxTokens: SESSION_SUMMARY_MAX_TOKENS,
       purpose: 'engram-session-summary',
@@ -726,22 +880,34 @@ export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<Repl
       kept += 1
       continue
     }
-    await ingestPreviousTurn({
-      events: session.events,
-      sessionId: key.sessionId,
-      turn: key.turn,
-      slice: key.turn,
-      openStore: deps.openStore,
-      openAuditStore: deps.openStore,
-      ...ingestWriteRouting(session.cwd, deps.resolveStore, deps.openStore),
-      embedder: deps.embedder,
-      mode: deps.mode,
-      routeOverride: deps.routeOverride,
-      call: deps.call,
-      logRequest: deps.logRequest,
-      ...(deps.judge === undefined ? {} : { judge: deps.judge }),
-      signal: deps.signal,
-    })
+    try {
+      await ingestPreviousTurn({
+        events: session.events,
+        sessionId: key.sessionId,
+        turn: key.turn,
+        slice: key.turn,
+        openStore: deps.openStore,
+        openAuditStore: deps.openStore,
+        ...ingestWriteRouting(session.cwd, deps.resolveStore, deps.openStore),
+        embedder: deps.embedder,
+        mode: deps.mode,
+        routeOverride: deps.routeOverride,
+        call: deps.call,
+        logRequest: deps.logRequest,
+        ...(deps.judge === undefined ? {} : { judge: deps.judge }),
+        signal: deps.signal,
+      })
+    } catch (error) {
+      // Русская доработка (A-17): отказ догрузки обязан быть виден в журнале — иначе
+      // пропажа хода остаётся загадкой, а очередь молча стоит на одном упрямом ключе.
+      // Заодно называем сессию и ход: ключ pending — это ровно они и есть.
+      await recordIngestFailure(store, key.sessionId, key.turn, error)
+      // Русская доработка (A-17): упрямый ключ не должен держать всю очередь — наблюдение
+      // 2026-10-11 в 20:29 показало семь ожидающих ходов, стоявших с 15:51 из-за первого
+      // же сбоя. Ключ остаётся в очереди и повторится в следующий раз, а остальные идут.
+      kept += 1
+      continue
+    }
     await store.clearAudit(INGEST_PENDING_OP, detail)
     replayed += 1
   }

@@ -10,13 +10,16 @@ import type { EngramKind, Slot } from '../types.ts'
 /** 房间容量：7±2 上限取 9——超过此数，人类（与模型）巡游单间的认知负荷陡增。 */
 export const ROOM_CAPACITY = 9
 
-/** kind → 默认房间名。固定映射，保证同主题记忆总是聚在同一间（同类巩固）。 */
-export const KIND_ROOMS: Readonly<Record<EngramKind, string>> = {
-  fact: '事实厅',
-  preference: '偏好阁',
-  decision: '决策堂',
-  episode: '往事廊',
-  skill: '技法坊',
+/** kind → базовый идентификатор комнаты. Фиксированное соответствие: однотипные
+ *  записи всегда попадают в одну комнату. Идентификатор — это ДАННЫЕ, он пишется
+ *  в память (slot_room) и не зависит от языка интерфейса; отображаемое имя берётся
+ *  из словаря языка (см. ../i18n/rooms.ts). */
+export const KIND_ROOM_IDS: Readonly<Record<EngramKind, string>> = {
+  fact: 'fact',
+  preference: 'preference',
+  decision: 'decision',
+  episode: 'episode',
+  skill: 'skill',
 }
 
 /** 一个房间的占用状态（slotCountsByRoom 的行）。 */
@@ -37,7 +40,7 @@ export function assignSlot(
   kind: EngramKind,
   occupancy: Readonly<Record<string, RoomOccupancy>>,
 ): { slot: Slot; openedNewRoom: boolean } {
-  const base = KIND_ROOMS[kind]
+  const base = KIND_ROOM_IDS[kind]
   // 找该 kind 最新的房间（base、base-2、base-3…）中第一个未满员的。
   for (let n = 1; ; n += 1) {
     const room = n === 1 ? base : `${base}-${n}`

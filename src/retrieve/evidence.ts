@@ -9,6 +9,8 @@
  */
 
 import type { Slot } from '../types.ts'
+import type { EngramLanguage } from '../i18n/language.ts'
+import { roomLabel } from '../i18n/rooms.ts'
 
 /** 单次判定最多接受的证据条数（有界契约：防止把整个结果集当证据）。 */
 export const MAX_EVIDENCE_REFS = 8
@@ -102,9 +104,12 @@ export function isNextStrategy(value: string): value is NextStrategy {
  * @param scope - 条目所在作用域。
  * @param id - 条目 id。
  * @param slot - 宫殿坐标；未排桩传 undefined。
+ * @param language - 房间名的显示语言（房间里存的是标识符，不是文本）。
  */
-export function evidenceRefOf(scope: string, id: string, slot: Slot | undefined): string {
-  return slot === undefined ? `${scope}/#${id.slice(0, 8)}` : `${scope}/${slot.room}#${slot.index}`
+export function evidenceRefOf(scope: string, id: string, slot: Slot | undefined, language: EngramLanguage): string {
+  return slot === undefined
+    ? `${scope}/#${id.slice(0, 8)}`
+    : `${scope}/${roomLabel(slot.room, language)}#${slot.index}`
 }
 
 /** 批次注册表：按会话隔离，超出上限丢最旧的批次。 */

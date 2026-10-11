@@ -23,9 +23,13 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
-import { createLocalEmbedder } from './embedder/local.ts'
+import type { EngramLanguage } from './i18n/language.ts'
+import { message, messageIn, setMessageLanguage } from './i18n/messages.ts'
+import { setExtraRedactWords } from './i18n/patterns.ts'
+import { roomLabel } from './i18n/rooms.ts'
+import { createEmbedder } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
+import { FINAL_INGEST_TIMEOUT_MS, LIVE_INGEST_TIMEOUT_MS, REPLAY_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, recordIngestFailure, replayPendingIngests } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
   HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
@@ -91,18 +95,20 @@ export const DEFAULT_ITEM_BUDGET: GraduatedItemBudget = { start: 160, decay: 0.9
  * 兜底，索引行也装不下的折成末尾 `+N more; use engram_search` 计数行；计数行同样占用预算。
  * @param records - 候选条目（调用方已按重要性排序、按条数截断）。
  * @param tokenBudget - 整段画像的 token 预算（含首尾固定行）。
+ * @param language - 房间名的显示语言（房间里存的是标识符，不是文本）。
  * @param itemBudget - 分级递减的单条正文预算（缺省用 DEFAULT_ITEM_BUDGET；配置面在 resolveConfig）。
  * @returns 渲染文本与溢出条目（调用方可用辅助 LLM 压缩后重渲染）。
  */
 export function renderProfileDetailed(
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
+  language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
 ): ProfileRender {
   const estimate = estimateTokens
   // 主厅：常驻核心记忆层（每次会话都在场），行内带宫殿坐标（房间 #桩位）让 agent 有位置感。
-  const header = 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):'
-  const footer = 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.'
+  const header = messageIn(language, 'core.profileHeader')
+  const footer = messageIn(language, 'core.profileFooter')
   let remaining = Math.max(0, tokenBudget - estimate(header) - estimate(footer))
   const lines: string[] = []
   const overflow: { id: string; kind: string; content: string }[] = []
@@ -110,7 +116,7 @@ export function renderProfileDetailed(
     // 分级递减：第 i 条正文预算 = max(floor, start × decay^i)，超长截断（保留条目数优先于单条完整度）。
     const budget = Math.max(itemBudget.floor, Math.round(itemBudget.start * itemBudget.decay ** index))
     const content = record.content.length > budget ? `${record.content.slice(0, budget)}…` : record.content
-    const slot = record.slot === undefined ? '' : ` ${record.slot.room}#${record.slot.index}`
+    const slot = record.slot === undefined ? '' : ` ${roomLabel(record.slot.room, language)}#${record.slot.index}`
     const line = `- [${record.kind}]${slot} ${content}`
     const cost = estimate(line)
     if (cost <= remaining) {
@@ -147,13 +153,20 @@ export function renderProfileDetailed(
 export function renderProfile(
   records: readonly { id: string; kind: string; content: string }[],
   tokenBudget: number,
+  language: EngramLanguage,
 ): string {
-  return renderProfileDetailed(records, tokenBudget).text
+  return renderProfileDetailed(records, tokenBudget, language).text
 }
 
-/** curated block 段的标题行（模型据此知道这一段是人工维护的最高优先画像）。 */
-export const CURATED_HEADER =
-  'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):'
+/**
+ * curated block 段的标题行（模型据此知道这一段是人工维护的最高优先画像）。
+ * Значение английское: автор написал эту строку по-английски, поэтому в китайском
+ * наборе она совпадает с английской. Для показа берите
+ * `messageIn(language, 'core.curatedHeader')` — так делает renderProfileWithCurated.
+ * Модульная константа вычисляется при загрузке модуля, то есть ДО того, как плагин
+ * узнаёт язык из настроек, и навсегда застыла бы в английском.
+ */
+export const CURATED_HEADER = message('core.curatedHeader')
 
 /**
  * 画像渲染（curated 优先）：有 curated block 时其全文置于派生画像之前（模型可见的
@@ -170,11 +183,12 @@ export function renderProfileWithCurated(
   curated: { content: string } | undefined,
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
+  language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
 ): ProfileRender {
-  if (curated === undefined) return renderProfileDetailed(records, tokenBudget, itemBudget)
-  const curatedSection = `${CURATED_HEADER}\n${curated.content}`
-  const detailed = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), itemBudget)
+  if (curated === undefined) return renderProfileDetailed(records, tokenBudget, language, itemBudget)
+  const curatedSection = `${messageIn(language, 'core.curatedHeader')}\n${curated.content}`
+  const detailed = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
   return { text: `${curatedSection}\n${detailed.text}`, overflow: detailed.overflow }
 }
 
@@ -188,12 +202,6 @@ const OBSERVATION_INJECT_LIMIT = 3
 const OBSERVATION_INJECT_ITEM_CHARS = 120
 /** 信念区块总字符上限（独立于画像 token 预算，避免与画像互相挤压）。 */
 const OBSERVATION_INJECT_BLOCK_CHARS = 480
-
-const COMPRESS_SYSTEM = [
-  '把记忆条目压缩为更短的一句话表述（每条不超过 40 个字符），保留可跨会话复用的关键信息（事实、偏好、决策、方法）。',
-  '只输出一个 JSON 数组，每项形如 {"id": "原样返回的id", "content": "压缩后表述"}，条目数量与 id 必须与输入一一对应。',
-  '不要输出 JSON 以外的任何内容。',
-].join('\n')
 
 /**
  * 画像超预算的辅助压缩：把装不下的条目交给辅助 LLM 压短，返回 id → 压缩文本。
@@ -215,7 +223,7 @@ async function compressProfileOverflow(
     const userText = JSON.stringify(overflow.map(record => ({ id: record.id, content: record.content })))
     const raw = await streamText(ctx, {
       route,
-      system: COMPRESS_SYSTEM,
+      system: message('core.compressSystem'),
       userText,
       maxTokens: COMPRESS_MAX_TOKENS,
       purpose: 'engram-compress',
@@ -282,9 +290,12 @@ async function preStep(
         ...resolveJevField(resolved.jev, resolved.dbDir),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
-        signal,
+        // Русская доработка (A-17): та же причина, что и у живого извлечения ниже —
+        // сигнал шага обрывал догрузку, не оставляя следа в журнале. Запас времени
+        // здесь больше: на входе целые стенограммы прошлых сессий.
+        signal: AbortSignal.timeout(REPLAY_INGEST_TIMEOUT_MS),
       }).catch((error: unknown) => {
-        console.warn('[dsh-engram] 待补做摄取重放失败（保留 pending，不影响对话）：', error)
+        console.warn(message('core.warnReplayPendingFailed'), error)
       })
     }
     // 自动摄取：新一轮第一步读上一轮日志。异步执行，失败仅告警计数。
@@ -302,9 +313,15 @@ async function preStep(
         ...resolveJevField(resolved.jev, resolved.dbDir),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
-        signal,
-      }).catch((error: unknown) => {
-        console.warn('[dsh-engram] 本轮自动摄取失败（已跳过，不影响对话）：', error)
+        // Русская доработка (A-17): сигнал пре-шага гаснет вместе с шагом и обрывает
+        // извлечение, которое задумано как работа уже после хода. Как и на пути
+        // последнего хода, здесь собственный предел времени вместо чужого сигнала.
+        signal: AbortSignal.timeout(LIVE_INGEST_TIMEOUT_MS),
+      }).catch(async (error: unknown) => {
+        console.warn(message('core.warnIngestPreviousFailed'), error)
+        // Отказ извлечения обязан быть виден в журнале: иначе пропажа хода остаётся
+        // загадкой — в памяти записей нет, а в журнале не было ни одной строки.
+        await recordIngestFailure(await openStore('user'), String(agent.id), Math.max(0, turn - 1), error)
       })
     }
   }
@@ -344,6 +361,7 @@ async function preStep(
     curated,
     top,
     resolved.injectTokenBudget,
+    resolved.language,
     { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
   )
   let text = detailed.text
@@ -360,6 +378,7 @@ async function preStep(
           return shorter === undefined ? record : { ...record, content: shorter }
         }),
         resolved.injectTokenBudget,
+        resolved.language,
         { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
       ).text
     }
@@ -369,9 +388,12 @@ async function preStep(
   const observations = await store.listObservations({ status: 'active', limit: OBSERVATION_INJECT_LIMIT })
   if (observations.length > 0) {
     const block = [
-      'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
+      message('core.observationsHeader'),
       ...observations.map(observation =>
-        `- ${observation.belief.slice(0, OBSERVATION_INJECT_ITEM_CHARS)} (${String(observation.proofCount)} sources)`),
+        message('core.observationItem', {
+          belief: observation.belief.slice(0, OBSERVATION_INJECT_ITEM_CHARS),
+          count: observation.proofCount,
+        })),
     ].join('\n').slice(0, OBSERVATION_INJECT_BLOCK_CHARS)
     text = `${text}\n\n${block}`
   }
@@ -379,7 +401,7 @@ async function preStep(
   // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。due 行纳入 hash 输入。
   const dueLine = dueTotal === 0
     ? ''
-    : `\nPalace review due today: ${dueTotal}${dueTotal >= 50 ? '+' : ''} memories. Use engram_review_queue for active recall (recall beats re-reading).`
+    : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
   const hash = createHash('sha256').update(textWithRationale).digest('hex')
   if (state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
@@ -490,6 +512,14 @@ function makeSessionResolver(
  */
 export function apply(ctx: Context, config: EngramConfig = {}): void {
   const resolved = resolveConfig(config)
+  // Язык служебных сообщений — один на процесс. Помощник message() зовут десятки
+  // функций, и протаскивать язык в каждую было бы куда грубее, чем задать его здесь
+  // один раз при сборке плагина (см. src/i18n/messages.ts).
+  setMessageLanguage(resolved.language)
+  // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
+  // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
+  // (см. src/i18n/patterns.ts, настройка redactWords).
+  setExtraRedactWords(resolved.redactWords)
   mkdirSync(resolved.dbDir, { recursive: true, mode: 0o700 })
 
   // 项目标识：git origin 归一化哈希 → 完整 cwd 哈希；按配置检查旧库迁移。
@@ -520,9 +550,9 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       // 存量排桩：首次打开时幂等补齐（slot_room 为空的 active 条目按 kind 分房、创建时间定序）。
       .then(async store => {
         const assigned = await store.backfillSlots(room => {
-          console.warn(`[dsh-engram] 房间已满，自动开新房「${room}」（可在管理面板翻新清单中人工拆分/命名）`)
+          console.warn(message('core.warnRoomFull', { room }))
         })
-        if (assigned > 0) console.warn(`[dsh-engram] 存量记忆排桩完成：${assigned} 条已钉入宫殿（${path}）`)
+        if (assigned > 0) console.warn(message('core.warnSlotsBackfilled', { count: assigned, path }))
         return store
       })
     stores.set(dbName, created)
@@ -576,9 +606,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     cwd === undefined ? openStore('project') : openStoreForProjectCwd(cwd)
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
-  const embedder: Promise<EngramEmbedder | undefined> = createLocalEmbedder(resolved.modelCacheDir, resolved.hfEndpoint)
+  // Бэкенд выбирает конфигурация: локальная модель либо OpenAI-совместимый эндпоинт.
+  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved)
     .catch((error: unknown) => {
-      console.warn('[dsh-engram] 嵌入器不可用，检索降级为纯关键词模式：', error)
+      console.warn(message('core.warnEmbedderUnavailable'), error)
       return undefined
     })
   void embedder
@@ -759,7 +790,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     /** 启动后台回填；已有任务在跑时拒绝（面板按钮据此禁用）。 */
     start: (rules: HistoryBackfillRules): { ok: boolean; reason?: string } => {
       if (backfillJob !== undefined && backfillJob.progress.state === 'running') {
-        return { ok: false, reason: '已有回填任务正在运行，请先暂停或等待完成' }
+        return { ok: false, reason: message('core.backfillBusy') }
       }
       const controller = new AbortController()
       const job: NonNullable<typeof backfillJob> = {
@@ -779,7 +810,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         .then((result) => { job.progress = result; job.failures = result.failures })
         .catch((error: unknown) => {
           // 整批失败（如枚举会话出错）：置 failed 并保留已累计进度，不抛给宿主。
-          console.warn('[dsh-engram] 历史回填失败：', error)
+          console.warn(message('core.warnHistoryBackfillFailed'), error)
           job.progress = { ...job.progress, state: 'failed' }
           job.error = error instanceof Error ? error.message : String(error)
         })
@@ -808,6 +839,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     ...resolveJevField(resolved.jev, resolved.dbDir),
     queryRewrite: resolved.queryRewrite,
     exportDir: `${resolved.dbDir}/exports`,
+    language: resolved.language,
     historyBackfill: { estimate: historyApi.estimate, run: historyApi.run },
   })) {
     ctx.tools.register(tool)
@@ -826,6 +858,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       mirrorDir: `${resolved.dbDir}/palaces`,
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
+      language: resolved.language,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
       jev: { base: resolved.jev, dbDir: resolved.dbDir },
@@ -896,7 +929,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
           })
         })
         .catch((error: unknown) => {
-          console.warn('[dsh-engram] 会话结束的收尾处理异常（不影响对话）：', error)
+          console.warn(message('core.warnDisposeFinalFailed'), error)
         })
     })
   }
@@ -944,10 +977,16 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
               signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),
             })
             if (outcome.formed + outcome.refined + outcome.confirmed + outcome.refuted > 0) {
-              console.log(`[dsh-engram] 信念巩固完成（${target.scope}）：新建 ${String(outcome.formed)}，细化 ${String(outcome.refined)}，维持 ${String(outcome.confirmed)}，否定 ${String(outcome.refuted)}`)
+              console.log(message('core.logReflectDone', {
+                scope: target.scope,
+                formed: outcome.formed,
+                refined: outcome.refined,
+                confirmed: outcome.confirmed,
+                refuted: outcome.refuted,
+              }))
             }
           } catch (error) {
-            console.warn(`[dsh-engram] 会话结束的信念巩固异常（${target.scope}，不影响对话）：`, error)
+            console.warn(message('core.warnReflectFailed', { scope: target.scope }), error)
           }
         }
       })()
@@ -962,24 +1001,24 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     // 项目宫殿可能不止一个（每个工作区一个）：只处理库文件已存在的，避免为工作区建空库。
     for (const palace of await projectPalaces()) {
       if (!existsSync(join(resolved.dbDir, palace.dbName))) continue
-      targets.push({ label: `project「${palace.title}」`, open: () => openDb(palace.dbName) })
+      targets.push({ label: message('core.decayTargetProject', { title: palace.title }), open: () => openDb(palace.dbName) })
     }
     for (const target of targets) {
       const archived = await (await target.open()).decay({
         importanceBelow: resolved.decayImportanceBelow,
         olderThanDays: resolved.decayAfterDays,
       })
-      if (archived > 0) console.warn(`[dsh-engram] 衰减调度：${target.label} 库归档 ${archived} 条低价值记忆（可在 engram_review 查证）`)
+      if (archived > 0) console.warn(message('core.warnDecayArchived', { label: target.label, count: archived }))
     }
   }
   void runDecay().catch((error: unknown) => {
-    console.warn('[dsh-engram] 启动衰减调度失败（跳过）：', error)
+    console.warn(message('core.warnDecayStartupFailed'), error)
   })
   ctx.effect(
     () => {
       const timer = setInterval(() => {
         void runDecay().catch((error: unknown) => {
-          console.warn('[dsh-engram] 周期衰减调度失败（跳过）：', error)
+          console.warn(message('core.warnDecayPeriodicFailed'), error)
         })
       }, 24 * 60 * 60 * 1000)
       return () => { clearInterval(timer) }
@@ -995,9 +1034,14 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         olderThanDays: resolved.decayAfterDays,
         importanceBelow: resolved.decayImportanceBelow,
       })
-      console.log(`[dsh-engram] 闭馆整理完成：归档 ${String(report.archived)}，合并 ${String(report.merged)}，跳过 ${String(report.skipped)}（${String(report.tookMs)} ms）`)
+      console.log(message('core.logConsolidationDone', {
+        archived: report.archived,
+        merged: report.merged,
+        skipped: report.skipped,
+        ms: report.tookMs,
+      }))
     } catch (error) {
-      console.warn('[dsh-engram] 闭馆整理失败（不影响对话）：', error)
+      console.warn(message('core.warnConsolidationFailed'), error)
     }
   }
   void runConsolidateOnce()

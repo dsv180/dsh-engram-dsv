@@ -7,6 +7,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
+import { ENGRAM_MODEL_ID } from './embedder/local.ts'
+import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
+
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
 export type LegacyMigrationPolicy = 'eager' | 'conservative'
 
@@ -15,6 +18,57 @@ export type IngestModeConfig = 'off' | 'light' | 'eager'
 
 /** 信念巩固档位：off 仅允许手动 engram_reflect；suggest 会话结束只登记待巩固；auto 会话结束后自动巩固。 */
 export type ReflectModeConfig = 'off' | 'suggest' | 'auto'
+
+/**
+ * Бэкенд эмбеддингов.
+ *
+ * `local` — модель внутри пакета, вывод офлайн, данные не покидают машину.
+ * `remote` — OpenAI-совместимый эндпоинт; это может быть и публичный сервис, и сервер
+ * вывода в локальной сети, поэтому «локальность» здесь задаётся значением baseUrl,
+ * а не отдельным режимом.
+ */
+export type EmbedderKind = 'local' | 'remote'
+
+/** Способ сведения токенов в один вектор. bge-m3 и родственные модели требуют cls. */
+export type EmbedderPooling = 'mean' | 'cls'
+
+/** Подконфигурация эмбеддера: локальная модель либо удалённый эндпоинт (взаимоисключающе). */
+export interface EmbedderConfig {
+  /** Бэкенд; по умолчанию local — поведение прежних версий сохраняется. */
+  kind?: EmbedderKind
+  /** local: идентификатор модели transformers.js; по умолчанию Xenova/bge-small-zh-v1.5. */
+  localModel?: string
+  /** local: способ пулинга; по умолчанию mean. */
+  localPooling?: EmbedderPooling
+  /** remote: идентификатор модели, передаётся серверу как есть (например text-embedding-3-small). */
+  model?: string
+  /** remote: корень эндпоинта вместе с версией, например https://api.example.com/v1. */
+  baseUrl?: string
+  /** remote: ключ Bearer прямо в конфигурации — тот же приём, что у jev.apiKey. */
+  apiKey?: string
+  /** remote: имя переменной окружения с ключом; заданная переменная старше apiKey. */
+  apiKeyEnv?: string
+  /** remote: предел числа текстов в одном запросе; по умолчанию 32. */
+  batchSize?: number
+  /** remote: таймаут одного запроса в миллисекундах; по умолчанию 30000. */
+  timeoutMs?: number
+}
+
+/** Разобранная подконфигурация эмбеддера (значения по умолчанию уже применены). */
+export interface ResolvedEmbedderConfig {
+  readonly kind: EmbedderKind
+  readonly localModel: string
+  readonly localPooling: EmbedderPooling
+  /** Удалённый эндпоинт; при kind=local равно undefined. */
+  readonly remote: {
+    readonly model: string
+    readonly baseUrl: string
+    readonly apiKey: string | undefined
+    readonly apiKeyEnv: string | undefined
+    readonly batchSize: number
+    readonly timeoutMs: number
+  } | undefined
+}
 
 /** Jev System One 模型子配置：DEFER 模糊带自动裁决与矛盾边确认；默认关闭时四态判定保持纯规则。 */
 export interface JevConfig {
@@ -96,6 +150,20 @@ export interface EngramConfig {
   historyBackfillIncludeNoCwd?: boolean
   /** Jev System One 裁决子配置；默认关闭（纯规则四态判定，行为与旧版一致）。 */
   jev?: JevConfig
+  /** Эмбеддер: локальная офлайн-модель либо удалённый OpenAI-совместимый эндпоинт; по умолчанию local. */
+  embedder?: EmbedderConfig
+  /**
+   * Язык текстов, которые плагин формирует сам: имена комнат, сообщения инструментов.
+   * «auto» (по умолчанию) — язык системы. Интерфейс панели настраивается отдельно,
+   * средствами DSH: плагин отдаёт хосту словари, а выбор делает хост.
+   */
+  language?: LanguageSetting
+  /**
+   * Слова-метки секретов, добавленные пользователем. Дополняют наборы языкового пакета
+   * и действуют **всегда**, независимо от языка: пользователь добавляет их как раз потому,
+   * что пакета не хватило. Пробельные строки отбрасываются.
+   */
+  redactWords?: string[]
 }
 
 /** 历史回填规则（面板/工具可在默认值之上按次调整；总轮数受硬上限约束）。 */
@@ -154,6 +222,12 @@ export interface ResolvedEngramConfig {
   readonly historyBackfill: ResolvedHistoryRules
   /** Jev System One 裁决子配置（默认关闭）。 */
   readonly jev: ResolvedJevConfig
+  /** Разобранная подконфигурация эмбеддера. */
+  readonly embedder: ResolvedEmbedderConfig
+  /** Язык вывода серверной половины (после разворачивания «auto» в язык системы). */
+  readonly language: EngramLanguage
+  /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
+  readonly redactWords: readonly string[]
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
@@ -165,7 +239,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'autoSlot', 'reviewScheduling', 'assessReminder',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
-  'jev',
+  'jev', 'embedder', 'language', 'redactWords',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -211,6 +285,19 @@ export const Config: z<EngramConfig> = z.object({
     deferAcceptBelow: z.number().min(0).max(0.5),
     contradictMinProbability: z.number().min(0.5).max(1),
   }) as unknown as z<JevConfig>,
+  embedder: z.object({
+    kind: z.string(),
+    localModel: z.string(),
+    localPooling: z.string(),
+    model: z.string(),
+    baseUrl: z.string(),
+    apiKey: z.string(),
+    apiKeyEnv: z.string(),
+    batchSize: z.number().step(1).min(1).max(256),
+    timeoutMs: z.number().step(1).min(1000).max(600000),
+  }) as unknown as z<EmbedderConfig>,
+  language: z.string(),
+  redactWords: z.array(z.string()),
 })
 
 /**
@@ -231,6 +318,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
+  }
+  if (config.language !== undefined && config.language !== 'auto' && !isEngramLanguage(config.language)) {
+    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(config.language)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')
@@ -308,6 +398,43 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       throw new Error('dsh-engram: jev.deferAcceptBelow must be less than jev.deferMergeAbove')
     }
   }
+  const embedderConfig = config.embedder
+  const embedderKind = embedderConfig?.kind ?? 'local'
+  if (embedderConfig !== undefined) {
+    if (embedderConfig.kind !== undefined && embedderConfig.kind !== 'local' && embedderConfig.kind !== 'remote') {
+      throw new Error('dsh-engram: embedder.kind must be one of local|remote')
+    }
+    if (embedderConfig.localPooling !== undefined && embedderConfig.localPooling !== 'mean' && embedderConfig.localPooling !== 'cls') {
+      throw new Error('dsh-engram: embedder.localPooling must be one of mean|cls')
+    }
+    if (embedderConfig.batchSize !== undefined
+      && (!Number.isInteger(embedderConfig.batchSize) || embedderConfig.batchSize < 1 || embedderConfig.batchSize > 256)) {
+      throw new Error('dsh-engram: embedder.batchSize must be an integer in [1, 256]')
+    }
+    if (embedderConfig.timeoutMs !== undefined
+      && (!Number.isInteger(embedderConfig.timeoutMs) || embedderConfig.timeoutMs < 1000 || embedderConfig.timeoutMs > 600000)) {
+      throw new Error('dsh-engram: embedder.timeoutMs must be an integer in [1000, 600000]')
+    }
+    const baseUrl = embedderConfig.baseUrl
+    if (baseUrl !== undefined && baseUrl !== '') {
+      try {
+        const parsed = new URL(baseUrl)
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('unsupported protocol')
+      } catch {
+        throw new Error('dsh-engram: embedder.baseUrl must be an http(s) URL')
+      }
+    }
+    // Требования выставляются только для выбранного бэкенда: local не обязан
+    // знать про baseUrl, remote не обязан знать про кэш моделей.
+    if (embedderKind === 'remote') {
+      if (embedderConfig.model === undefined || embedderConfig.model === '') {
+        throw new Error('dsh-engram: embedder.kind=remote requires embedder.model')
+      }
+      if (baseUrl === undefined || baseUrl === '') {
+        throw new Error('dsh-engram: embedder.kind=remote requires embedder.baseUrl')
+      }
+    }
+  }
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
   return {
     dbDir,
@@ -318,6 +445,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
     reflect: config.reflect ?? 'off',
+    language: resolveLanguage(config.language ?? 'auto'),
+    redactWords: config.redactWords ?? [],
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,
@@ -348,6 +477,21 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       deferMergeAbove: config.jev?.deferMergeAbove ?? 0.85,
       deferAcceptBelow: config.jev?.deferAcceptBelow ?? 0.15,
       contradictMinProbability: config.jev?.contradictMinProbability ?? 0.8,
+    },
+    embedder: {
+      kind: embedderKind,
+      localModel: embedderConfig?.localModel ?? ENGRAM_MODEL_ID,
+      localPooling: embedderConfig?.localPooling ?? 'mean',
+      remote: embedderKind === 'remote' && embedderConfig?.model !== undefined && embedderConfig.baseUrl !== undefined
+        ? {
+            model: embedderConfig.model,
+            baseUrl: embedderConfig.baseUrl,
+            apiKey: embedderConfig.apiKey,
+            apiKeyEnv: embedderConfig.apiKeyEnv,
+            batchSize: embedderConfig.batchSize ?? 32,
+            timeoutMs: embedderConfig.timeoutMs ?? 30000,
+          }
+        : undefined,
     },
   }
 }

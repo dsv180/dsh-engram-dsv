@@ -1,283 +1,299 @@
-<div align="center">
+# dsh-engram-dsv — long-term agent memory across sessions
 
-# dsh-engram · Memory Palace
+[Русская версия →](README.md) · A fork of [kenz1117/dsh-engram](https://github.com/kenz1117/dsh-engram)
 
-<p align="center">Cross-session long-term memory for DeepSeek Harness — it puts the memory palace's <b>information architecture</b> (not its neuroscience metaphor) into the agent: <b>location as index</b> (every memory pinned to a <code>room#slot</code> coordinate), <b>fixed route as order</b> (the tour route is append-only), <b>skeleton reused long-term</b> (a topic always lands in the same room and index), and <b>every marker unique</b> (placard rule: unique · distinctive · dated). Paired with spaced-repetition retrieval practice (cues only, never the body) and a knowledge flywheel (capture → reinforce → distill → decay). Pure TypeScript: no external processes, no Python dependency.</p>
+A plugin for DeepSeek Harness that gives an agent memory surviving session close. Records live in a
+plain SQLite file, are retrieved hybrid — by meaning and by words at once — and each one keeps its
+provenance: which session and which turn it came from.
 
-<p align="center">
-  <a href="https://github.com/kenz1117/dsh-engram/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/kenz1117/dsh-engram"></a>
-  <a href="https://github.com/kenz1117/dsh-engram"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/kenz1117/dsh-engram"></a>
-  <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm version" src="https://img.shields.io/npm/v/@kenz1117/dsh-engram"></a>
-  <a href="https://www.npmjs.com/package/@kenz1117/dsh-engram"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@kenz1117/dsh-engram"></a>
-  <a href="https://github.com/kenz1117/dsh-engram/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/kenz1117/dsh-engram"></a>
-  <a href="https://github.com/kenz1117/dsh-engram/graphs/contributors"><img alt="GitHub contributors" src="https://img.shields.io/github/contributors/kenz1117/dsh-engram"></a>
-  <a href="https://awesome-dsh-plugin.com"><img alt="Awesome DSH Plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
-</p>
+## What it is and why
 
-[中文](README.md) | English
+By default an agent remembers exactly one conversation. Between sessions everything is lost:
+agreements, your preferences, root causes you found, decisions together with their reasoning. You end
+up explaining it all again.
 
-</div>
+The first half of the job is obvious: store the text so that it can be found in the next session. Any
+notepad does that. But that half alone is not enough: a month later nobody can tell where a line came
+from, what replaced it, or whether it can still be trusted. Memory you cannot trust is worse than no
+memory at all — you rely on it and get it wrong.
 
----
+The second half, the one usually skipped, is order. Every record carries its provenance (session and
+turn), the history of what superseded it and why it was closed. That is why the plugin treats them as
+no less important than storage itself: otherwise you end up with a pile of notes nobody can make sense
+of.
 
-## Quick Start
+The design rests on a memory palace:
 
-```sh
-dsh plugin --profile web add @kenz1117/dsh-engram
+- every record has a `room#slot` coordinate, and that is what memory is searched by;
+- the tour route through rooms is fixed and only ever extended, so the order does not drift;
+- a placard — a short date-anchored marker — is unique and distinguishable: it identifies a record
+  without opening the text;
+- the same subject always lands in the same room at the same slot, so neighbourhood works as a hint.
+
+## Where this fork comes from
+
+The original project is [kenz1117/dsh-engram](https://github.com/kenz1117/dsh-engram) by KenZ, MIT
+licensed. Its documentation is in Chinese and English, and so are the strings in the code: the
+language was wired into the engine.
+
+To apply the author's design to Russian, we decided to add multilingual support and reworked that
+part: a string dictionary and a Russian pack appeared — interface, prompts, service messages.
+
+Halfway through the rework it became clear that language packs alone are not enough. Memory also
+needs a suitable embedding model: the previous one, trained on Chinese, gave a mean cosine of 0.786 on
+Russian records — tight enough that 382 of 703 record pairs fell inside the merge/arbitration zone,
+meaning the system seriously considered merging unrelated facts. A multilingual model gives 0.294 and
+no such pairs.
+
+That is why the choice of model and backend was moved into configuration as well: a language is served
+by a suitable model while the engine code stays common — there is no need to rewrite it for every new
+language.
+
+And not only Russian: all the text — labels, prompts, room names — lives in per-language packs rather
+than in the code. Adding another language means translating a pack and registering it in a handful of
+places (the language list, the dictionaries, room names, phrase-recognition patterns); the engine
+logic itself does not have to be touched, and the compiler will say at once if a pack is missing keys.
+The only thing that needs choosing separately is the embedding model, as happened with Russian.
+
+The detailed description of the internals stays with the author:
+[Chinese](README.upstream.zh.md) and [English](README.upstream.en.md). Thanks to the author: his engine
+made it possible to add a language without rewriting the memory logic.
+
+## What it does
+
+**Memory and retrieval**
+
+- Five kinds of records: fact, preference, decision, episode, skill.
+- Three scopes: `project` — this project only, `user` — everything about you, `shared` — common
+  ground. Each scope lives in its own database file.
+- Hybrid retrieval: by meaning and by words at once. Without the embedder installed, retrieval keeps
+  working by words — quietly, without errors and without losing data.
+
+**Order and provenance**
+
+- Every record has provenance: the session and turn it was extracted from.
+- An operation journal: what was saved, what was rejected and why, what was superseded, what was
+  closed.
+- Closing a record is reversible and requires an epitaph: why we close it, whom it affects, whether
+  any value remains. Later it can be excavated.
+- A correction does not erase the old record: the new one joins a supersession chain and the chain
+  history is kept.
+
+**Working with time**
+
+- Spaced repetition: today's queue, a cue without the text, a 0–5 self-grade; intervals are
+  recalculated from how easily you recalled.
+- An episode timeline: what was done on a given day or over a period, grouped by session.
+- A view "as it was then": query facts as of a date rather than as of today.
+
+**Generalisation**
+
+- Distillation: similar records are merged into a higher-level pattern, the old ones are archived and
+  the supersession chain is preserved.
+- Beliefs: several records are merged into a statement with an evidence count; the source records stay
+  in place.
+- A tour of the palace: a themed route with several stops, so recall is coherent rather than in
+  fragments.
+
+**Capture from conversation**
+
+- Turns are reviewed by an extractor model: what is worth remembering is saved, what is not is
+  skipped. The model has the right to answer honestly "nothing to remember" — a separate event in the
+  journal rather than an empty answer.
+- A gentle mode is on by default: at most two candidates at a time, no assistant replies, plus an
+  activity threshold — on short empty turns extraction does not even start.
+
+## Agent tools
+
+21 tools in total.
+
+- **Search and read:** `engram_search`, `engram_examine`, `engram_facts`, `engram_timeline`,
+  `engram_episode_timeline`, `engram_neighbors`, `engram_tour`, `engram_stats`, `engram_export`.
+- **Write and edit:** `engram_save`, `engram_update`, `engram_forget`, `engram_profile_edit`.
+- **Review:** `engram_review_queue`, `engram_review`, `engram_report`.
+- **Generalisation, verification and audit:** `engram_reflect`, `engram_distill`,
+  `engram_audit_forgotten`, `engram_assess`, `engram_ingest_history`.
+
+## Where the text lives (dictionaries)
+
+All of the plugin's text — panel labels, tool descriptions, prompts for the model, service messages —
+lives in dictionaries. The code asks for text by key and knows nothing about the language, so a new
+language means translating, not changing logic.
+
+**Server half** — tool texts and model prompts, `src/i18n/catalog/`. Each language has 451 keys, and
+the key count is identical in all three — that is checked separately.
+
+| File | What it covers | Keys |
+| --- | --- | --- |
+| `src/i18n/catalog/tool.ts` | the 21 `engram_*` tools: schema descriptions, result texts, errors | 315 |
+| `src/i18n/catalog/core.ts` | core: session profile, token budget, tour proposal, selection rationale, memory samples | 48 |
+| `src/i18n/catalog/misc.ts` | panel HTTP routes, mirror export, update suggestions, placard check, Jev settings | 34 |
+| `src/i18n/catalog/store.ts` | storage, backups, security, project binding, embedder | 29 |
+| `src/i18n/catalog/llm.ts` | calls to the helper model: extraction, distillation, beliefs, query rewriting | 25 |
+
+**Language-dependent data that is not a message:**
+
+| File | What it covers |
+| --- | --- |
+| `src/i18n/messages.ts` | assembles the files above into a language dictionary and holds the active language |
+| `src/i18n/language.ts` | the list of supported languages and system-language detection |
+| `src/i18n/patterns.ts` | per-language phrase patterns: greetings, "do not remember this" |
+| `src/i18n/dates.ts` | date and time words |
+| `src/i18n/rooms.ts` | palace room names |
+
+**Client half** — the memory panel, `src/client/locales/`: one file per language (`ru.ts`, `en.ts`,
+`zh.ts`) plus `index.ts` with the key type. The client does not choose a language: it hands its
+dictionaries to the host, and the renderer picks the right one from the DSH language setting.
+
+**Entry format** — a key shaped `area.name` and the text; placeholders go in curly braces. The
+fragment below is from the Russian dictionary:
+
+```ts
+export const ru = {
+  'store.projectPalaceProcessDir': '{title} (каталог процесса)',
+  'tool.searchDescription': 'Гибридный семантико-ключевой поиск по долговременным воспоминаниям…',
+}
 ```
 
-Zero configuration after install (stores and model cache default to `~/.dsh/engram`; profile injection on, automatic capture off).
+**What is missing falls back to English.** The author's primary language was Chinese: his original
+wording still forms the base of the dictionaries. We made English the completeness reference — the
+same convention the harness itself uses, where the fallback chain converges on English. So when a
+language pack lacks a key, the English text is substituted: an empty label is worse than an English
+one.
 
-## Palace Structure: the Directory Is the Room, the Path Is the Route
+`node scripts/check-messages.mjs` guards this. It catches three things: a key the code asks for but
+the dictionary does not know; a key declared but never requested; and a key missing from one of the
+languages.
 
-What actually works in a memory palace is its **information architecture**, not the biology — machines can use the former, while an AI has neither the latter nor any need for it. Stripped down, there are only four things:
+## What this fork changes
 
-```
-Grand hall · core memory   few and stable, always present      the profile injected every turn (entry cap + token budget)
-  │
-Corridor · route index     pick the room first, never scan the whole store   room directory + engram_search room=
-  │
-  ├─ Fact Hall              fact        what the user said
-  ├─ Preference Pavilion    preference  tastes and preferences
-  ├─ Decision Chamber       decision    decisions and agreements
-  ├─ Episode Gallery        episode     experiences and timeline
-  └─ Skill Workshop         skill       methods and techniques        capacity 9 per room, overflow opens "<name>-2"
-  │
-Placard · marker rule      unique · distinctive · dated      scored on write; low scores enter the refurb list
-```
-
-| Palace principle | What it is in the plugin | Code |
-|---|---|---|
-| Location as index | Slotted on write to `room#slot`; capacity 9 (7±2), overflow opens a new room, slots are never recycled | [src/palace/slots.ts](src/palace/slots.ts) |
-| Fixed route as order | `tour_routes` is append-only; `engram_tour mode=fixed` walks the whole palace in slot order | [src/store/sqlite.ts](src/store/sqlite.ts) |
-| Skeleton reused long-term | A topic always lands in the same room and index, so recall is sequential extraction rather than fresh search | [src/palace/slots.ts](src/palace/slots.ts) |
-| Every marker unique | Placard scored 0-1: globally unique +0.4 / date anchor +0.3 / no 6-char prefix clash within the room +0.3 | [src/imagery/score.ts](src/imagery/score.ts) |
-| Review discipline | SM-2 spaced repetition; retrieval practice returns cues and placards but **never the body text** | [src/review/sm2.ts](src/review/sm2.ts) |
-
-Sensory and emotional dimensions (smell, temperature, emotional weight) are deliberately not scored: they are patches for the human brain's innate limits, and an AI has neither the limits nor the need.
-
-## Features
-
-- **Cross-session memory**: a user memory profile is injected at session start (entry cap plus token budget, both configurable; a curated profile maintained via `engram_profile_edit` takes precedence over derived facts), so the agent naturally knows who you are and what you are building; tools recall facts across sessions.
-- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` isolated per git origin identity (falls back to a working-directory encoding without git; legacy stores migrate automatically) — personal preferences follow the person, project conventions follow the repo.
-- **Hybrid retrieval**: FTS5 (unicode61 + Chinese 2-gram pre-tokenization) fused with local vectors (`Xenova/bge-small-zh-v1.5`, 512-dim, q8) via RRF, plus one-hop expansion over relation edges and a multiplicative recency/proof ranking boost; the embedding model runs offline, and a failed download degrades to keyword-only retrieval with an explicit marker.
-- **Memory-palace information architecture** (v0.7.2+): all four principles live on the core path, not in display-layer paint — **location as index** (writes sort by kind into rooms and pin a `room#slot` coordinate; room capacity 9, overflow opens a new room, slots are never recycled); **fixed route as order** (`tour_routes` is append-only; `engram_tour mode=fixed` walks the whole palace in slot order); **skeleton reused long-term** (a topic always lands in the same room and the same index, so recall is sequential extraction rather than fresh search); **every marker unique** (placard rule scored 0-1: globally unique +0.4 / date anchor +0.3 / no 6-char prefix clash within the room +0.3; low scores enter the refurb list; a palace with fewer than 8 active memories is left unscanned to avoid small-store noise).
-- **Corridor-routed retrieval**: the profile carries a room directory, and `engram_search` accepts a `room` parameter — decide the room first, then search inside it, instead of always running whole-store RRF. The top 5 hits carry neighbouring slot ids from the same room as encoding-specificity cues.
-- **Retrieval-practice loop** (spaced repetition): `engram_review_queue` returns palace coordinates and placard cues but **never the body text**, forcing the model to recall first; `engram_review` reveals the entry and `engram_report grade` (0-5) self-rates it, advancing an SM-2 schedule (1 → 6 → round(prev × ease) days, reset on failure, ease floor 1.3). Entries under review scheduling **no longer take part in automatic decay** — their fate is decided by recall. Session-start injection reports how many memories are due.
-- **History backfill** (v0.7.3+): distils dsh's persisted past sessions into the palace, turn by turn — each session is written into the project store matching **its own cwd** (no cross-project bleed), reusing the live-capture throttling, redaction, and echo suppression, with a `(session, turn)` idempotency key so an interrupted run resumes. Backfilled entries never enter the due-today queue. **You choose the import rules** (time window / turns per session / total turn budget / auxiliary model / include subagent·seeded·no-cwd sessions) and see a zero-cost estimate (no LLM calls) before running; staging happens in a dedicated **"Backfill" tab** with progress (including a **breakdown of skip reasons**) and pause. Auxiliary calls **reuse the model you are currently using** by default (a past session's log records the provider/model of that time, which may no longer be available here), or you can pick one explicitly from the host's registered providers/models in the tab's "Auxiliary model" dropdown.
-- **Knowledge flywheel**: capture/save → contradiction candidates (high-similarity neighbors create `contradicts` edges on write, for the model/user to adjudicate) → hit reinforcement (confidence +0.05) → distillation (topic clusters merge into higher-level rules, supersedes chains, confidence inheritance) → decay (low-importance, long-unaccessed entries archive; restorable).
-- **Automatic belief consolidation** (v0.7.14+, off by default; yml `reflect: suggest|auto`): after a session ends, raw memories that have not yet served as evidence for any belief are consolidated by an auxiliary LLM into one-sentence **observations**. Unlike distillation, the raw memories are all kept — the observation is an **additional abstraction layer**: each belief carries its evidence-id list plus a proof count, and same-topic beliefs merge automatically by vector proximity (cosine ≥0.9), so one belief is **continuously refined** instead of duplicated. When new evidence lands near an existing belief (≥0.86) the belief turns `stale`, and the next consolidation feeds its raw evidence back to the model for a freshness review with four outcomes — `form` (new), `refine`, `still` (holds), `refute` (kept with its evidence chain for audit). In `auto` mode consolidation runs in the background after the session (5s timeout; failures never affect the conversation); in `suggest` mode it only enqueues a pending-consolidation task that the `engram_reflect` tool drains (the tool can also be invoked manually in any mode). The top 3 active beliefs by proof count are injected with the profile packet; stale/refuted beliefs are never injected. Schema upgraded to v12 (the observations table; incremental migration, zero data movement).
-- **Jev System-One adjudication** (v0.7.12+, off by default, the `jev` block in yml): the DEFER fuzzy-band three-way ruling (merge / accept / defer) and contradiction-edge confirmation can be delegated to an external Jev model; when Jev is unavailable (network failure / timeout / missing key) it silently falls back to the pure-rule four-way behavior, **never blocking writes**. Every adjudication leaves a side observation (verdict, whether Jev took part, elapsed time, fallback reason; up to 50 in-process, cleared on restart), so the panel's "Jev" view answers "why was this one deferred" at a glance. Five yml fields — the switch / API key / endpoint / model / timeout — can be overridden from the panel (stored at `<dbDir>/jev-config.json`, 0600 file inside a 0700 directory) and take effect on save without a restart; a "Test connection" button verifies endpoint and model reachability with the current input (unsaved values are tested as typed, never written to the override file); the key is returned only masked by GET, never leaves the process, and is never back-filled into the input. The three thresholds stay yml-only advanced settings, shown read-only.
-- **Entity lexicon** (v0.7.10+): the auxiliary LLM output of automatic capture and `engram_save` also extracts entity mentions (people/projects/tools/concepts, with optional aliases), resolved by normalized name against existing entities' names/aliases — a hit reuses the entity and refreshes its "last mentioned" stamp, a miss creates one; memories and entities link many-to-many, stored in the same store as the source memory. `engram_search` rows carry entity tags of the hits; entity-resolution failures silently skip the links and never block the memory write itself. The panel's "Entities" view filters by kind, searches names/aliases, and opens one entity to see every memory it pulls in.
-- **Automatic capture** (when `ingest` is enabled): each new turn's first step extracts candidate facts from the previous turn out of the session log, and session end captures the final turn too (failures leave a pending key that the next session replays; capture is idempotent per session+turn), written with low confidence and, when embeddings are available, disposed by the four-state rule toward near neighbors (merge-and-reinforce restatements / edge-and-defer suspected contradictions / write fresh) — memories accumulate without you saying "remember this".
-- **Provenance audit**: every memory records its source session, turn, and event seq; `engram_review` traces the full source chain, supersede chain, contradictions, and operation log; all writes/edits/forgets/distills/decays land in the operation log table.
-- **Web management panel** (v0.7.0+): the "Memory Library" tab in Settings has nine views — Today (a summary bar: memories / open / clarity + health ring, with a footer row of four small stats — founded / excavated / curated / due today — inline with the pulse timestamp; followed by tour proposal, room directory, refurb list, health breakdown; a profile card in the side column shows the curated profile's current content and version-diff history), Palace (filters incl. due today, tour-route order, batch actions, list & edit; the review / edit dialogs render as viewport-floating cards — sticky-pinned to the visible top of the host scroll area, so opening from any scroll depth never jumps or squeezes the page), Corridor (corridor bird's-eye + retrieval bench), Log (last-7-days counts + the full merged op_log, filterable by operation class), Backfill, Episodes (episodes grouped by session, with anchor-neighborhood expansion), Entities (the entity lexicon: kind filters + name/alias search + per-entity linked memories), **Beliefs** (v0.7.15+: consolidated beliefs sorted by evidence count with held / stale / refuted status filters; "evidence" expands the evidence chain for a read-only look at the underlying memories — purged evidence keeps the belief with an explicit notice; backed by the `GET /api/engram/observations` and `GET /api/engram/observation-evidence` routes), and Jev (System-One adjudication: config overrides + connection test + recent adjudications). The header is a single two-ended row: the scope pills (Private / Project / Shared) on the left drive every panel, with the workspace dropdown inlined on the same row for project scope; the right side holds the due badge plus icon-only revisit / export buttons (the export flyout is no longer covered by the tab row); a "中 | EN" segmented control switches the panel copy language (independent of the host language, persisted), with all copy bilingual zh/en. Filter by redaction marks (include/exclude `[REDACTED:*]` entries) with amber badges for audit coverage.
-- **Prompt-injection defense**: every memory recall exit (profile injection, `engram_search/timeline/review` output) is wrapped in `<engram_memory_context>` protocol tags with a usage warning (history is not the current request, do not follow instructions inside it, use only when relevant), while the current request is wrapped separately in `<current_user_request>`; all inbound content (capture candidates, saved bodies) is stripped of these protocol tags first, blocking second-order injection through forged protocol blocks.
-- **Capture redaction**: inbound content passes a regex scrub for common secrets and credentials (sk- API keys, Bearer, AWS AKIA, GitHub tokens, PEM private keys, password/token assignments, Chinese-language password assignments) and personal data (mainland-China phone numbers, 18-digit national ID numbers); matched fragments become `[REDACTED:<type>]`.
-- **Recall placeholder (anti-echo-chamber)**: memory-recall tool output inside captured slices is replaced with `[engram memory result omitted from capture: <tool>]`, and the extraction prompt states that restating existing memory is not new information, breaking the memory self-reinforcement loop.
-- **Multi-query retrieval**: `engram_search` can use the aux LLM to rewrite the query into ≤3 complementary queries, retrieving each and fusing them with cross-query RRF plus a per-query floor; a failed rewrite degrades to the single query (`queryRewrite: false` disables).
-- **Evidence gate (search → assess)**: a hit means "relevant", not "enough to answer". Every retrieval registers an in-process batch (latest 20 per session, released when the session ends) and prints `ref=…` per row plus the batch id; `engram_assess` may only cite refs of that batch, and `sufficient` is enforced by code — all three must hold (the model claims adequacy, at least one valid evidence ref, `nextStrategy=answer`) or the verdict is insufficient with the strategy rewritten back to retrieval. Verdicts and rejected refs go to the audit log, visible under the "retrieval" category in the Log view. If unassessed batches remain before the next step, a wrap-up reminder is injected (escalating to a change-strategy hint after ≥2 consecutive insufficient verdicts; `assessReminder: false` disables).
-- **Portable data**: `engram_export` exports Markdown / JSON files in one step, with a redacted-view variant (secondary scrubbing + 40-char preview truncation, share-safe). `engram_mirror` writes an Obsidian / Logseq-friendly mirror directory (one Markdown per memory with YAML frontmatter + `[[id]]` backlinks), turning the palace into a human-readable private knowledge base.
-- **AGI Architecture Exploration (dsh-market · AGI Architecture)**: listed in dsh-market's "AGI Architecture Exploration" category as a cognitive-science reframe of agent long-term memory — memory palace (imagery labels + room placards), corridor topology (force-directed graph), closure questions (the ingest prompt nudges the model to ask clarifying questions), consolidation merging (heuristic dedup + cosine similarity) — sitting alongside MemGPT / Letta in the "agent memory architecture" conversation.
-
-## Tools (21, narrow parameters)
-
-| Tool | Purpose |
-|---|---|
-| `engram_save` | Save (**four-state write disposition**: a restatement merges into and reinforces the existing entry (`merge`, no new node), a suspected contradiction is written with a `contradicts` edge pending adjudication (`defer`), fresh content is written (`accept`), low-entropy content is dropped (`drop`); without embeddings everything is `accept`); `items` array saves ≤10 in one call with shared scrubbing and in-batch dedup, reporting each entry's disposition (`disposition`/`mergedInto`), one failure not blocking the rest (`count`/`items`/`failed` summary); `placard` attaches a marker (scored unique · distinctive · dated; low scores get a rewrite hint); `entities` carries entity mentions (resolved and linked into the entity lexicon with the memory) |
-| `engram_search` | Hybrid semantic + keyword retrieval (hits reinforce confidence); `room` routes through the corridor — search inside one room only; the top 5 hits carry same-room neighbouring-slot cues, and hit rows carry linked-entity tags; `asOf` does point-in-time lookback — only entity facts valid at that moment count, and hit rows carry point-in-time facts of linked entities at the row tail. Output rows carry `id=` and `ref=`; the tail carries the batch id |
-| `engram_facts` | Entity fact-chain read/write. Write mode takes a `facts` array (≤50 entries, each `entity`/`entityId` + `content`); `replaces` supersedes an old fact (soft-invalidated, history chain kept); bad entries land in `failed` without interrupting the rest. Query mode takes `entity` (by name; no entity is created on miss, ambiguity lists candidates, near misses suggest alternatives) or `entityId` (exact); `includeInvalid` returns the full chain including invalidated facts, `asOf` filters to facts valid at that point in time |
-| `engram_assess` | Evidence gate: before answering, judge whether the retrieved content suffices. Submit `batchId` + ≤8 `evidenceRefs` (only `ref=` values from that batch's output) + `missing` + `nextStrategy`; the code requires all three for `sufficient` (claimed adequate, at least one valid in-batch evidence ref, `nextStrategy=answer`), otherwise it rules insufficient and rewrites the strategy back to retrieval; refs from other batches are rejected and listed, and the verdict is written to the audit log |
-| `engram_timeline` | Timeline browsing: creation-time descending by default; `order: 'tour'` follows the fixed tour route's slot order instead (output carries palace coordinates, entries off-route sorted last) so the agent can re-walk the route |
-| `engram_episode_timeline` | Dedicated timeline for episodic memories: browse experiences by date range and source session, grouped by session (newest group first, entries chronological within; `sessionId` drills into one session; group headers carry the one-sentence session summary generated during capture or at session end). With `around` set to a memory id, it switches to temporal-neighborhood expansion — listing episodes within ± a window (`windowMinutes`, default 60) of the anchor's creation time, answering "what else happened around then" |
-| `engram_update` | Correct an entry (supersedes chain); can re-attach a `placard` marker too |
-| `engram_forget` | Forget (soft-delete, restorable) |
-| `engram_report` | Report an outcome (preferred for skill-kind entries): success +0.05 / failure -0.1, and persistently useless memories decay away naturally. With `grade` (0-5) it advances the SM-2 review schedule instead, acting as the self-rating entry point of retrieval practice |
-| `engram_review_queue` | Due-today queue: palace coordinates (`room#slot`), placard, and overdue days but **no body text** — recall first, reveal, then self-rate |
-| `engram_review` | Audit one entry: source chain, supersede chain, contradictions, operation log |
-| `engram_stats` | Whole-store statistics and signal ratio; carries the room directory (slots occupied per room plus the latest placard) |
-| `engram_examine` | Progressive disclosure: fetch full placards by id in batches (≤16 recommended; retrieve ids first) |
-| `engram_neighbors` | Corridor walk: from one room, follow 1-3 hops of relation edges and return a neighbour summary |
-| `engram_tour` | Tour routing: `mode=fixed` walks the whole palace in fixed slot order (constant route, sequential extraction); `mode=thematic` plans 3-7 stops around a theme |
-| `engram_audit_forgotten` | Closed-wing archaeology: list recent closed entries with their epitaphs to review whether past forgetting was sound |
-| `engram_ingest_history` | History backfill: distil past dsh sessions into the palace turn by turn (per-cwd stores; already-captured turns skipped). After each session's turns are captured, an auxiliary LLM generates a one-sentence session summary stored for timeline group headers (live sessions get the same summary at dispose once the final turn is captured; failures stay silent and never block). `dryRun` defaults to true (estimate only); pass `dryRun=false` to run. Use the Settings "Backfill" tab for large batches |
-| `engram_export` | Export Markdown / JSON files (data portability); `redactedView: true` emits a redacted view (secondary scrubbing + 40-char preview truncation, share-safe) |
-| `engram_distill` | Distill: merge same-topic clusters into higher-level rules (LLM) |
-| `engram_reflect` | Belief consolidation: abstract unconsolidated raw memories into proof-backed higher-level beliefs (four actions form/refine/still/refute; automatic vector-near-neighbor merging; raw memories stay active). Also drains the pending-consolidation queue created by reflect=suggest |
-| `engram_profile_edit` | Edit the curated profile block: `view` shows the current content and version history; `edit` writes a new version (optimistic lock via `expectedVersion`, conflicts fail loud); `rollback` restores a historical version (appended as a new version; history is never rewritten). The curated profile is injected ahead of the derived profile; every edit lands in the operation log, and the profile card on the panel's Today view shows version diffs |
+- **Full Russian support.** A string dictionary and a Russian pack covering the UI, the prompts and
+  the service messages. Upstream keeps its strings in the code in Chinese and English; there is no
+  Russian.
+- **The embedding model is a setting.** Model and backend are chosen by configuration, so a language
+  can be served by a suitable model without patching code. For Russian we use a multilingual MiniLM:
+  the previous model, trained on Chinese, gave a mean cosine of 0.786 with 382 of 703 record pairs
+  inside the merge/arbitration zone; the multilingual one gives 0.294 and no such pairs.
+- **Extraction no longer inverts a denial.** The prompt now requires exact meaning: if something is
+  denied in the text, the record keeps it denied. Measured: inverted records in 6 of 8 runs without
+  the clause and 3 of 8 with it.
+- **Extraction answers are no longer lost.** The answer budget went from 2000 to 4000 tokens:
+  reasoning and the answer share one limit, and at 2000 the answer sometimes came back empty — which
+  means a lost turn. Measured: empties in every arm at 2000, none in 16 calls at 4000.
+- **The right to refuse honestly.** When there is nothing worth remembering, the model returns an
+  explicit "nothing to remember" marker — a separate event in the log rather than an empty answer.
+- **Assorted fixes.** A settings hint pointed at a parameter that does not exist; one skip reason did
+  not match the panel dictionary and was never shown; a record could link to itself; room ids were
+  made neutral; extra secret-detection patterns were added.
 
 ## Configuration
 
-Optional configuration (cordis.yml):
+The block for a profile's `cordis.patch.yml`:
 
 ```yaml
 - id: dsh-engram
-  name: '@kenz1117/dsh-engram'
+  name: "@kenz1117/dsh-engram"
   config:
-    dbDir: '~/.dsh/engram'          # store and model-cache root directory
-    injectProfile: true             # inject the user memory profile at session start
-    profileTopN: 8                  # injection entry cap (1-64)
-    injectTokenBudget: 1024         # injection token budget (128-8192; CJK text counted at 1.5 tokens/char, other text at 4 chars/token; entries that still don't fit degrade to index lines)
-    injectItemBudgetStart: 160      # graduated budget: body chars for the first entry (40-2000, decayed per entry; truncate first before degrading)
-    injectItemBudgetDecay: 0.9      # graduated budget: per-entry decay factor (0.5-1)
-    injectItemBudgetFloor: 24       # graduated budget: per-entry body char floor (8-200, must not exceed start)
-    assessReminder: true            # evidence-gate nudge: inject an engram_assess reminder before the next step when unassessed search batches exist
-    modelCacheDir: '~/.dsh/engram/models'  # embedding model cache directory
-    hfEndpoint: 'https://huggingface.co'   # model download endpoint; set a mirror behind restricted networks
-    ingest: 'off'                   # automatic capture: off | light (user messages only, ≤2/turn) | eager (assistant messages too, ≤5/turn)
-    reflect: 'off'                  # automatic belief consolidation: off | suggest (only enqueue on session end; drain via engram_reflect) | auto (consolidate in the background after the session); engram_reflect stays manually callable in every mode
-    # provider and model must be given as a pair: aux-LLM route override for capture/distill (parsed from the session log by default)
-    # provider: 'deepseek'
-    # model: 'deepseek-v4-flash'
-    decayAfterDays: 30              # decay: last access older than this many days (also the recency-boost decay window)
-    decayImportanceBelow: 0.3       # decay: and importance below this → archive (restorable)
-    rankRecencyWeight: 0.2          # retrieval recency boost weight (0-2, 0 disables)
-    rankProofWeight: 0.1            # retrieval hit-count boost weight (0-2, 0 disables)
-    queryRewrite: true              # engram_search rewrites ≤3 queries via the aux LLM and fuses them with RRF (degrades to a single query on failure)
-    autoSlot: true                  # write-time auto-sloting (sort by kind into rooms, pin `room#slot`, register on the tour route)
-    reviewScheduling: true          # write-time enrolment in review scheduling (first due in 1 day; off = new entries never enter the SM-2 queue)
-    # History-backfill defaults (initial values for the tab and the tool; the total-turn cap is a hard ceiling you can only lower per run)
-    historyBackfillDays: 7                  # default time window in days; 0 = unlimited
-    historyBackfillMaxTurnsPerSession: 20   # default max turns per session
-    historyBackfillMaxTotalTurns: 200       # hard cap on turns per run (1-5000)
-    historyBackfillIncludeSubagents: false  # exclude subagent sessions by default
-    historyBackfillIncludeSeeded: false     # exclude seeded sessions by default
-    historyBackfillIncludeNoCwd: false      # exclude sessions without cwd by default (they can only go to the user store)
-    # Jev System-One adjudication (off by default; enabling requires an apiKey; failures silently degrade to the pure-rule four-way behavior)
-    # DEFER fuzzy-band three-way ruling: probability ≥ deferMergeAbove → same memory (merge), ≤ deferAcceptBelow → different (accept), in between stays defer;
-    # before a defer lands, contradiction edges are confirmed by Jev first (an edge is created only at probability ≥ contradictMinProbability).
-    jev:
-      enabled: false                        # switch
-      # apiKey: ''                          # Jev API key (Bearer auth)
-      # baseUrl: 'https://api.typesafe.ai'  # official endpoint, POST /v1/systemone
-      # model: 'jev-latest'                 # adjudication model name
-      # timeoutMs: 3000                     # per-request timeout in ms (1000-60000)
-      # deferMergeAbove: 0.85               # fuzzy-band probability ≥ this → same memory (merge)
-      # deferAcceptBelow: 0.15              # fuzzy-band probability ≤ this → different (accept)
-      # contradictMinProbability: 0.8       # contradiction confirmation probability ≥ this → create the contradicts edge
-    # The five fields above (enabled/apiKey/baseUrl/model/timeoutMs) can be overridden from the panel's "Jev" tab (stored at <dbDir>/jev-config.json, field-level override, effective immediately on save); the three thresholds are configurable only here
+    ingest: light
+    language: auto          # auto | ru | en | zh
+    embedder:
+      kind: local           # local | remote
+      localModel: Xenova/paraphrase-multilingual-MiniLM-L12-v2
+      localPooling: mean
 ```
 
-## How It Works
+- `ingest: light` — the gentle extraction mode described above.
+- `language: auto` — the language of the UI, prompts and service messages follows the DSH settings;
+  it can be pinned (`ru`, `en`, `zh`).
+- `embedder.kind: local` — the model runs locally and nothing leaves the machine. The model is
+  downloaded on first use, so network is needed once. `kind: remote` — compute embeddings on your own
+  or an external service; only the text of the record being compared is sent out.
 
-The plugin has a host half (Node) and a browser half (React):
+## Installation
 
-```
-Session agent                              Host half (Node)
-  │                                          │
-  ├─ every turn, first step ◀─────────────── ├─ user memory profile injection (plugin-source user snapshot)
-  ├─ engram_save / search / review … ──────▶ ├─ SQLite dual stores (user.db / project-<origin hash>.db)
-  │                                          ├─ FTS5 keyword track + local vector track, RRF fusion + ranking boost
-  ├─ engram_distill ───────────────────────▶ ├─ aux-LLM distillation (cluster merge → supersedes chain)
-  ├─ session end (reflect enabled) ────────▶ ├─ belief consolidation (unconsolidated evidence → observations: near-neighbor merge / stale review)
-  │                                          └─ automatic capture: session log → candidate facts (incl. the final turn at session end; ingest on)
-  └─ Settings "Memory Library" tab ◀──────── ─── loopback API /api/engram/* (writes verify loopback Origin)
-```
+1. Build: `pnpm install`, then `pnpm bundle`.
+2. Pack: `pnpm pack` — this produces `kenz1117-dsh-engram-<version>.tgz`.
+3. Install into a DSH profile: through the plugin menu (it accepts a tgz) or with
+   `pnpm --dir <profile> add <file>.tgz`.
+4. For local embeddings, install the model next to the plugin:
+   `pnpm --dir <profile> add @huggingface/transformers`.
+5. Append the configuration block (above) to `<profile>\cordis.patch.yml` and restart DSH.
 
-- **Dual-scope stores**: `user.db` shared globally; `project-<hash>.db` named by the normalized git origin URL hash (`git@github.com:a/b.git` and `https://github.com/a/b` share one store; worktrees resolve through the pointer to the main repo's origin); without git or an origin it falls back to a working-directory encoding, and legacy cwd-named stores are renamed in place at startup (if both exist, nothing moves and a warning is logged).
-- **Palace structure (the directory is the room, the path is the route)**: the **grand hall** is the standing core profile injected every turn (few and stable, always present); the **corridor** is the room directory in the profile plus the `engram_search room` parameter (pick the room, then search); **rooms** sort by kind (Fact Hall / Preference Pavilion / Decision Chamber / Episode Gallery / Skill Workshop) with capacity 9, overflowing into `<name>-2`; **placards** are each memory's `placard` marker, scored on the unique · distinctive · dated rule. Existing stores are slotted on first open (idempotent; opening a new room logs a warning so a human can name it).
-- **Automatic capture** (when `ingest` is on): each new turn's first step extracts candidate facts from the previous turn out of the session log; session end (`session/disposed`) captures the final turn with a 5-second timeout, and on failure/timeout a pending key lands in the operation log for the next session's first step to replay; captured (session, turn) pairs are idempotent. The read source is the session log; aux-call request auditing goes to the plugin's own operation log — unknown events are never appended to the session log. Candidates are written with low confidence and deduplicated by embedding.
-- **Provenance chain**: every memory records its source session, turn, and event seq, fully traceable via `engram_review`; the operation log table records every write/edit/forget/distill/decay.
-- **Offline embeddings**: the model downloads once (q8, ~50MB; mirror endpoint configurable), then runs fully offline; on failure the plugin keeps working and retrieval degrades to keyword-only with an explicit marker.
-- **UI localization**: the client half registers zh/en dictionaries through the host locale service and follows the host language setting live; data-level enums (status/kind) are mapped only in the display layer and stay English in storage.
+Building assumes a machine that has DeepSeek Harness: some dependencies are linked to it as peers.
+Verified on version `0.2.0-rc.2` with Node.js 24.21.0 — see the verification section. Detailed
+documentation of the internals is [with the author](README.upstream.en.md).
 
-## Web Management Panel (Settings → "Memory Library" tab)
+**If something does not work** — a separate file with typical problems and hints: [INSTALL.md](INSTALL.md)
+(in Russian: [INSTALL.ru.md](INSTALL.ru.md)). It is also written for an AI agent you ask to install the
+plugin: it says what may be changed and what may not.
 
-On profiles with a webServer (web, etc.), a "Memory Library" tab appears in **Settings** automatically (registered through the `settings.section` slot; the client half is a React component loaded from `lib/client.js` through the host module table): stat cards, filter by status/kind/content, inline detail and edit (through the supersede chain), forget/restore, Markdown/JSON export. Data flows through the loopback API `/api/engram/*` (writes verify the loopback Origin). Profiles without a webServer (headless, etc.) skip the panel; every other capability is unaffected.
+## What was verified and what was not
 
-Since v0.7.2 the Today view opens with a **"Due today" card**: each due memory is listed by cue only (`room#slot` · placard · overdue days), the body appears after pressing "Reveal placard", and you then self-rate it as Remembered / Hazy / Forgot (mapped to SM-2 grades 5/3/1) to advance the schedule. When reviews are due, a **red header badge** shows the count and jumps straight to that card; answering decrements it. The Palace list gains a **"By tour route"** sort toggle for walking memories in fixed slot order, and each row shows its palace coordinate.
+**Environment.** Built and verified on DeepSeek Harness `0.2.0-rc.2` (profile `desktop`), Node.js
+24.21.0. Older harness versions were not tested and we do not vouch for them: the plugin declares its
+compatibility without restrictions (it only needs Node 22.19+ or 24+), but that is the original
+project's condition, not our verification.
 
-Since v0.7.3 there is a dedicated **"Backfill" tab**: you choose every import rule (time window / turns per session / total turn budget / include subagent·seeded·no-cwd sessions), press "Re-estimate" to see candidate sessions and pending turns at zero cost (no LLM calls), then start. While running it shows progress (sessions / turns / written / skipped / failed) and can be paused at any time — finished turns are skipped by idempotency key, so starting again resumes. The same release rebuilds the panel as five views (Today / Palace / Corridor / Log / Backfill): the always-on nine-cell curator bar folds into a summary card at the top of Today (three headline metrics + last-7-days counts + health ring), and the front page keeps only what to do (due today, refurb) and what to reference (room directory, tour proposal); the corridor bird's-eye and the retrieval bench move to Corridor; the Log becomes a full page filterable by writes / capture / retrieval / organize; and each of the five rooms gets its own hue (fact blue / preference purple / decision teal / episode orange / skill magenta) across tags, the room directory, and corridor nodes. The exhibition list becomes compact rows: hairlines instead of cards, two-line body, action buttons revealed on hover (or keyboard focus) and wrapped below the body on narrow screens — roughly twice as many rows per screen. The refurb list stops scanning a palace with fewer than 8 active memories, avoiding small-store noise.
+**Platform.** Verified on **Windows only**. We have never run it on Linux or macOS. The sources contain
+no operating-system checks at all, so nothing obviously Windows-only is there — but that is reading the
+code, not a test.
 
-Since v0.7.4 the panel gets a second pass of polish: Today is rearranged to "tour proposal on the left, room directory + due today + refurb list on the right", with roomier rows in the tour proposal and the room directory; the Palace toolbar becomes one row of search + status + sort with the room filter as its own wrapping chip row; the Log merges its counts and category filter into a single toolbar and marks every row with a category dot (writes / capture / retrieval / organize); Backfill's rules, estimate, and run blocks are separated by hairlines instead of a tinted estimate box; and section spacing now comes solely from the container gap, removing the asymmetry where a heading hugged the card above but sat far from the one below.
+Verified by running in this project:
 
-Since v0.7.5: two underlying fixes plus one new capability. ① Profile-injection token estimation is now CJK-aware (CJK at 1.5 tokens/char, other text at 4 chars/token); the old "length / 4" undercounted Chinese by more than 4×, so Chinese users' injections routinely exceeded `injectTokenBudget` by 17%–50% — the trailing `+N more` counter line now counts against the budget too, so the injection never exceeds its promise. ② A new **evidence gate** `engram_assess` (17 tools): a hit means "relevant", not "enough to answer". `engram_search` registers an in-process evidence batch per call (latest 20 per session, released when the session ends) and prints `ref=` per row plus the batch id; `engram_assess` may only cite refs of that batch and `sufficient` is enforced by code — the model's claim, at least one valid evidence ref, and `nextStrategy=answer` must all hold, otherwise the verdict is insufficient with the strategy rewritten back to retrieval; refs from other batches are rejected and listed, and the verdict goes to the audit log (visible under the "retrieval" category of the Log). ③ The Log gains the missing op labels and detail formatting (consolidation / review answer / slot assigned / slots backfilled / room opened) instead of raw op names and JSON.
+- the interface string dictionary: 451 keys in each of the three languages, no discrepancies;
+- no Chinese text is left in the sources outside comments;
+- secret-detection patterns: 43 of 43;
+- extraction prompt measurements: 48 and 64 model calls in two series — the numbers are in the
+  changes section.
 
-Since v0.7.6 scopes stop being hardcoded and the project palace follows the workspace. ① **Per-candidate palace on capture**: extraction now emits `scope` — content tied to the current project/repo (tech choices, project conventions, architecture decisions) goes to that project store, while cross-project material (personal preferences, habits, the user's own history) goes to the private store. Live capture (previous turn, final turn on dispose, pending replay) and history backfill share the same rule, and backfill files each session into **its own cwd's** store. Idempotency keys (`ingest-done` / `ingest-pending`) stay in the private store, decoupled from where memories land, so live and backfill share one `(session, turn)` key set and never re-ingest across paths. ② **Project palace follows the workspace**: `GET /api/engram/workspaces` lists the selectable project palaces (host workspace registry → cwds seen in session headers → plugin process directory, deduped by store name, so several worktrees of one repo share a palace) and every project-scoped endpoint takes `?project=<dbName>` (unknown selectors answer 404); `engram_save/search` and friends resolve their project store from the current session's cwd. In the panel, a new row under the three scope segments shows the **active workspace chip plus a workspace picker** (default "follow the current workspace", pinnable to one workspace) and switching workspaces switches every view. ③ Without git, the project store name changes from "first 12 chars of cwd" (which collided for sibling directories) to a **full cwd sha256**, with the old store renamed on startup; and unloading the plugin now closes every store connection (no more locked `.db` files on Windows).
+Not verified: `pnpm test` and `pnpm typecheck` were not run in our environment, because the tree does
+not contain the DeepSeek Harness internals they need. If you build this yourself, start with them.
 
-Since v0.7.9 the memory-tiers phase begins. ① **Editable profile**: the new `engram_profile_edit` tool (19 tools) maintains the curated profile — the memory you explicitly vouch for — with `view` (current content + version history), `edit` (optimistic lock, conflicts fail loud), and `rollback` (restores a historical version as a new append; history is never rewritten); on injection the curated text runs ahead of the derived profile and claims the token budget first, every edit lands in the operation log, and the profile card on the panel's Today view shows version diffs. ② **Dedicated episode timeline**: the new `engram_episode_timeline` tool browses experiences by date range and source session, and with `around` set to an anchor id it switches to temporal-neighborhood expansion (episodes within ± a window of the anchor's moment), answering "what else happened around then". ③ **Panel "Episodes" view**: the memory-library tab gains a sixth view listing episodes grouped by session, with a "Nearby" action per entry that expands the temporal-neighborhood card in one click. ④ **Session-summary group headers**: history backfill asks an auxiliary LLM for a one-sentence summary after each session's turns are captured, and live sessions do the same once the final-turn capture on dispose succeeds (reusing the active route; failures stay silent) into a `session_summaries` table; timeline group headers carry it (visible in tool output, the API, and the panel header alike), so reviewing the timeline no longer means expanding every entry.
+## If you found a problem
 
-Since v0.7.10 the entity layer arrives (first batch of the temporal fact graph). ① **Entity extraction folded into the auxiliary call**: the auxiliary LLM output of automatic capture and `engram_save` carries `entities` mentions (name required, ≤80 chars; kind person/project/tool/concept/other; aliases optional), resolved by normalized name (trim + whitespace collapse + lowercase) against existing entities' names/aliases — a hit reuses the entity and refreshes its "last mentioned" stamp (the lexicon lists by it, descending), a miss creates one; memory↔entity links are written idempotently, stored in the same store as the source memory; entity-resolution failures silently skip the links and memories still land. ② **Seventh panel view "Entities"**: a paged lexicon (last-mentioned descending) with each entity's active linked-memory count, kind filters, substring search over names/aliases, and a "View" expansion per entity (entity record + recent linked memories); new `GET /api/engram/entities` and `GET /api/engram/entity` loopback routes. ③ **Retrieval and export carry entities**: `engram_search` hit entries carry linked entities (id + canonical name); the `engram_export` JSON view includes the entity lexicon. Schema v9 → v10 (the entities + node_entities tables, migrated automatically on startup; existing data preserved).
+Reports go to this repository's issues: [open one](https://github.com/dsv180/dsh-engram-dsv/issues/new/choose).
+The forms ask up front for what a report cannot be handled without: the harness version (`dsh --version`),
+the plugin version, the operating system, the embedder mode, reproduction steps and journal entries.
 
-Since v0.7.12 the plugin integrates **Jev System-One adjudication** (off by default, the `jev` block in yml) and adds an eighth panel view, **"Jev"**: the DEFER fuzzy-band three-way ruling and contradiction-edge confirmation can be delegated to Jev, and when Jev is unavailable (network failure, timeout, or a missing key) it silently falls back to the pure-rule four-way behavior without blocking writes. The panel overrides five yml fields — the switch, API key, endpoint, model, and timeout — stored at `<dbDir>/jev-config.json` (0600 file inside a 0700 directory) and effective immediately on save: the judge re-reads the override at every assembly point, no restart needed; the three thresholds stay yml-only advanced settings, shown read-only in the panel. Key safety: GET responses return only a mask (last 4 characters when longer than 8), the plaintext never leaves the process, and the input field is never back-filled. Turning the switch on without any key degrades to off automatically; a corrupted override file heals as an empty override, fixed by the next panel save. The Jev tab also gains a "Test connection" action (verify endpoint and model reachability right after filling in the key — unsaved input is tested as typed and never written to the override file) and a "Recent adjudications" card (the last 50 adjudications in this process: verdict, whether Jev took part, elapsed time, and the fallback reason; cleared on restart), so "why was this one deferred" no longer needs guesswork.
+Two rules we ask you to keep:
 
-v0.7.13 fixes the every-turn failure on DSH 0.1.7 (native session format v4) ([#5](https://github.com/kenz1117/dsh-engram/issues/5)): v4 retired the `kind: "plugin"` message-source wrapper (it is only rewritten to `plugin:<package>` when migrating historical v3 sessions; a native v4 event carrying it is refused by `assertV4MessageSources`), and the two injection sites (profile snapshot and assess reminder) used exactly that retired shape — with engram enabled, every new turn failed with `format v4 message requires a producer-owned source kind`. The sources are now producer-owned (`plugin:<package>`, matching what DSH's own v3→v4 migration produces; the other attribution fields are unchanged), and the internal auxiliary-call message source is unified the same way. The three read sites that skip our own injected snapshots relaxed from exact equality to a `plugin` prefix match, so both the v3 historical shape and the v4 shape are recognized and the plugin never ingests its own injections (self-pollution). 0.1.5 (v3 sessions) is unaffected; on 0.1.7 keep engram disabled until you upgrade to 0.7.13.
+- **If AI wrote the text, a human must verify it** and take responsibility for it. The form has a field
+  where you paste a confirmation phrase, and a question about which tools were used. This is not a
+  formality: we answer people, not generated text.
+- **No keys and no personal data.** Not in the text and not in screenshots: strip secrets and work data;
+  if the report is impossible without them, describe their shape rather than their value.
 
-## Development
+The full rules are in [AI_POLICY.md](AI_POLICY.md).
 
-```sh
-pnpm install            # postinstall symlinks @deepseek-ai/* peers from ../deepseek-harness (run pnpm install && pnpm run build in the harness repo first)
-pnpm test               # unit + composition tests; real-embedding e2e runs when ENGRAM_E2E=1 (HF_ENDPOINT configurable) and the network allows
-pnpm typecheck
-pnpm bundle
-```
-
-## Model Experience
-
-### Request context and condition
-
-#### What the model sees
-
-Each turn's first step appends a plugin-source user snapshot: `User memory profile (dsh-engram, cross-session) — Grand Hall (always present):` followed by the user-scope memory list (up to 8 entries within a 1024-token budget by default; over-budget entries degrade to `#id` index lines; `injectProfile: false` disables), each line carrying its palace coordinate (`room#slot`); when reviews are due, a line reporting how many memories are due is appended. Tool results are plain text lines (with `id=`, scope/kind annotations, slot coordinates, contradiction-candidate hints, and degradation notes). Automatic capture and distillation each make one aux-LLM call (billed independently of the main conversation path, with purpose attribution).
-
-#### Token effect
-
-Profile injection is a conditional fixed cost (bounded by both the entry cap and the token budget); the tool schemas are a standing cost (20 narrow-parameter tools).
-
-#### KV Cache effect
-
-Profile text changes as the memory store changes — changes only land at turn boundaries in new sessions or after memory updates; within a session the prefix stays stable while the injected content is unchanged; tool schemas are constant and never affect the prefix.
-
-## Known Limitations and Deferred Work
-
-- **Contradiction checks are LLM-free by default** — writes report candidates by vector similarity (≥0.88) and create edges; semantic-contradiction confirmation is left to model/user adjudication and distillation. Optional Jev adjudication (the panel's "Jev" tab or the yml `jev` block) routes the fuzzy band and contradiction edges to an external judge, falling back to this default whenever Jev is unavailable.
-- **Memories written during embedder degradation have no vectors** — memories written before the model is ready do not participate in the semantic track; after semantics come online run `pnpm backfill` once to backfill existing vectors (after `pnpm build` has warmed the model cache; `HF_ENDPOINT` configurable).
+Bugs in the engine itself (the palace, retrieval, the tools) are better reported
+[upstream](https://github.com/kenz1117/dsh-engram): what belongs here is what concerns this fork —
+Russian, embedder settings, installation.
 
 ## Roadmap
 
-The palace IA (position-as-index / fixed routes / retrieval practice) is the indexing and audit skeleton; it evolves toward AI-native memory tiers and a temporal fact graph in three phases. Actual releases increment by 0.0.1; the phase labels are planning codenames only:
+The project works but is not finished. This list is kept honestly, in the order we intend:
 
-- **Phase 1 · Flywheel closure** (done, v0.7.8): four-state write disposition (ACCEPT new / MERGE reinforce-in-place / DROP low-entropy / DEFER contradiction-pending — `engram_save` and capture return it per item); graduated decaying injection budget (160 chars for the first entry, ×0.9 per subsequent entry, floor 24, all configurable); redaction extended to Chinese passwords, national ID numbers, and phone numbers; evidence-gate wrap-up reminder (inject a reminder when a turn ends with unassessed search batches).
-- **Phase 2 · Memory tiers**: editable profile (**done, v0.7.9**: `engram_profile_edit` tool with version-chain rollback and panel diff audit, following Letta's core-memory model); a dedicated timeline index for episode memories (**done, v0.7.9**: `engram_episode_timeline` tool with date ranges, per-session grouping, temporal-neighborhood expansion, and a dedicated episode index; the panel "Episodes" view plus capture-time and live-session summary group headers landed in the same batch); automated belief consolidation (**done, v0.7.14**: the observations table (schema v12) with evidence chains and proof counts; triggered on session end via `reflect: suggest|auto`; near-neighbor merging continuously refines one belief; stale freshness review with the four actions form/refine/still/refute; active beliefs are injected with the profile; manual `engram_distill` stays available); configurable room capacity and placard scoring (defaults unchanged).
-- **Phase 3 · Temporal fact graph**: entity table with write-time extraction and resolution (**done, v0.7.10**: the entities + node_entities tables; capture/save auxiliary output carries entity mentions resolved on write; `engram_search` hits carry entity tags; panel "Entities" view + entity loopback routes); fact-level triples carrying `valid_at` / `invalid_at` windows with soft-invalidated conflicts (**done, v0.7.11**: the facts table (entity + time window + `replaced_by` + source memory), capture auxiliary output carries facts matched into the table by normalized entity name, `replaces` declares the soft-invalidation chain, `engram_search` gains `asOf` point-in-time lookback, the `engram_facts` tool reads and writes fact chains, and the panel entity page shows fact-chain details); automatic supports / refines / related edge creation; a LoCoMo-zh evaluation subset in CI as a retrieval-quality regression gate (deterministic Recall@k / MRR metrics).
+1. **Clear the technical debt.** Some decisions were taken deliberately and recorded as debt — they
+   need closing rather than forgetting.
+2. **More embedding models.** A multilingual MiniLM and a remote endpoint are verified so far; we
+   want ready recipes for other languages and models, with measurements.
+3. **Retry on an empty extraction answer.** The budget was raised, but there is no retry: if
+   reasoning eats even 4000 tokens, the turn is lost silently.
+4. **Verify a record against its source.** Instead of prohibitions in the prompt, compare the
+   resulting record with the text of the turn. That treats inverted meaning at its root rather than by
+   wording.
+5. **Publish the measurement harness.** Our probes in a de-identified form, so the numbers can be
+   re-checked instead of taken on trust.
+6. **Send the changes upstream** — as a report or a pull request.
+7. **Russian documentation** for the memory panel and the palace.
 
-## Acknowledgements
+## Licence and acknowledgements
 
-Thanks to the community contributors who made this project better:
+MIT, © 2026 KenZ (kenz1117) — the licence is kept unchanged, see [LICENSE](LICENSE).
 
-- **[@lujfsd](https://github.com/lujfsd)** — [PR #2](https://github.com/kenz1117/dsh-engram/pull/2): adapting to the new dsh `sessionPersistence` read-handle API (`load()` was removed upstream), per-candidate scope on capture (the extraction output now carries `scope`), the project palace following the active workspace (`GET /api/engram/workspaces` plus the panel workspace picker), and renaming the no-git store key from "first 12 chars of cwd" to a full cwd sha256 (fixing collisions between sibling directories) — with 17 new tests and two design documents.
-- **[@f0909172434](https://github.com/f0909172434)** — [PR #4](https://github.com/kenz1117/dsh-engram/pull/4): governance for ambiguous legacy database ownership — the eager rename now writes a JSON tombstone sidecar (`<old db>.migrated-to`, created exclusively with 0o600, recording `migratedTo` / `claimedByCwd` / `claimedAt`), and a later workspace hitting the same legacy name receives a warning naming the prior claim; a new `legacyMigration` config (`eager` migrates automatically by default / `conservative` leaves old databases untouched with a warning), with migration outcomes refined into `renamed` / `kept-both` / `deferred` / `already-migrated`. Ships with tests.
+Original project: [kenz1117/dsh-engram](https://github.com/kenz1117/dsh-engram). The architecture, the
+engine, the tools and the documentation are the author's work. This fork adds the Russian language,
+configurable embedding model and the fixes listed above.
 
-## License
-
-[MIT](LICENSE) © 2026 KenZ (kenz1117)
-
-### Legacy project database migration
-
-`legacyMigration: eager` (default) keeps the automatic rename when only the old
-filename exists. A private JSON sidecar, `<old filename>.migrated-to`, records
-`migratedTo`, `claimedByCwd`, and `claimedAt` (ISO timestamp). A later workspace
-with the same truncated old filename receives a warning naming the prior claim.
-The record describes a file migration, **not proof of per-memory ownership**.
-Same-origin worktrees continue to share the same new database.
-
-Set `legacyMigration: conservative` in the plugin's `cordis.yml` config **before
-upgrading/opening old data** to leave the old database untouched. Engram warns
-with the old and proposed filenames and opens a new, initially empty project
-store, so the session can continue. If old and new files coexist, neither is
-moved or merged, regardless of policy. This mode cannot undo an earlier migration.
-
-Before manually resolving ownership, stop all hosts using the directory and back
-up databases and their SQLite sidecars. Review/export the relevant memories with
-`engram_review` / `engram_export`. The new store may already contain fresh data:
-**do not blindly move the old file over it**. Audit both stores and reassign data
-manually; no automatic classification, split, merge, or deletion is performed.
-
-The pointer includes a local workspace path; treat it as private metadata.
-Malformed/unreadable pointers stop migration rather than silently losing the
-claim history. Restoring an old file beside a pointer requires manual review.
-Rename and pointer creation are separate filesystem operations, not a transaction
-or cross-process lock. A pointer-write failure is reported with both filenames;
-the database has already moved and is not automatically rolled back. After a
-crash between the operations, inspect both paths before retrying. Existing
-migrations performed before this feature have no retroactive pointer.
+The changes in this fork were made by the repository owner with the help of an AI assistant. Every
+number and claim in this README comes from running the project, not from taking anyone's word.

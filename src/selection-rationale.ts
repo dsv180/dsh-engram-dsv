@@ -5,6 +5,7 @@
  * @module @kenz1117/dsh-engram/selection-rationale
  */
 
+import { message } from './i18n/messages.ts'
 import type { MemoryRecord } from './types.ts'
 
 /** 单条记忆的入选原因（可叠加）。 */
@@ -16,14 +17,14 @@ export function buildSelectionRationale(records: readonly MemoryRecord[]): strin
   const now = Date.now()
   const lines: string[] = [
     '<engram_selection_rationale>',
-    `本轮画像共 ${String(records.length)} 条记忆，挑选理由如下：`,
+    message('core.rationaleHeader', { count: records.length }),
     '',
   ]
   for (const record of records) {
     const reasons = classifyRecord(record, now)
     lines.push(`- #${record.id.slice(0, 8)} [${record.kind}/${record.scope}] ${reasonsLabel(reasons)}：${record.content.slice(0, 40)}${record.content.length > 40 ? '…' : ''}`)
   }
-  lines.push('', '如果某条理由错误，请通过 engram_report 反馈，越准的画像越能帮你。', '</engram_selection_rationale>')
+  lines.push('', message('core.rationaleFooter'), '</engram_selection_rationale>')
   return lines.join('\n')
 }
 
@@ -49,12 +50,12 @@ function classifyRecord(record: MemoryRecord, now: number): Reason[] {
 
 /** 中文/英文 reason 标签。 */
 function reasonsLabel(reasons: readonly Reason[]): string {
-  if (reasons.length === 0) return '基础入选'
+  if (reasons.length === 0) return message('core.reasonBase')
   const LABELS: Record<Reason, string> = {
-    recent: '近期被参观',
-    bright: '地标明亮',
-    'corridor-hit': '走廊常客',
-    'strong-evidence': '管家验证有效',
+    recent: message('core.reasonRecent'),
+    bright: message('core.reasonBright'),
+    'corridor-hit': message('core.reasonCorridorHit'),
+    'strong-evidence': message('core.reasonStrongEvidence'),
   }
   return reasons.map(r => LABELS[r]).join(' / ')
 }
