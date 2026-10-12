@@ -614,6 +614,34 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     })
   void embedder
 
+  // Какая модель поднялась, снаружи не видно: ни конфигурация, ни файлы на диске этого не
+  // показывают. Пишем в журнал операций и сверяем размерность векторов — сравнение идёт по
+  // меньшей длине, поэтому смесь моделей не падает, а тихо портит поиск.
+  void embedder.then(async ready => {
+    if (ready === undefined) return
+    try {
+      const dim = (await ready.embed(['probe']))[0]?.length ?? 0
+      const dims = new Set<number>()
+      for (const [scope, name] of [['user', 'user.db'], ['project', identity.dbName]] as const) {
+        if (!existsSync(join(resolved.dbDir, name))) continue
+        for (const other of await (await openStore(scope)).embeddingDimensions()) dims.add(other)
+      }
+      const foreign = [...dims].filter(other => other !== dim).sort((a, b) => a - b)
+      if (existsSync(join(resolved.dbDir, 'user.db'))) {
+        const auditStore = await openStore('user')
+        await auditStore.audit('embedder-ready', 'AUX', JSON.stringify({ model: ready.model, dim }))
+        if (foreign.length > 0) {
+          await auditStore.audit('embedder-mismatch', 'AUX', JSON.stringify({ dim, foreign }))
+        }
+      }
+      if (foreign.length > 0) {
+        console.warn(message('core.warnEmbedderModelMismatch', { dim: String(dim), found: foreign.join(', ') }))
+      }
+    } catch {
+      // Вспомогательная проверка: её сбой не должен мешать работе плагина.
+    }
+  })
+
   // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
   const logIngestRequest = (data: IngestRequestEventData): void => {
     void openStore('user').then(store => store.audit('ingest-request', 'AUX', JSON.stringify(data))).catch(() => { /* 审计失败不影响摄取 */ })

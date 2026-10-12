@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
-import { ENGRAM_MODEL_ID } from './embedder/local.ts'
+import { ENGRAM_MODEL_ID, ENGRAM_MULTILINGUAL_MODEL_ID } from './embedder/local.ts'
 import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
@@ -36,7 +36,7 @@ export type EmbedderPooling = 'mean' | 'cls'
 export interface EmbedderConfig {
   /** Бэкенд; по умолчанию local — поведение прежних версий сохраняется. */
   kind?: EmbedderKind
-  /** local: идентификатор модели transformers.js; по умолчанию Xenova/bge-small-zh-v1.5. */
+  /** local: идентификатор модели transformers.js; не задан — выбирается по языку (китайский → bge-small-zh, остальные → многоязычная). */
   localModel?: string
   /** local: способ пулинга; по умолчанию mean. */
   localPooling?: EmbedderPooling
@@ -436,6 +436,11 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     }
   }
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
+  const language = resolveLanguage(config.language ?? 'auto')
+  // Модель по умолчанию выбирается по языку вывода: китайская bge на русских и английских
+  // текстах бесполезна, поэтому многоязычная подставляется сама, без действий человека.
+  // Явно заданная embedder.localModel всегда старше этой подстановки.
+  const defaultLocalModel = language === 'zh' ? ENGRAM_MODEL_ID : ENGRAM_MULTILINGUAL_MODEL_ID
   return {
     dbDir,
     legacyMigration: config.legacyMigration ?? 'eager',
@@ -445,7 +450,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
     reflect: config.reflect ?? 'off',
-    language: resolveLanguage(config.language ?? 'auto'),
+    language,
     redactWords: config.redactWords ?? [],
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
@@ -480,7 +485,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     },
     embedder: {
       kind: embedderKind,
-      localModel: embedderConfig?.localModel ?? ENGRAM_MODEL_ID,
+      localModel: embedderConfig?.localModel ?? defaultLocalModel,
       localPooling: embedderConfig?.localPooling ?? 'mean',
       remote: embedderKind === 'remote' && embedderConfig?.model !== undefined && embedderConfig.baseUrl !== undefined
         ? {

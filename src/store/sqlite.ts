@@ -1267,6 +1267,21 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
     },
 
+    async embeddingDimensions(): Promise<readonly number[]> {
+      const dims = new Set<number>()
+      for (const sql of [
+        'SELECT DISTINCT length(embedding) / 4 AS dim FROM nodes WHERE embedding IS NOT NULL',
+        'SELECT DISTINCT length(embedding) / 4 AS dim FROM observations WHERE embedding IS NOT NULL',
+      ]) {
+        try {
+          for (const row of db.prepare(sql).all() as unknown as { dim: number }[]) dims.add(row.dim)
+        } catch {
+          // Таблицы может не быть в старой схеме: проверка размерности не должна мешать открытию библиотеки.
+        }
+      }
+      return [...dims].sort((a, b) => a - b)
+    },
+
     async exportAll(): Promise<ExportData> {
       const records = (sqlAllNodes.all() as unknown as NodeRow[]).map(rowToRecord)
       const edgeRows = sqlAllEdges.all() as unknown as { from_id: string; to_id: string; type: string; created_at: number }[]

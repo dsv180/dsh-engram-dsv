@@ -14,8 +14,17 @@ import { EngramError } from '../types.ts'
 import { message } from '../i18n/messages.ts'
 import type { EngramEmbedder } from './interface.ts'
 
-/** 模型标识（bge 中文小模型，512 维输出）；保留为默认值以兼容旧配置。 */
+/** Идентификатор модели по умолчанию (китайская bge-small, 512 измерений); оставлен для совместимости с прежними конфигурациями. */
 export const ENGRAM_MODEL_ID = 'Xenova/bge-small-zh-v1.5'
+
+/**
+ * Многоязычная модель (384 измерения, пулинг mean).
+ *
+ * Китайская bge-small-zh на русских и английских текстах работает плохо: она обучалась
+ * на китайском. Поэтому для всех языков, кроме китайского, по умолчанию берётся эта
+ * модель — выбор модели не то, чем стоит занимать человека.
+ */
+export const ENGRAM_MULTILINGUAL_MODEL_ID = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2'
 
 /**
  * Способ сведения токенов в один вектор.

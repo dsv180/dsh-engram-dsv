@@ -125,6 +125,14 @@ export interface EngramStore {
   recentOps(limit: number): Promise<OperationLogRow[]>
   /** 全库统计。 */
   stats(): Promise<StoreStats>
+  /**
+   * Размерности векторов, какие встречаются в библиотеке (записи и убеждения).
+   *
+   * Нужна для защиты от смены модели эмбеддингов: сравнение идёт по меньшей длине,
+   * поэтому смесь размерностей не падает, а тихо портит поиск. Возвращаются по
+   * возрастанию; пустой массив — векторов нет вовсе.
+   */
+  embeddingDimensions(): Promise<readonly number[]>
   /** 全库导出（任意状态条目 + 全部边），数据可携带。 */
   exportAll(): Promise<ExportData>
   /** 衰减：满足条件的 active 条目转 archived，返回归档数量。 */
