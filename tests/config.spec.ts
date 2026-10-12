@@ -111,35 +111,41 @@ describe('resolveConfig', () => {
 })
 
 describe('jev config', () => {
-  it('缺省关闭，端点/模型/三阈值落默认值', () => {
+  it('по умолчанию выключен: провайдер и модель не выбраны, три порога по умолчанию', () => {
     const resolved = resolveConfig({}).jev
     expect(resolved.enabled).toBe(false)
-    expect(resolved.apiKey).toBeUndefined()
-    expect(resolved.baseUrl).toBe('https://api.typesafe.ai')
-    expect(resolved.model).toBe('jev-latest')
+    expect(resolved.provider).toBeUndefined()
+    expect(resolved.model).toBeUndefined()
+    expect(resolved.endpoint).toBeUndefined()
     expect(resolved.timeoutMs).toBe(3000)
     expect(resolved.deferMergeAbove).toBe(0.85)
     expect(resolved.deferAcceptBelow).toBe(0.15)
     expect(resolved.contradictMinProbability).toBe(0.8)
   })
 
-  it('显式子配置全量透传（enabled=false 时 apiKey 可缺）', () => {
+  it('явная конфигурация проходит целиком (адрес и ключ здесь больше не задаются)', () => {
     const resolved = resolveConfig({
-      jev: { enabled: true, apiKey: 'k', baseUrl: 'https://j.example', model: 'jev-x', timeoutMs: 5000, deferMergeAbove: 0.9, deferAcceptBelow: 0.1, contradictMinProbability: 0.9 },
+      jev: { enabled: true, provider: 'aitunnel', model: 'jev-x', endpoint: 'https://j.example/v1/systemone', timeoutMs: 5000, deferMergeAbove: 0.9, deferAcceptBelow: 0.1, contradictMinProbability: 0.9 },
     }).jev
     expect(resolved.enabled).toBe(true)
-    expect(resolved.apiKey).toBe('k')
-    expect(resolved.baseUrl).toBe('https://j.example')
+    expect(resolved.provider).toBe('aitunnel')
     expect(resolved.model).toBe('jev-x')
+    expect(resolved.endpoint).toBe('https://j.example/v1/systemone')
     expect(resolved.timeoutMs).toBe(5000)
     expect(resolved.deferMergeAbove).toBe(0.9)
     expect(resolved.deferAcceptBelow).toBe(0.1)
     expect(resolved.contradictMinProbability).toBe(0.9)
   })
 
-  it('enabled=true 缺 apiKey loud 失败', () => {
-    expect(() => resolveConfig({ jev: { enabled: true } })).toThrow(/jev\.apiKey/)
-    expect(() => resolveConfig({ jev: { enabled: true, apiKey: '' } })).toThrow(/jev\.apiKey/)
+  it('провайдер или модель — пустая строка: loud-ошибка', () => {
+    expect(() => resolveConfig({ jev: { provider: '' } })).toThrow(/jev\.provider/)
+    expect(() => resolveConfig({ jev: { provider: '   ' } })).toThrow(/jev\.provider/)
+    expect(() => resolveConfig({ jev: { model: '' } })).toThrow(/jev\.model/)
+  })
+
+  it('адрес не http(s): loud-ошибка', () => {
+    expect(() => resolveConfig({ jev: { endpoint: 'not-a-url' } })).toThrow(/jev\.endpoint/)
+    expect(() => resolveConfig({ jev: { endpoint: 'ftp://j.example' } })).toThrow(/jev\.endpoint/)
   })
 
   it('enabled 非布尔 loud 失败', () => {

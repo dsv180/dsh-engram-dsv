@@ -61,6 +61,33 @@ const llmDouble = {
       // 模型清单（面板「辅助模型」下拉的数据源）。
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
       listModels: async () => [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
+      // Настраиваемые провайдеры: мост Jev берёт отсюда id провайдера и путь к его настройкам.
+      listConfigurableProviders: () => [{
+        provider: 'aitunnel',
+        displayName: 'AITunnel',
+        settingsNs: 'llm-pi-ai',
+        settingsPath: ['providers', 'aitunnel'],
+      }],
+    } as never)
+    // Настройки провайдера и хранилище секретов: адрес и ключ Jev берёт только отсюда,
+    // сам он их не хранит — это и проверяют тесты ниже.
+    ctx.provide('settings', {
+      describe: async () => [{
+        ns: 'llm-pi-ai',
+        value: {
+          providers: {
+            aitunnel: {
+              displayName: 'AITunnel',
+              apiKeyEnv: 'AITUNNEL_API_KEY',
+              baseURL: 'https://api.aitunnel.ru/v1',
+              models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+            },
+          },
+        },
+      }],
+    } as never)
+    ctx.provide('credentials', {
+      resolve: async (ref: string) => (ref === 'AITUNNEL_API_KEY' ? { value: 'host-provider-key' } : undefined),
     } as never)
   },
 }
@@ -375,29 +402,39 @@ describe('dsh-engram real Loader composition', () => {
     expect(notFound.status).toBe(404)
   })
 
-  it('Jev 配置 HTTP 链路：GET 只回掩码，POST 落覆盖文件即时生效，非法字段整体 400', { timeout: 60_000 }, async () => {
+  it('Jev 配置 HTTP 链路：GET 回宿主提供商清单，POST 落覆盖文件即时生效，非法字段整体 400', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // 初态：无 yml jev 块、无覆盖文件 → 关闭且无密钥；视图全量字段固定（密钥明文不出现）。
+    // Провайдер, его адрес и модели приходят от хоста; ключа в ответе нет и быть не должно.
+    const providerEntry = {
+      id: 'aitunnel',
+      displayName: 'AITunnel',
+      baseUrl: 'https://api.aitunnel.ru/v1',
+      endpoint: 'https://api.aitunnel.ru/v1/systemone',
+      models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+    }
+
+    // 初态：无 yml jev 块、无覆盖文件 → 关闭且未选择提供商。
     const initial = await call(port, 'GET', '/api/engram/jev-config')
     expect(initial.status).toBe(200)
     expect(initial.json).toEqual({
       enabled: false,
-      baseUrl: 'https://api.typesafe.ai',
-      model: 'jev-latest',
+      provider: undefined,
+      model: undefined,
+      endpoint: undefined,
       timeoutMs: 3000,
-      apiKeySet: false,
-      apiKeyMask: null,
       deferMergeAbove: 0.85,
       deferAcceptBelow: 0.15,
       contradictMinProbability: 0.8,
+      providers: [providerEntry],
     })
 
-    // 保存：面板开关 + 密钥 + 超时覆盖；响应视图掩码显尾 4 位（长度 > 8）。
+    // Сохранение: выбор провайдера и модели плюс тайм-аут; ключ сохранять нечего — он у хоста.
     const saved = await call(port, 'POST', '/api/engram/jev-config', {
       enabled: true,
-      apiKey: 'panel-key-1234567890',
+      provider: 'aitunnel',
+      model: 'jev-1.13',
       timeoutMs: 5000,
     })
     expect(saved.status).toBe(200)
@@ -405,22 +442,22 @@ describe('dsh-engram real Loader composition', () => {
       ok: true,
       view: {
         enabled: true,
-        baseUrl: 'https://api.typesafe.ai',
-        model: 'jev-latest',
+        provider: 'aitunnel',
+        model: 'jev-1.13',
+        endpoint: undefined,
         timeoutMs: 5000,
-        apiKeySet: true,
-        apiKeyMask: '****7890',
         deferMergeAbove: 0.85,
         deferAcceptBelow: 0.15,
         contradictMinProbability: 0.8,
+        providers: [providerEntry],
       },
     })
 
-    // 再 GET：掩码视图（非明文），覆盖文件落在 dbDir 且 0600。
+    // Повторный GET отдаёт тот же выбор и по-прежнему ни одного секрета.
     const reread = await call(port, 'GET', '/api/engram/jev-config')
     expect(reread.status).toBe(200)
-    expect((reread.json as { apiKeySet: boolean; apiKeyMask: string }).apiKeySet).toBe(true)
-    expect(reread.text).not.toContain('panel-key-1234567890')
+    expect((reread.json as { provider: string }).provider).toBe('aitunnel')
+    expect(reread.text).not.toContain('host-provider-key')
     expect(root).toBeDefined()
     const overridePath = join(root!, 'engram', 'jev-config.json')
     expect(existsSync(overridePath)).toBe(true)
@@ -440,8 +477,14 @@ describe('dsh-engram real Loader composition', () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // 默认 baseUrl 指向外网 → fetch 替身确定性拒绝；testJevConnection 不抛错，失败原因进 error 字段。
-    const offline = await call(port, 'POST', '/api/engram/jev-test', {})
+    // Без выбора провайдера запрос не уходит наружу — причина возвращается структурно.
+    const unselected = await call(port, 'POST', '/api/engram/jev-test', {})
+    expect(unselected.status).toBe(200)
+    expect((unselected.json as { ok: boolean }).ok).toBe(false)
+
+    // Выбранный провайдер даёт внешний адрес → заглушка fetch детерминированно отказывает;
+    // testJevConnection не бросает, причина уходит в поле error.
+    const offline = await call(port, 'POST', '/api/engram/jev-test', { provider: 'aitunnel', model: 'jev-1.13' })
     expect(offline.status).toBe(200)
     const offlineBody = offline.json as { ok: boolean; elapsedMs: number; probability: number | undefined; error: string }
     expect(offlineBody.ok).toBe(false)
@@ -449,8 +492,12 @@ describe('dsh-engram real Loader composition', () => {
     expect(offlineBody.probability).toBeUndefined()
     expect(offlineBody.elapsedMs).toBeTypeOf('number')
 
-    // baseUrl 覆盖为回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
-    const refused = await call(port, 'POST', '/api/engram/jev-test', { baseUrl: 'http://127.0.0.1:1', model: 'jev-latest' })
+    // Адрес из поля настроек перекрывает шаблон:回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
+    const refused = await call(port, 'POST', '/api/engram/jev-test', {
+      provider: 'aitunnel',
+      model: 'jev-1.13',
+      endpoint: 'http://127.0.0.1:1/v1/systemone',
+    })
     expect(refused.status).toBe(200)
     expect((refused.json as { ok: boolean }).ok).toBe(false)
 

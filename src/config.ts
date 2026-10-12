@@ -20,14 +20,14 @@ export type ReflectModeConfig = 'off' | 'suggest' | 'auto'
 
 /** Jev System One 模型子配置：DEFER 模糊带自动裁决与矛盾边确认；默认关闭时四态判定保持纯规则。 */
 export interface JevConfig {
-  /** 是否启用 Jev 裁决；默认 false。显式 true 时 apiKey 必填，缺失在加载期报错。 */
+  /** 是否启用 Jev 裁决；默认 false。 */
   enabled?: boolean
-  /** Jev API 密钥（Bearer 认证）。 */
-  apiKey?: string
-  /** Jev API 端点根地址；默认 https://api.typesafe.ai。 */
-  baseUrl?: string
-  /** Jev 模型名；默认 jev-latest。 */
+  /** Провайдер DSH (ключ в `providers` плагина `llm-pi-ai`): адрес и ключ берутся у хоста. */
+  provider?: string
+  /** Модель провайдера (id из его списка моделей); принадлежность Jev проверяется тестом связи. */
   model?: string
+  /** Полный адрес эндпоинта System One; пусто = вывести шаблоном из baseURL провайдера. */
+  endpoint?: string
   /** 单次裁决请求的超时毫秒数；默认 3000。 */
   timeoutMs?: number
   /** 模糊带裁决：Noul 概率高于该值判「同一条」并自动 merge；默认 0.85。 */
@@ -131,9 +131,11 @@ export interface ResolvedHistoryRules {
 /** 解析后的 Jev 子配置（默认值已落地，实现不再判空）。 */
 export interface ResolvedJevConfig {
   readonly enabled: boolean
-  readonly apiKey: string | undefined
-  readonly baseUrl: string
-  readonly model: string
+  /** Выбранный провайдер DSH; undefined = не выбран, Jev молча уходит в чистые правила. */
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  /** Адрес эндпоинта из настроек; undefined = вывести шаблоном из провайдера. */
+  readonly endpoint: string | undefined
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
@@ -221,9 +223,9 @@ export const Config: z<EngramConfig> = z.object({
   historyBackfillIncludeNoCwd: z.boolean(),
   jev: z.object({
     enabled: z.boolean(),
-    apiKey: z.string(),
-    baseUrl: z.string(),
+    provider: z.string(),
     model: z.string(),
+    endpoint: z.string(),
     timeoutMs: z.number().step(1).min(1000).max(60000),
     deferMergeAbove: z.number().min(0.5).max(1),
     deferAcceptBelow: z.number().min(0).max(0.5),
@@ -312,8 +314,22 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     if (jev.enabled !== undefined && typeof jev.enabled !== 'boolean') {
       throw new Error('dsh-engram: jev.enabled must be a boolean')
     }
-    if (jev.enabled === true && (jev.apiKey === undefined || jev.apiKey === '')) {
-      throw new Error('dsh-engram: jev.enabled=true requires jev.apiKey')
+    if (jev.provider !== undefined && (typeof jev.provider !== 'string' || jev.provider.trim() === '')) {
+      throw new Error('dsh-engram: jev.provider must be a non-empty string')
+    }
+    if (jev.model !== undefined && (typeof jev.model !== 'string' || jev.model.trim() === '')) {
+      throw new Error('dsh-engram: jev.model must be a non-empty string')
+    }
+    if (jev.endpoint !== undefined) {
+      let scheme = ''
+      try {
+        scheme = new URL(jev.endpoint).protocol
+      } catch {
+        throw new Error('dsh-engram: jev.endpoint must be an http(s) URL')
+      }
+      if (scheme !== 'https:' && scheme !== 'http:') {
+        throw new Error('dsh-engram: jev.endpoint must be an http(s) URL')
+      }
     }
     if (jev.timeoutMs !== undefined && (!Number.isInteger(jev.timeoutMs) || jev.timeoutMs < 1000 || jev.timeoutMs > 60000)) {
       throw new Error('dsh-engram: jev.timeoutMs must be an integer in [1000, 60000]')
@@ -366,9 +382,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     },
     jev: {
       enabled: config.jev?.enabled ?? false,
-      apiKey: config.jev?.apiKey,
-      baseUrl: config.jev?.baseUrl ?? 'https://api.typesafe.ai',
-      model: config.jev?.model ?? 'jev-latest',
+      provider: config.jev?.provider,
+      model: config.jev?.model,
+      endpoint: config.jev?.endpoint,
       timeoutMs: config.jev?.timeoutMs ?? 3000,
       deferMergeAbove: config.jev?.deferMergeAbove ?? 0.85,
       deferAcceptBelow: config.jev?.deferAcceptBelow ?? 0.15,

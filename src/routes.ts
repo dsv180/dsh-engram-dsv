@@ -21,10 +21,11 @@ import type { ProjectPalaceKind } from './project/registry.ts'
 import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
+import type { JevCatalog, JevConnection, JevModelList } from './jev/host.ts'
 import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import type { EngramLanguage } from './i18n/language.ts'
-import { messageIn } from './i18n/messages.ts'
+import { message, messageIn } from './i18n/messages.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import { aggregateTelemetry } from './telemetry/aggregate.ts'
@@ -221,12 +222,25 @@ export interface RouteDeps {
     /** 部署配置里的默认规则（面板表单初始值）。 */
     readonly defaults: ResolvedHistoryRules
   }
-  /** Jev 裁决配置（GET/POST jev-config）：yml 基线 + 面板覆盖文件目录。 */
+  /** Jev 裁决配置（GET/POST jev-config）：yml 基线 + 面板覆盖文件目录 + мост к хосту. */
   readonly jev: {
-    /** cordis.yml 解析出的基线（含明文 apiKey；GET 响应只回掩码视图，明文不出进程）。 */
+    /** Распознанная база из cordis.yml (адрес и ключ тут больше не хранятся — они у хоста). */
     readonly base: ResolvedJevConfig
-    /** 覆盖文件目录：`<dbDir>/jev-config.json`（0600）。 */
+    /** Каталог файла перекрытия: `<dbDir>/jev-config.json` (0600). */
     readonly dbDir: string
+    /** Мост к хосту: список провайдеров DSH и сборка соединения (адрес и ключ — у хоста). */
+    readonly host: {
+      readonly catalog: () => Promise<JevCatalog>
+      /** Живой список моделей провайдера (обращение к нему же, его ключом). */
+      readonly models: (provider: string) => Promise<JevModelList>
+      /** Соединение: адрес из настроек Jev либо шаблоном от провайдера, ключ — у хоста. */
+      readonly connection: (
+        provider: string,
+        model: string,
+        timeoutMs: number,
+        endpoint?: string,
+      ) => Promise<JevConnection | string>
+    }
   }
 }
 
@@ -867,33 +881,81 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'jev-config') {
-            // Jev 裁决配置视图：密钥只回掩码，明文不出进程。
-            json(res, 200, jevConfigView(deps.jev.base, loadJevOverride(deps.jev.dbDir)))
+            // Настройки Jev для панели: выбранные провайдер и модель плюс пороги, а
+            // рядом — каталог провайдеров и их моделей, взятый у хоста DSH. Ни ключа,
+            // ни адреса у Jev нет: их подставляет хост в момент вызова.
+            const catalog = await deps.jev.host.catalog()
+            json(res, 200, {
+              ...jevConfigView(deps.jev.base, loadJevOverride(deps.jev.dbDir)),
+              providers: catalog.providers,
+            })
             return
           }
           if (req.method === 'POST' && route === 'jev-config') {
-            // 面板保存 Jev 覆盖：整体校验非法即 400；合法则全量重写覆盖文件并回新视图。
+            // Панель сохраняет выбор: негодная правка отвергается целиком (400),
+            // годная — перезаписывает файл перекрытия и возвращает новый вид.
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
             const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body ?? {})
             if (typeof parsed === 'string') { json(res, 400, { error: parsed }); return }
             saveJevOverride(deps.jev.dbDir, parsed)
-            json(res, 200, { ok: true, view: jevConfigView(deps.jev.base, parsed) })
+            const catalog = await deps.jev.host.catalog()
+            json(res, 200, {
+              ok: true,
+              view: { ...jevConfigView(deps.jev.base, parsed), providers: catalog.providers },
+            })
             return
           }
           if (req.method === 'POST' && route === 'jev-test') {
-            // 连接测试：用面板当前输入值发最小 ping 问题（不落覆盖文件）；
-            // apiKey 留空回落已存值——测试「正在用的配置」或「刚填还没保存的配置」都行。
+            // Проверка связи: адрес и ключ собирает хост по выбранному провайдеру,
+            // запрос — минимальный ping. Он же подтверждает, что модель отвечает
+            // протоколом System One, то есть действительно является Jev.
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
             const base = effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir))
-            const tested: ResolvedJevConfig = {
-              ...base,
-              ...(typeof body?.baseUrl === 'string' && body.baseUrl.trim() !== '' ? { baseUrl: body.baseUrl.trim() } : {}),
-              ...(typeof body?.model === 'string' && body.model.trim() !== '' ? { model: body.model.trim() } : {}),
-              ...(typeof body?.apiKey === 'string' && body.apiKey !== '' ? { apiKey: body.apiKey } : {}),
+            const provider = typeof body?.provider === 'string' && body.provider.trim() !== ''
+              ? body.provider.trim()
+              : base.provider
+            const model = typeof body?.model === 'string' && body.model.trim() !== ''
+              ? body.model.trim()
+              : base.model
+            // Адрес из поля панели; пусто — шаблон от провайдера (решает мост).
+            const endpoint = typeof body?.endpoint === 'string' && body.endpoint.trim() !== ''
+              ? body.endpoint.trim()
+              : base.endpoint
+            if (provider === undefined || model === undefined) {
+              json(res, 200, {
+                ok: false,
+                elapsedMs: 0,
+                probability: undefined,
+                error: message('misc.jevProviderMustBeSelected'),
+              })
+              return
             }
-            json(res, 200, await testJevConnection(tested))
+            const connection = await deps.jev.host.connection(provider, model, base.timeoutMs, endpoint)
+            if (typeof connection === 'string') {
+              json(res, 200, { ok: false, elapsedMs: 0, probability: undefined, error: connection })
+              return
+            }
+            json(res, 200, await testJevConnection(connection))
+            return
+          }
+          if (req.method === 'POST' && route === 'jev-models') {
+            // Живой список моделей провайдера (`GET {baseURL}/models` его ключом):
+            // панель берёт его как подсказки к полю модели, сужая до Jev-моделей,
+            // когда такие в списке есть.
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
+            if (provider === '') {
+              json(res, 200, {
+                models: [],
+                filtered: false,
+                error: message('misc.jevProviderMustBeSelected'),
+              })
+              return
+            }
+            json(res, 200, await deps.jev.host.models(provider))
             return
           }
           if (req.method === 'GET' && route === 'jev-observations') {
