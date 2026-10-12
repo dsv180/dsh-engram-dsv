@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ResolvedJevConfig } from '../src/config.ts'
 import type { HostContext } from '../src/jev/host.ts'
+import { readJevCatalog } from '../src/jev/host.ts'
 import {
   effectiveJevConfig,
   jevConfigView,
@@ -32,6 +33,72 @@ const baseConfig: ResolvedJevConfig = {
   deferAcceptBelow: 0.15,
   contradictMinProbability: 0.8,
 }
+
+/**
+ * Заглушка хоста для каталога провайдеров: `listConfigurableProviders` отдаёт и встроенные
+ * виды, и объявленные; настройки содержат запись только для объявленного провайдера.
+ */
+function hostWithCatalog(options: {
+  readonly declared?: boolean | undefined
+  readonly configurable?: readonly Record<string, unknown>[]
+  readonly routes?: readonly Record<string, unknown>[]
+} = {}): HostContext {
+  const configurable = options.configurable ?? [
+    { provider: 'anthropic', displayName: 'anthropic', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'anthropic'], ...(options.declared === undefined ? {} : { declared: options.declared }) },
+    { provider: 'aitunnel', displayName: 'aitunnel', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'aitunnel'], declared: true },
+  ]
+  return {
+    get: (name: string) => {
+      if (name === 'llm') {
+        return {
+          listConfigurableProviders: () => configurable,
+          listProviders: () => options.routes ?? [{ id: 'deepseek', name: 'DeepSeek' }],
+        }
+      }
+      if (name === 'settings') {
+        return {
+          describe: async () => [{
+            ns: 'llm-pi-ai',
+            value: {
+              providers: {
+                aitunnel: {
+                  displayName: 'AITunnel',
+                  baseURL: 'https://api.aitunnel.ru/v1',
+                  apiKeyEnv: 'AITUNNEL_API_KEY',
+                  models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+                },
+              },
+            },
+          }],
+        }
+      }
+      if (name === 'credentials') return { resolve: async () => ({ value: 'host-key' }) }
+      return undefined
+    },
+  }
+}
+
+describe('readJevCatalog', () => {
+  it('отсекает встроенный каталог хоста: остаются только настроенные провайдеры', async () => {
+    const catalog = await readJevCatalog(hostWithCatalog())
+    expect(catalog.providers.map(provider => provider.id)).toEqual(['aitunnel'])
+    expect(catalog.providers[0]?.baseUrl).toBe('https://api.aitunnel.ru/v1')
+    expect(catalog.providers[0]?.endpoint).toBe('https://api.aitunnel.ru/v1/systemone')
+    expect(catalog.providers[0]?.models).toEqual([{ id: 'jev-1.13', name: 'Jev 1.13' }])
+  })
+
+  it('признака declared нет (другая версия хоста): настроенным считается тот, у кого есть запись в настройках', async () => {
+    const catalog = await readJevCatalog(hostWithCatalog({ declared: undefined }))
+    // anthropic без признака и без записи в настройках отсекается, aitunnel (declared: true) остаётся.
+    expect(catalog.providers.map(provider => provider.id)).toEqual(['aitunnel'])
+  })
+
+  it('хост не отдал настраиваемых провайдеров: падаем на маршруты, а не на пустой список', async () => {
+    const catalog = await readJevCatalog(hostWithCatalog({ configurable: [] }))
+    expect(catalog.providers.map(provider => provider.id)).toEqual(['deepseek'])
+    expect(catalog.providers[0]?.displayName).toBe('DeepSeek')
+  })
+})
 
 describe('loadJevOverride', () => {
   let dir: string

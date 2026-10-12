@@ -1,9 +1,9 @@
 /**
  * Мост к хосту DSH: провайдеры, их модели и ключи живут в одном месте — у хоста.
  *
- * Jev не хранит ни токен, ни адрес. Панель выбирает провайдера из списка,
- * зарегистрированного в DSH (`ctx.llm.listConfigurableProviders()`), а реквизиты
- * собираются в момент вызова:
+ * Jev не хранит ни токен, ни адрес. Панель выбирает провайдера из числа
+ * **настроенных** в DSH (`ctx.llm.listConfigurableProviders()`, отбор по признаку
+ * `declared`), а реквизиты собираются в момент вызова:
  *   адрес  — шаблон от `baseURL` провайдера (можно переопределить в настройках Jev);
  *   ключ   — из хранилища секретов по ссылке `apiKeyEnv` (`ctx.credentials.resolve`).
  *
@@ -32,6 +32,8 @@ interface HostConfigurableProvider {
   readonly displayName?: unknown
   readonly settingsNs?: unknown
   readonly settingsPath?: unknown
+  /** true = провайдер объявлен в настройках; false = взят из встроенного каталога. */
+  readonly declared?: unknown
 }
 
 interface HostProvider {
@@ -102,6 +104,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function readString(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key]
   return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+function readBoolean(record: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const value = record?.[key]
+  return typeof value === 'boolean' ? value : undefined
 }
 
 /** Пройти по пути вида `['providers', 'aitunnel']` внутри конфигурации плагина хоста. */
@@ -219,41 +226,59 @@ async function readProviderRekvisites(
 }
 
 /**
- * Каталог для панели: провайдеры, зарегистрированные в DSH, с шаблоном адреса
+ * Каталог для панели: только провайдеры, настроенные в DSH, с шаблоном адреса
  * и моделями из настроек (без обращения к сети — живой список берётся отдельно).
+ *
+ * Реестр хоста отдаёт и весь встроенный каталог pi-ai (anthropic, openai, google
+ * и ещё три десятка видов) — их пользователь не настраивал, и в выпадающем списке
+ * Jev им делать нечего. Признак «свой» хост сообщает сам: `declared = true`
+ * у провайдера, объявленного в настройках, и `false` — у взятого из каталога
+ * (функция `directoryEntries` в `dsh-llm-pi-ai`; там же видно, что объявленные
+ * идут в конце списка, после встроенных).
+ *
  * @param ctx - контекст плагина (доступ к сервисам хоста по имени).
- * @returns провайдеры с моделями; пустой список, если хост не отдал ничего.
+ * @returns настроенные провайдеры с моделями; пустой список, если хост не отдал ничего.
  */
 export async function readJevCatalog(ctx: HostContext): Promise<JevCatalog> {
   const llm = ctx.get('llm') as HostLlm | undefined
   const configurable = llm?.listConfigurableProviders?.() ?? []
-  const providers: JevProviderEntry[] = []
+  const declared: JevProviderEntry[] = []
+  const withProfile: JevProviderEntry[] = []
+  const every: JevProviderEntry[] = []
   for (const entry of configurable) {
     const id = typeof entry.provider === 'string' ? entry.provider : undefined
     if (id === undefined) continue
     const profile = await readProviderProfile(ctx, id)
     const baseUrl = readString(profile, 'baseURL')
-    providers.push({
+    const item: JevProviderEntry = {
       id,
-      displayName: readString(asRecord(entry), 'displayName') ?? id,
+      displayName: readString(asRecord(entry), 'displayName') ?? readString(profile, 'displayName') ?? id,
       baseUrl,
       endpoint: baseUrl === undefined ? undefined : systemOneEndpoint(baseUrl),
       models: readModels(profile),
-    })
-  }
-  // Запасной путь: хост не отдал настраиваемых провайдеров — показываем хотя бы маршруты.
-  if (providers.length === 0) {
-    for (const route of llm?.listProviders?.() ?? []) {
-      const id = readString(route as Record<string, unknown>, 'id')
-      if (id === undefined) continue
-      providers.push({
-        id,
-        displayName: readString(route as Record<string, unknown>, 'name') ?? id,
-        baseUrl: undefined,
-        endpoint: undefined,
-        models: [],
-      })
     }
+    every.push(item)
+    if (profile !== undefined) withProfile.push(item)
+    // Признак «настроен»: хост пометил провайдера объявленным. Если признака нет
+    // (другая версия хоста), считаем настроенным того, у кого нашлась запись в настройках.
+    const flag = readBoolean(asRecord(entry), 'declared')
+    if (flag === true || (flag === undefined && profile !== undefined)) declared.push(item)
+  }
+  if (declared.length > 0) return { providers: declared }
+  if (withProfile.length > 0) return { providers: withProfile }
+  if (every.length > 0) return { providers: every }
+  // Запасной путь: хост не отдал настраиваемых провайдеров — показываем хотя бы маршруты.
+  const providers: JevProviderEntry[] = []
+  for (const route of llm?.listProviders?.() ?? []) {
+    const id = readString(route as Record<string, unknown>, 'id')
+    if (id === undefined) continue
+    providers.push({
+      id,
+      displayName: readString(route as Record<string, unknown>, 'name') ?? id,
+      baseUrl: undefined,
+      endpoint: undefined,
+      models: [],
+    })
   }
   return { providers }
 }
