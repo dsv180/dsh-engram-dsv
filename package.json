@@ -50,7 +50,8 @@
     "watch": "tsdown --watch",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "backfill": "node scripts/backfill-embeddings.mjs"
+    "backfill": "node scripts/backfill-embeddings.mjs",
+    "journal": "node scripts/check-journal.mjs"
   },
   "license": "MIT",
   "keywords": [
@@ -91,12 +92,5 @@
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "onnxruntime-node",
-      "sharp",
-      "protobufjs"
-    ]
   }
 }

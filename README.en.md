@@ -198,8 +198,6 @@ The block for a profile's `cordis.patch.yml`:
     language: auto          # auto | ru | en | zh
     embedder:
       kind: local           # local | remote
-      localModel: Xenova/paraphrase-multilingual-MiniLM-L12-v2
-      localPooling: mean
 ```
 
 - `ingest: light` — the gentle extraction mode described above.
@@ -208,16 +206,26 @@ The block for a profile's `cordis.patch.yml`:
 - `embedder.kind: local` — the model runs locally and nothing leaves the machine. The model is
   downloaded on first use, so network is needed once. `kind: remote` — compute embeddings on your own
   or an external service; only the text of the record being compared is sent out.
+- The embedding model needs no setting: it is chosen by language — Chinese gets the native
+  `Xenova/bge-small-zh-v1.5` (512 dimensions), every other language gets the multilingual
+  `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384). An explicit `localModel` always wins over that
+  substitution. If you do change the model, the previous vectors have a different dimension and semantic
+  search degrades silently — re-embed them: `node scripts/backfill-embeddings.mjs`.
 
 ## Installation
 
-1. Build: `pnpm install`, then `pnpm bundle`.
+1. Build: `pnpm install`, then `pnpm bundle`. Without the build the package has no `lib/` and the plugin
+   arrives broken: the `dsh plugin add github:...` route does not build.
 2. Pack: `pnpm pack` — this produces `kenz1117-dsh-engram-<version>.tgz`.
 3. Install into a DSH profile: through the plugin menu (it accepts a tgz) or with
-   `pnpm --dir <profile> add <file>.tgz`.
-4. For local embeddings, install the model next to the plugin:
-   `pnpm --dir <profile> add @huggingface/transformers`.
-5. Append the configuration block (above) to `<profile>\cordis.patch.yml` and restart DSH.
+   `dsh plugin --profile desktop add "<path>\kenz1117-dsh-engram-<version>.tgz" --ignore-scripts`.
+   On pnpm 11 that needs an `allowBuilds` block in the **profile's** `pnpm-workspace.yaml` — details and
+   the traps (non-idempotency, the `package.json.lock` lock) are in [INSTALL.md](INSTALL.md).
+4. Append the configuration block (above) to `<profile>\cordis.patch.yml`. The local embedder
+   (`@huggingface/transformers`) comes with the plugin; install it separately only when deploying a bare
+   build by hand (`scripts/deploy-profile.mjs`).
+5. Restarting DSH is not required: the plugin normally mounts right away. A restart is needed if the
+   memory panel does not appear, and if you replaced the build of an already running plugin.
 
 Building assumes a machine that has DeepSeek Harness: some dependencies are linked to it as peers.
 Verified on version `0.2.0-rc.2` with Node.js 24.21.0 — see the verification section. Detailed

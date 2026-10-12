@@ -72,6 +72,17 @@ for (const name of readdirSync(target).filter(name => !sourceNames.includes(name
   }
 }
 
+// Ручное развёртывание копирует одну сборку: зависимости плагина при этом не ставятся,
+// а без эмбеддера поиск по смыслу молча деградирует до ключевых слов. Говорим сразу.
+const hasTransformers = [
+  join(packageDir, 'node_modules', '@huggingface', 'transformers'),
+  join(profilesDir, 'node_modules', '@huggingface', 'transformers'),
+].some(existsSync)
+if (!hasTransformers) {
+  console.warn('внимание: рядом с плагином нет @huggingface/transformers — поиск по смыслу работать не будет')
+  console.warn(`поставьте его: pnpm --dir "${profilesDir}" add @huggingface/transformers`)
+}
+
 console.log(`развёрнуто в: ${target}`)
 console.log(`файлы: ${readdirSync(target).join(', ')}`)
 console.log(`прежняя сборка: ${join(backup, 'lib')}`)
