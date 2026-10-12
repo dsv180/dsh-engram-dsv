@@ -2400,35 +2400,55 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
   )
 }
 
-/** Jev 面板视图（GET/POST /api/engram/jev-config 的响应体；密钥只有掩码，明文不出进程）。 */
+/** Модель в подсказках поля (из настроек провайдера). */
+interface JevModelOption {
+  readonly id: string
+}
+
+/** Провайдер DSH с шаблоном адреса System One и моделями из своих настроек. */
+interface JevProviderOption {
+  readonly id: string
+  readonly displayName: string
+  readonly baseUrl: string | undefined
+  readonly endpoint: string | undefined
+  readonly models: readonly JevModelOption[]
+}
+
+/** Jev panel view (response body of GET/POST /api/engram/jev-config). The provider and its key live in DSH; nothing secret is echoed here. */
 interface JevPanelView {
   readonly enabled: boolean
-  readonly apiKeySet: boolean
-  readonly apiKeyMask: string | null
-  readonly baseUrl: string
-  readonly model: string
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  readonly endpoint: string | undefined
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
   readonly contradictMinProbability: number
+  readonly providers: readonly JevProviderOption[]
 }
 
 /**
- * Jev 裁决配置：面板覆盖 cordis.yml 的连接字段（开关 / 密钥 / 端点 / 模型 / 超时），
- * 保存进 `<dbDir>/jev-config.json`（0600）后立即生效，无需重启。密钥输入框只进不出
- * （placeholder 回显掩码）；留空 = 保留现有覆盖，清除走「清除已存密钥」。
+ * Jev verdict configuration: the panel only chooses which provider and model do the adjudicating,
+ * plus the timeout. The provider list, the endpoint template and the API key all come from the host —
+ * the key never reaches this panel and is never stored by the plugin, so there is exactly one place
+ * in DSH where providers and tokens are configured. The endpoint field is pre-filled from the chosen
+ * provider's template but stays editable, and the model field accepts any name (the "load models"
+ * button asks the provider for its live list and offers it as suggestions).
  */
 function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.ReactElement {
   const [view, setView] = useState<JevPanelView | null>(null)
   const [enabled, setEnabled] = useState(false)
-  const [apiKey, setApiKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
+  const [provider, setProvider] = useState('')
+  const [endpoint, setEndpoint] = useState('')
   const [model, setModel] = useState('')
   const [timeoutMs, setTimeoutMs] = useState('3000')
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [liveModels, setLiveModels] = useState<readonly string[]>([])
+  const [liveFiltered, setLiveFiltered] = useState(false)
 
-  // 初载：视图只读展示 + 表单初始值；密钥不回填输入框（保持空 = 不改动）。
+  // Initial load: form starts from the saved override; providers come from DSH via the same response.
   useEffect(() => {
     let cancelled = false
     api<JevPanelView>('jev-config')
@@ -2436,61 +2456,80 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
         if (cancelled) return
         setView(data)
         setEnabled(data.enabled)
-        setBaseUrl(data.baseUrl)
-        setModel(data.model)
+        setProvider(data.provider ?? '')
+        setEndpoint(data.endpoint ?? '')
+        setModel(data.model ?? '')
         setTimeoutMs(String(data.timeoutMs))
       })
       .catch((error: Error) => { if (!cancelled) toast.push('error', `${t('jevLoadFailed')}: ${error.message}`) })
     return () => { cancelled = true }
   }, [t, toast])
 
+  /** Choose a provider and pre-fill the endpoint from its template (the field stays editable). */
+  const chooseProvider = (id: string): void => {
+    setProvider(id)
+    const chosen = view?.providers.find(item => item.id === id)
+    setEndpoint(chosen?.endpoint ?? '')
+    setLiveModels([])
+    setLiveFiltered(false)
+  }
+
   const save = (): void => {
     setBusy(true)
     api<{ ok: boolean; view: JevPanelView }>('jev-config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // 密钥留空 = 不发送该字段（保留现有覆盖）；清空语义走 clearKey。
+      // Empty provider/model clears that field on the server; Jev then falls back to pure rules.
       body: JSON.stringify({
         enabled,
-        baseUrl: baseUrl.trim(),
+        provider,
+        endpoint: endpoint.trim(),
         model: model.trim(),
         timeoutMs: Number(timeoutMs),
-        ...(apiKey.trim() === '' ? {} : { apiKey: apiKey.trim() }),
       }),
     })
       .then((data) => {
         setView(data.view)
-        setApiKey('')
         toast.push('success', t('jevSaved'))
       })
       .catch((error: Error) => { toast.push('error', error.message) })
       .finally(() => { setBusy(false) })
   }
 
-  const clearKey = (): void => {
-    setBusy(true)
-    api<{ ok: boolean; view: JevPanelView }>('jev-config', {
+  /** Ask the provider for its live model list; Jev-only models win when the provider reports any. */
+  const loadModels = (): void => {
+    if (provider === '') { toast.push('error', t('jevModelsNoProvider')); return }
+    setLoadingModels(true)
+    api<{ models: readonly string[]; filtered: boolean; error: string | undefined }>('jev-models', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // 空串 = 清除面板密钥覆盖，回落 cordis.yml 的值。
-      body: JSON.stringify({ apiKey: '' }),
+      body: JSON.stringify({ provider }),
     })
-      .then((data) => { setView(data.view); toast.push('success', t('jevKeyCleared')) })
+      .then((result) => {
+        if (result.error !== undefined) {
+          setLiveModels([])
+          setLiveFiltered(false)
+          toast.push('error', `${t('jevModelsFailed')}: ${result.error}`)
+          return
+        }
+        setLiveModels(result.models)
+        setLiveFiltered(result.filtered)
+        toast.push('success', result.filtered
+          ? t('jevModelsFiltered', { count: result.models.length })
+          : t('jevModelsLoaded', { count: result.models.length }))
+      })
       .catch((error: Error) => { toast.push('error', error.message) })
-      .finally(() => { setBusy(false) })
+      .finally(() => { setLoadingModels(false) })
   }
 
-  // 连接测试：用当前输入值（不落覆盖文件）发最小 ping 问题；密钥留空 = 测已存值。
+  // Connection test: a minimal ping question sent with the current field values (nothing is written),
+  // which also proves that the model really speaks the System One protocol.
   const testConnection = (): void => {
     setTesting(true)
     api<{ ok: boolean; elapsedMs: number; probability: number | undefined; error: string | undefined }>('jev-test', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        baseUrl: baseUrl.trim(),
-        model: model.trim(),
-        ...(apiKey.trim() === '' ? {} : { apiKey: apiKey.trim() }),
-      }),
+      body: JSON.stringify({ provider, model: model.trim(), endpoint: endpoint.trim() }),
     })
       .then((result) => {
         if (result.ok) toast.push('success', t('jevTestOk', { ms: result.elapsedMs, p: result.probability }))
@@ -2501,6 +2540,12 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   }
 
   if (view === null) return <span className={styles.jevMuted}>{t('loading')}</span>
+
+  const selected = view.providers.find(item => item.id === provider)
+  // Suggestions: the provider's live list once loaded, otherwise the models from its DSH settings.
+  const suggestions: readonly string[] = liveModels.length > 0
+    ? liveModels
+    : (selected?.models ?? []).map(item => item.id)
 
   return (
     <div className={styles.jev}>
@@ -2514,19 +2559,32 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       </div>
       <div className={styles.jevForm}>
         <label className={styles.jevField}>
-          <span>{t('jevApiKey')}</span>
-          <input className={styles.input} type="password" value={apiKey} autoComplete="off"
-            placeholder={view.apiKeyMask ?? t('jevApiKeyUnset')}
-            onChange={event => setApiKey(event.target.value)} />
-          <span className={styles.jevMuted}>{t('jevApiKeyHint')}</span>
+          <span>{t('jevProvider')}</span>
+          <select className={styles.input} value={provider} onChange={event => chooseProvider(event.target.value)}>
+            <option value="">{t('jevProviderUnset')}</option>
+            {view.providers.map(item => (
+              <option key={item.id} value={item.id}>{`${item.displayName} (${item.id})`}</option>
+            ))}
+          </select>
+          <span className={styles.jevMuted}>{t('jevHostHint')}</span>
         </label>
         <label className={styles.jevField}>
-          <span>{t('jevBaseUrl')}</span>
-          <input className={styles.input} value={baseUrl} onChange={event => setBaseUrl(event.target.value)} />
+          <span>{t('jevEndpointField')}</span>
+          <input className={styles.input} value={endpoint} placeholder={t('jevEndpointTemplate')}
+            onChange={event => setEndpoint(event.target.value)} />
         </label>
         <label className={styles.jevField}>
           <span>{t('jevModel')}</span>
-          <input className={styles.input} value={model} onChange={event => setModel(event.target.value)} />
+          <input className={styles.input} value={model} list="jev-model-suggestions"
+            onChange={event => setModel(event.target.value)} />
+          <datalist id="jev-model-suggestions">
+            {suggestions.map(id => <option key={id} value={id} />)}
+          </datalist>
+          <span className={styles.jevMuted}>{liveModels.length > 0
+            ? (liveFiltered
+              ? t('jevModelsFiltered', { count: liveModels.length })
+              : t('jevModelsLoaded', { count: liveModels.length }))
+            : t('jevModelHint')}</span>
         </label>
         <label className={styles.jevField}>
           <span>{t('jevTimeoutMs')}</span>
@@ -2547,11 +2605,9 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
         <button type="button" className={styles.button} disabled={busy || testing} onClick={testConnection}>
           {t('jevTest')}
         </button>
-        {view.apiKeySet && (
-          <button type="button" className={styles.button} disabled={busy} onClick={clearKey}>
-            {t('jevClearKey')}
-          </button>
-        )}
+        <button type="button" className={styles.button} disabled={busy || loadingModels} onClick={loadModels}>
+          {t('jevLoadModels')}
+        </button>
       </div>
     </div>
   )

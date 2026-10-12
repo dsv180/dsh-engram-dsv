@@ -1,8 +1,16 @@
 /**
- * Jev 连接配置的运行时覆盖：管理面板保存到 `<dbDir>/jev-config.json`（0600），
- * 字段级覆盖 cordis.yml 的 jev 子配置；装配免缓存——judge 构造是无状态闭包、
- * 覆盖文件是小读，每个装配点即时解析，面板保存后立即生效。
- * 覆盖文件损坏按空覆盖处理：不卡启动，面板重新保存即修复。
+ * Настройки Jev, задаваемые из панели: сохраняются в `<dbDir>/jev-config.json` (0600)
+ * и пофайлово перекрывают подконфигурацию `jev` из cordis.yml.
+ *
+ * Здесь хранится только то, что действительно относится к Jev: включён ли он,
+ * какой провайдер DSH и какая его модель выбраны, тайм-аут. Ни адреса, ни токена
+ * тут нет и быть не должно — их берёт у хоста мост `./host.ts` в момент вызова,
+ * поэтому провайдеры и ключи вводятся ровно в одном месте, у хоста.
+ *
+ * Сборка судьи не кэшируется: конструктор — это замыкание без состояния, а файл
+ * настроек читается мелко, поэтому каждая точка сборки разрешает его заново и
+ * сохранение в панели действует сразу. Битый файл настроек считается пустым
+ * перекрытием: запуск не блокируется, панель перезапишет файл при сохранении.
  * @module @kenz1117/dsh-engram/jev/runtime
  */
 
@@ -11,118 +19,130 @@ import type { ResolvedJevConfig } from '../config.ts'
 import type { MemoryJudge } from '../write-disposition.ts'
 import { message } from '../i18n/messages.ts'
 import { createMemoryJudge } from './client.ts'
+import { resolveJevConnection, type HostContext } from './host.ts'
 
-/** 面板可编辑的 Jev 连接字段；三阈值不在面板范围，保持 yml 高级配置。 */
+/** Поля Jev, которые правит панель; три порога остаются расширенной настройкой cordis.yml. */
 export interface JevOverride {
-  /** 是否启用 Jev 裁决。 */
+  /** Включён ли вердикт Jev. */
   readonly enabled?: boolean
-  /** Jev API 密钥（Bearer 认证）；明文落盘由 0600 文件 + 0700 dbDir 双保护。 */
-  readonly apiKey?: string
-  /** 端点覆盖（缺省回落 yml，官方 `https://api.typesafe.ai`）。 */
-  readonly baseUrl?: string
-  /** 判决模型名覆盖。 */
+  /** Провайдер DSH (ключ в `providers` плагина `llm-pi-ai`). */
+  readonly provider?: string
+  /** Модель провайдера (id из его списка моделей). */
   readonly model?: string
-  /** 单次请求超时（毫秒，1000-60000 整数）。 */
+  /** Полный адрес эндпоинта System One; пусто = вывести шаблоном из baseURL провайдера. */
+  readonly endpoint?: string
+  /** Тайм-аут одного запроса в миллисекундах (целое, 1000-60000). */
   readonly timeoutMs?: number
 }
 
-/** 面板 Jev 配置视图：apiKey 只回掩码，明文不出进程。 */
+/** Вид настроек Jev для панели: ни ключа, ни адреса — только выбор и пороги. */
 export interface JevConfigView {
   readonly enabled: boolean
-  /** 是否已配置密钥（yml 或面板任一来源）。 */
-  readonly apiKeySet: boolean
-  /** 密钥掩码（尾 4 位）；未配置为 null。 */
-  readonly apiKeyMask: string | null
-  readonly baseUrl: string
-  readonly model: string
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  /** Адрес эндпоинта из настроек; undefined = подставить шаблон от провайдера. */
+  readonly endpoint: string | undefined
   readonly timeoutMs: number
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
   readonly contradictMinProbability: number
 }
 
-/** 覆盖文件路径（dbDir 已 0700，文件本身 0600 双保险）。 */
+/** Путь к файлу перекрытия (каталог уже 0700, сам файл — 0600, двойная защита). */
 export function jevOverridePath(dbDir: string): string {
   return `${dbDir}/jev-config.json`
 }
 
-/** 读覆盖文件：缺失/损坏/非法 JSON 都按空覆盖（面板重新保存即修复）。 */
+/** Прочитать перекрытие: нет файла, битый JSON или мусор — всё считается пустым перекрытием. */
 export function loadJevOverride(dbDir: string): JevOverride {
   let raw: string
   try {
     raw = readFileSync(jevOverridePath(dbDir), 'utf8')
   } catch {
-    // 文件不存在（未用面板保存过）：空覆盖，回落 yml。
+    // Файла нет (панель ещё не сохраняла): пустое перекрытие, работает cordis.yml.
     return {}
   }
   try {
     return collectOverride(JSON.parse(raw) as unknown)
   } catch {
-    // 手改坏 JSON：不卡启动，按空覆盖；面板下次保存全量重写。
+    // Испорченный руками JSON: запуск не блокируем, панель перезапишет файл целиком.
     return {}
   }
 }
 
-/** 收敛未知 JSON 为覆盖对象：只认五个已知字段，类型不符的丢弃。 */
+/**
+ * Свести произвольный JSON к перекрытию: известны четыре поля, остальное отбрасывается.
+ * Поля прежнего формата (`apiKey`, `baseUrl`) намеренно не читаются: ключ и адрес
+ * больше не хранятся у Jev, их место занял выбор провайдера у хоста.
+ */
 function collectOverride(value: unknown): JevOverride {
   if (value === null || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
   return {
     ...(typeof raw['enabled'] === 'boolean' ? { enabled: raw['enabled'] } : {}),
-    ...(typeof raw['apiKey'] === 'string' ? { apiKey: raw['apiKey'] } : {}),
-    ...(typeof raw['baseUrl'] === 'string' ? { baseUrl: raw['baseUrl'] } : {}),
-    ...(typeof raw['model'] === 'string' ? { model: raw['model'] } : {}),
+    ...(typeof raw['provider'] === 'string' && raw['provider'] !== '' ? { provider: raw['provider'] } : {}),
+    ...(typeof raw['model'] === 'string' && raw['model'] !== '' ? { model: raw['model'] } : {}),
+    ...(typeof raw['endpoint'] === 'string' && raw['endpoint'] !== '' ? { endpoint: raw['endpoint'] } : {}),
     ...(typeof raw['timeoutMs'] === 'number' && Number.isInteger(raw['timeoutMs'])
       ? { timeoutMs: raw['timeoutMs'] }
       : {}),
   }
 }
 
-/** 全量保存覆盖文件（调用方先经 parseJevPatch 校验；内容为面板合并后的完整覆盖）。 */
+/** Записать перекрытие целиком (вызывающий уже проверил его через `parseJevPatch`). */
 export function saveJevOverride(dbDir: string, override: JevOverride): void {
   writeFileSync(jevOverridePath(dbDir), `${JSON.stringify(override, null, 2)}\n`, { mode: 0o600 })
 }
 
 /**
- * 面板 patch 解析：只认已知字段并逐个校验，出现非法值整体拒绝。
- * `apiKey: ''` 表示清除面板密钥覆盖（回落 yml）；缺席的字段保留 current。
- * @param current - 现有覆盖（合并底座）。
- * @param patch - POST body 原始对象。
- * @returns 合法时返回合并后的完整覆盖；非法时返回 `invalid:` 前缀的字段错误文案。
+ * Разобрать правку из панели: известные поля проверяются по одному, при любой
+ * негодности отвергается вся правка. `provider: ''` очищает выбор провайдера
+ * (Jev при этом молча уходит в чистые правила); отсутствующее поле сохраняет текущее.
+ * @param current - текущее перекрытие (основа слияния).
+ * @param patch - сырой объект из тела POST.
+ * @returns при годности — слитое перекрытие целиком; иначе текст ошибки с префиксом `invalid:`.
  */
 export function parseJevPatch(current: JevOverride, patch: Readonly<Record<string, unknown>>): JevOverride | string {
   const merged: {
     enabled?: boolean
-    apiKey?: string
-    baseUrl?: string
+    provider?: string
     model?: string
+    endpoint?: string
     timeoutMs?: number
   } = { ...current }
   if (patch['enabled'] !== undefined) {
     if (typeof patch['enabled'] !== 'boolean') return message('misc.jevEnabledMustBeBoolean')
     merged.enabled = patch['enabled']
   }
-  if (patch['apiKey'] !== undefined) {
-    if (typeof patch['apiKey'] !== 'string') return message('misc.jevApiKeyMustBeString')
-    // 空串 = 清除面板覆盖，回落 yml 值；非空去首尾空白。
-    const trimmed = patch['apiKey'].trim()
-    if (trimmed === '') delete merged.apiKey
-    else merged.apiKey = trimmed
-  }
-  if (patch['baseUrl'] !== undefined) {
-    if (typeof patch['baseUrl'] !== 'string') return message('misc.jevBaseUrlMustBeString')
-    const value = patch['baseUrl'].trim()
-    try {
-      const url = new URL(value)
-      if (url.protocol !== 'https:' && url.protocol !== 'http:') return message('misc.jevBaseUrlMustBeHttp')
-    } catch {
-      return message('misc.jevBaseUrlMustBeHttp')
-    }
-    merged.baseUrl = value
+  if (patch['provider'] !== undefined) {
+    if (typeof patch['provider'] !== 'string') return message('misc.jevProviderMustBeString')
+    // Пустая строка = снять выбор провайдера; непустая — без крайних пробелов.
+    const trimmed = patch['provider'].trim()
+    if (trimmed === '') delete merged.provider
+    else merged.provider = trimmed
   }
   if (patch['model'] !== undefined) {
-    if (typeof patch['model'] !== 'string' || patch['model'].trim() === '') return message('misc.jevModelMustNotBeEmpty')
-    merged.model = patch['model'].trim()
+    if (typeof patch['model'] !== 'string') return message('misc.jevModelMustNotBeEmpty')
+    const trimmed = patch['model'].trim()
+    if (trimmed === '') delete merged.model
+    else merged.model = trimmed
+  }
+  if (patch['endpoint'] !== undefined) {
+    if (typeof patch['endpoint'] !== 'string') return message('misc.jevEndpointMustBeHttp')
+    const trimmed = patch['endpoint'].trim()
+    // Пустая строка = вернуться к шаблону от провайдера.
+    if (trimmed === '') {
+      delete merged.endpoint
+    } else {
+      let scheme = ''
+      try {
+        scheme = new URL(trimmed).protocol
+      } catch {
+        scheme = ''
+      }
+      if (scheme !== 'http:' && scheme !== 'https:') return message('misc.jevEndpointMustBeHttp')
+      merged.endpoint = trimmed
+    }
   }
   if (patch['timeoutMs'] !== undefined) {
     const value = patch['timeoutMs']
@@ -135,17 +155,20 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
 }
 
 /**
- * 面板覆盖与 yml 基线的字段级合并；合并后 enabled=true 但无密钥时强制降级
- * enabled=false（与 Jev 不可用静默降级语义一致，不卡启动）。
+ * Слить перекрытие панели с базой из cordis.yml по полям.
+ * Если провайдер или модель не выбраны, `enabled` принудительно снимается: Jev
+ * недоступен и потому молча уходит в чистые правила — запуск не блокируется.
  */
 export function effectiveJevConfig(base: ResolvedJevConfig, override: JevOverride): ResolvedJevConfig {
-  const apiKey = override.apiKey ?? base.apiKey
-  const enabled = (override.enabled ?? base.enabled) && apiKey !== undefined && apiKey !== ''
+  const provider = override.provider ?? base.provider
+  const model = override.model ?? base.model
+  const complete = provider !== undefined && provider !== '' && model !== undefined && model !== ''
   return {
-    enabled,
-    apiKey: enabled ? apiKey : undefined,
-    baseUrl: override.baseUrl ?? base.baseUrl,
-    model: override.model ?? base.model,
+    enabled: (override.enabled ?? base.enabled) && complete,
+    provider,
+    model,
+    // Адрес хранится отдельно: пусто означает «подставить шаблон от провайдера».
+    endpoint: override.endpoint ?? base.endpoint,
     timeoutMs: override.timeoutMs ?? base.timeoutMs,
     deferMergeAbove: base.deferMergeAbove,
     deferAcceptBelow: base.deferAcceptBelow,
@@ -153,20 +176,14 @@ export function effectiveJevConfig(base: ResolvedJevConfig, override: JevOverrid
   }
 }
 
-/** 密钥掩码：长度 > 8 显示尾 4 位，其余全掩码。 */
-export function maskApiKey(key: string): string {
-  return key.length > 8 ? `****${key.slice(-4)}` : '******'
-}
-
-/** 组装面板视图：基于生效配置；掩码取合并后的密钥。 */
+/** Собрать вид для панели по действующей конфигурации. */
 export function jevConfigView(base: ResolvedJevConfig, override: JevOverride): JevConfigView {
   const config = effectiveJevConfig(base, override)
   return {
     enabled: config.enabled,
-    apiKeySet: config.apiKey !== undefined && config.apiKey !== '',
-    apiKeyMask: config.apiKey === undefined || config.apiKey === '' ? null : maskApiKey(config.apiKey),
-    baseUrl: config.baseUrl,
+    provider: config.provider,
     model: config.model,
+    endpoint: config.endpoint,
     timeoutMs: config.timeoutMs,
     deferMergeAbove: config.deferMergeAbove,
     deferAcceptBelow: config.deferAcceptBelow,
@@ -175,12 +192,26 @@ export function jevConfigView(base: ResolvedJevConfig, override: JevOverride): J
 }
 
 /**
- * 统一装配函数：读面板覆盖、合并 yml 基线，enabled 时产出 judge，否则返回空对象。
- * 产出形状可直接条件展开进摄取/工具/末轮/回填四类依赖（`...resolveJevField(resolved.jev, dbDir)`）。
- * 免缓存：judge 构造是无状态闭包、覆盖文件是小读，每次调用即时解析，面板保存立即生效。
+ * Единая точка сборки: прочитать перекрытие панели, слить с базой cordis.yml и,
+ * если Jev включён и выбор сделан, отдать судью; иначе — пустой объект.
+ * Результат раскладывается условным расширением в четыре вида зависимостей
+ * (запись, инструменты, последний ход, догрузка истории).
+ * Реквизиты соединения резолвятся лениво — при первом вопросе судьи.
+ * @param ctx - контекст плагина (доступ к сервисам хоста: llm, settings, credentials).
+ * @param base - база из cordis.yml.
+ * @param dbDir - каталог данных (там лежит файл перекрытия).
  */
-export function resolveJevField(base: ResolvedJevConfig, dbDir: string): { judge: MemoryJudge } | Record<string, never> {
+export function resolveJevField(
+  ctx: HostContext,
+  base: ResolvedJevConfig,
+  dbDir: string,
+): { judge: MemoryJudge } | Record<string, never> {
   const config = effectiveJevConfig(base, loadJevOverride(dbDir))
-  if (!config.enabled || config.apiKey === undefined || config.apiKey === '') return {}
-  return { judge: createMemoryJudge(config) }
+  if (!config.enabled || config.provider === undefined || config.model === undefined) return {}
+  const provider = config.provider
+  const model = config.model
+  const endpoint = config.endpoint
+  return {
+    judge: createMemoryJudge(config, () => resolveJevConnection(ctx, provider, model, config.timeoutMs, endpoint)),
+  }
 }

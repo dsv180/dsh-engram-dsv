@@ -4,23 +4,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ResolvedJevConfig } from '../src/config.ts'
+import type { HostContext } from '../src/jev/host.ts'
 import {
   effectiveJevConfig,
   jevConfigView,
   jevOverridePath,
   loadJevOverride,
-  maskApiKey,
   parseJevPatch,
   resolveJevField,
   saveJevOverride,
 } from '../src/jev/runtime.ts'
 
-/** yml 基线夹具：面板覆盖为空时应原样透出；三阈值永远来自基线。 */
+/**
+ * Заглушка контекста хоста: адрес и ключ разрешаются лениво — при первом вопросе
+ * судьи, — поэтому самой сборке судьи достаточно пустого доступа к сервисам.
+ */
+const hostStub: HostContext = { get: () => undefined }
+
+/** База из cordis.yml: пустое перекрытие отдаёт её как есть, а три порога всегда берутся отсюда. */
 const baseConfig: ResolvedJevConfig = {
   enabled: true,
-  apiKey: 'yml-key-1234567890',
-  baseUrl: 'https://api.typesafe.ai',
+  provider: 'aitunnel',
   model: 'jev-1',
+  endpoint: undefined,
   timeoutMs: 3000,
   deferMergeAbove: 0.85,
   deferAcceptBelow: 0.15,
@@ -38,16 +44,16 @@ describe('loadJevOverride', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('覆盖文件缺失：空覆盖，回落 yml', () => {
+  it('файла перекрытия нет: пустое перекрытие, работает yml', () => {
     expect(loadJevOverride(dir)).toEqual({})
   })
 
-  it('损坏 JSON：按空覆盖自愈，不抛错', async () => {
+  it('битый JSON: самолечение пустым перекрытием, без исключения', async () => {
     await writeFile(jevOverridePath(dir), '{ not json', 'utf8')
     expect(loadJevOverride(dir)).toEqual({})
   })
 
-  it('合法 JSON 但非对象（数字/字符串/null）：按空覆盖', async () => {
+  it('валидный JSON, но не объект (число/строка/null): пустое перекрытие', async () => {
     await writeFile(jevOverridePath(dir), '42', 'utf8')
     expect(loadJevOverride(dir)).toEqual({})
     await writeFile(jevOverridePath(dir), '"text"', 'utf8')
@@ -56,20 +62,33 @@ describe('loadJevOverride', () => {
     expect(loadJevOverride(dir)).toEqual({})
   })
 
-  it('类型不符字段丢弃、未知字段丢弃、合法字段保留', async () => {
+  it('негодные по типу и неизвестные поля отбрасываются, годные остаются', async () => {
     await writeFile(
       jevOverridePath(dir),
       JSON.stringify({
         enabled: 'yes',
-        apiKey: 123,
-        baseUrl: 'https://panel.test',
+        provider: 123,
         model: 'panel-model',
+        endpoint: 'https://panel.test/v1/systemone',
         timeoutMs: 1.5,
         unknown: 'ignored',
       }),
       'utf8',
     )
-    expect(loadJevOverride(dir)).toEqual({ baseUrl: 'https://panel.test', model: 'panel-model' })
+    expect(loadJevOverride(dir)).toEqual({
+      model: 'panel-model',
+      endpoint: 'https://panel.test/v1/systemone',
+    })
+  })
+
+  it('поля старого формата (apiKey/baseUrl) игнорируются', async () => {
+    // Файл прежней версии: ключ и адрес плагин больше не хранит — их место занял выбор провайдера.
+    await writeFile(
+      jevOverridePath(dir),
+      JSON.stringify({ enabled: true, apiKey: 'legacy-key', baseUrl: 'https://api.aitunnel.ru', model: 'jev-1.13' }),
+      'utf8',
+    )
+    expect(loadJevOverride(dir)).toEqual({ enabled: true, model: 'jev-1.13' })
   })
 })
 
@@ -84,56 +103,67 @@ describe('saveJevOverride', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('保存后读回相同对象，文件权限 0600', () => {
-    const override = { enabled: false, apiKey: 'panel-key', baseUrl: 'https://panel.test' }
+  it('после сохранения читается тот же объект, права файла 0600', () => {
+    const override = { enabled: false, provider: 'aitunnel', model: 'jev-2' }
     saveJevOverride(dir, override)
     expect(loadJevOverride(dir)).toEqual(override)
-    // mode 与 0o777 取与：屏蔽文件类型位，只比权限位。
-    expect(statSync(jevOverridePath(dir)).mode & 0o777).toBe(0o600)
+    // Права проверяем только на POSIX-системах: Windows не хранит режим файла, и
+    // statSync там всегда отдаёт 0666, поэтому заявленные 0600 держит лишь umask.
+    if (process.platform !== 'win32') {
+      // Берём mode по модулю 0o777: так отсекаются биты типа файла и остаются только права.
+      expect(statSync(jevOverridePath(dir)).mode & 0o777).toBe(0o600)
+    }
   })
 })
 
 describe('parseJevPatch', () => {
-  /** 合并底座夹具：验证缺席字段保留与空串清除。 */
-  const current = { enabled: true, apiKey: 'old-key', baseUrl: 'https://old.test', model: 'old-model', timeoutMs: 3000 }
+  /** База слияния: проверяет сохранение отсутствующих полей и очистку пустой строкой. */
+  const current = { enabled: true, provider: 'aitunnel', model: 'old-model', timeoutMs: 3000 }
 
-  it('空 patch：返回 current 的浅拷贝，字段全保留', () => {
+  it('пустая правка: поверхностная копия current, все поля сохранены', () => {
     expect(parseJevPatch(current, {})).toEqual(current)
   })
 
-  it('enabled 非布尔：整体拒绝', () => {
+  it('enabled не булево: правка отвергается целиком', () => {
     expect(parseJevPatch(current, { enabled: 'yes' })).toBe('invalid: jev.enabled 必须是布尔值')
   })
 
-  it('apiKey 非字符串：整体拒绝', () => {
-    expect(parseJevPatch(current, { apiKey: 123 })).toBe('invalid: jev.apiKey 必须是字符串')
+  it('provider не строка: правка отвергается целиком', () => {
+    expect(parseJevPatch(current, { provider: 123 })).toBe('invalid: jev.provider 必须是字符串')
   })
 
-  it('apiKey 空串或纯空白：清除面板覆盖，回落 yml', () => {
-    expect(parseJevPatch(current, { apiKey: '' })).toEqual({ ...current, apiKey: undefined })
-    expect(parseJevPatch(current, { apiKey: '   ' })).toEqual({ ...current, apiKey: undefined })
+  it('provider — пустая строка или пробелы: выбор снимается (Jev молча уходит в чистые правила)', () => {
+    expect(parseJevPatch(current, { provider: '' })).toEqual({ ...current, provider: undefined })
+    expect(parseJevPatch(current, { provider: '   ' })).toEqual({ ...current, provider: undefined })
   })
 
-  it('apiKey 非空：去首尾空白后保留', () => {
-    expect(parseJevPatch(current, { apiKey: '  new-key  ' })).toEqual({ ...current, apiKey: 'new-key' })
+  it('provider непустой: сохраняется без крайних пробелов', () => {
+    expect(parseJevPatch(current, { provider: '  aitunnel  ' })).toEqual({ ...current, provider: 'aitunnel' })
   })
 
-  it('baseUrl 非法（非 URL 或非 http(s) 协议）：整体拒绝', () => {
-    expect(parseJevPatch(current, { baseUrl: 'not-a-url' })).toBe('invalid: jev.baseUrl 必须是 http(s) URL')
-    expect(parseJevPatch(current, { baseUrl: 'ftp://panel.test' })).toBe('invalid: jev.baseUrl 必须是 http(s) URL')
+  it('endpoint негодный (не URL или не http(s)): правка отвергается целиком', () => {
+    expect(parseJevPatch(current, { endpoint: 'not-a-url' })).toBe('invalid: jev.endpoint 必须是 http(s) URL')
+    expect(parseJevPatch(current, { endpoint: 'ftp://panel.test' })).toBe('invalid: jev.endpoint 必须是 http(s) URL')
   })
 
-  it('baseUrl 合法 http(s)：去首尾空白后保留', () => {
-    expect(parseJevPatch(current, { baseUrl: ' http://panel.test ' })).toEqual({ ...current, baseUrl: 'http://panel.test' })
+  it('endpoint годный http(s): сохраняется без крайних пробелов', () => {
+    expect(parseJevPatch(current, { endpoint: ' http://panel.test/v1/systemone ' }))
+      .toEqual({ ...current, endpoint: 'http://panel.test/v1/systemone' })
   })
 
-  it('model 空白或非字符串：整体拒绝；合法值 trim', () => {
-    expect(parseJevPatch(current, { model: '   ' })).toBe('invalid: jev.model 不能为空')
+  it('endpoint — пустая строка: адрес очищается, возвращается шаблон от провайдера', () => {
+    const withEndpoint = { ...current, endpoint: 'https://panel.test/v1/systemone' }
+    expect(parseJevPatch(withEndpoint, { endpoint: '' })).toEqual({ ...current, endpoint: undefined })
+  })
+
+  it('model пустой или не строка: пустая строка снимает выбор, не строка — отказ', () => {
+    // Пустая строка означает «модель не выбрана» — так же, как и у провайдера.
+    expect(parseJevPatch(current, { model: '   ' })).toEqual({ ...current, model: undefined })
     expect(parseJevPatch(current, { model: 42 })).toBe('invalid: jev.model 不能为空')
     expect(parseJevPatch(current, { model: ' m ' })).toEqual({ ...current, model: 'm' })
   })
 
-  it('timeoutMs 非整数或越界：整体拒绝；边界 1000/60000 通过', () => {
+  it('timeoutMs не целое или вне границ: правка отвергается; границы 1000/60000 проходят', () => {
     expect(parseJevPatch(current, { timeoutMs: 999 })).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
     expect(parseJevPatch(current, { timeoutMs: 60001 })).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
     expect(parseJevPatch(current, { timeoutMs: 1.5 })).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
@@ -142,77 +172,70 @@ describe('parseJevPatch', () => {
     expect(parseJevPatch(current, { timeoutMs: 60000 })).toEqual({ ...current, timeoutMs: 60000 })
   })
 
-  it('任一字段非法即整体拒绝：合法字段也不落盘', () => {
+  it('негодное поле отвергает правку целиком: годные поля тоже не сохраняются', () => {
     const result = parseJevPatch(current, { model: 'good', timeoutMs: 1 })
     expect(result).toBe('invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒')
   })
 })
 
 describe('effectiveJevConfig', () => {
-  it('空覆盖：原样透出基线', () => {
+  it('пустое перекрытие: база отдаётся как есть', () => {
     expect(effectiveJevConfig(baseConfig, {})).toEqual(baseConfig)
   })
 
-  it('面板字段级覆盖生效，三阈值永远来自基线', () => {
+  it('поля панели перекрывают базу, три порога всегда из базы', () => {
     const merged = effectiveJevConfig(baseConfig, {
       enabled: true,
-      apiKey: 'panel-key',
-      baseUrl: 'https://panel.test',
+      provider: 'panel-provider',
       model: 'panel-model',
+      endpoint: 'https://panel.test/v1/systemone',
       timeoutMs: 5000,
     })
-    expect(merged.baseUrl).toBe('https://panel.test')
+    expect(merged.provider).toBe('panel-provider')
     expect(merged.model).toBe('panel-model')
+    expect(merged.endpoint).toBe('https://panel.test/v1/systemone')
     expect(merged.timeoutMs).toBe(5000)
-    expect(merged.apiKey).toBe('panel-key')
     expect(merged.deferMergeAbove).toBe(0.85)
     expect(merged.deferAcceptBelow).toBe(0.15)
     expect(merged.contradictMinProbability).toBe(0.8)
   })
 
-  it('enabled=true 但无任何密钥：强制降级 enabled=false', () => {
-    const merged = effectiveJevConfig({ ...baseConfig, apiKey: undefined }, { enabled: true })
-    expect(merged.enabled).toBe(false)
-    expect(merged.apiKey).toBeUndefined()
+  it('нет провайдера или модели: enabled принудительно снимается', () => {
+    const noProvider = effectiveJevConfig({ ...baseConfig, provider: undefined }, { enabled: true })
+    expect(noProvider.enabled).toBe(false)
+    expect(noProvider.provider).toBeUndefined()
+    const noModel = effectiveJevConfig({ ...baseConfig, model: undefined }, { enabled: true })
+    expect(noModel.enabled).toBe(false)
   })
 
-  it('面板关闭开关：即使 yml 有密钥也禁用，且不透出密钥', () => {
+  it('панель снимает выбор провайдера: Jev выключается, даже если yml его задавал', () => {
+    const merged = effectiveJevConfig(baseConfig, { enabled: true, provider: '' })
+    expect(merged.enabled).toBe(false)
+  })
+
+  it('панель выключает тумблер: Jev выключен', () => {
     const merged = effectiveJevConfig(baseConfig, { enabled: false })
     expect(merged.enabled).toBe(false)
-    expect(merged.apiKey).toBeUndefined()
-  })
-})
-
-describe('maskApiKey', () => {
-  it('长度 > 8：显尾 4 位', () => {
-    expect(maskApiKey('abcd1234efgh')).toBe('****efgh')
-  })
-
-  it('长度 <= 8：全掩码', () => {
-    expect(maskApiKey('abcd1234')).toBe('******')
-    expect(maskApiKey('k')).toBe('******')
   })
 })
 
 describe('jevConfigView', () => {
-  it('已配置密钥：apiKeySet 为 true，掩码取合并后的密钥', () => {
+  it('выбор провайдера и модели отдаётся как есть, ключа и адреса в виде нет', () => {
     const view = jevConfigView(baseConfig, {})
     expect(view.enabled).toBe(true)
-    expect(view.apiKeySet).toBe(true)
-    expect(view.apiKeyMask).toBe('****7890')
-    expect(view.baseUrl).toBe('https://api.typesafe.ai')
+    expect(view.provider).toBe('aitunnel')
     expect(view.model).toBe('jev-1')
+    expect(view.endpoint).toBeUndefined()
     expect(view.timeoutMs).toBe(3000)
     expect(view.deferMergeAbove).toBe(0.85)
     expect(view.deferAcceptBelow).toBe(0.15)
     expect(view.contradictMinProbability).toBe(0.8)
   })
 
-  it('无密钥降级：apiKeySet 为 false，掩码为 null', () => {
-    const view = jevConfigView({ ...baseConfig, apiKey: undefined }, {})
+  it('пустой выбор провайдера: enabled=false в виде', () => {
+    const view = jevConfigView({ ...baseConfig, provider: undefined }, {})
     expect(view.enabled).toBe(false)
-    expect(view.apiKeySet).toBe(false)
-    expect(view.apiKeyMask).toBeNull()
+    expect(view.provider).toBeUndefined()
   })
 })
 
@@ -227,24 +250,28 @@ describe('resolveJevField', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('yml 启用且有密钥、无覆盖文件：装配 judge', () => {
-    const field = resolveJevField(baseConfig, dir)
+  it('yml включён, выбор сделан, файла перекрытия нет: судья собирается', () => {
+    const field = resolveJevField(hostStub, baseConfig, dir)
     expect(typeof field.judge?.ask).toBe('function')
   })
 
-  it('yml 禁用：空对象，不装配 judge', () => {
-    expect(resolveJevField({ ...baseConfig, enabled: false }, dir)).toEqual({})
+  it('yml выключен: пустой объект, судья не собирается', () => {
+    expect(resolveJevField(hostStub, { ...baseConfig, enabled: false }, dir)).toEqual({})
   })
 
-  it('面板覆盖关闭开关：重读覆盖文件即时生效，judge 消失', async () => {
-    expect(typeof resolveJevField(baseConfig, dir).judge?.ask).toBe('function')
+  it('провайдер не выбран: пустой объект, судья не собирается', () => {
+    expect(resolveJevField(hostStub, { ...baseConfig, provider: undefined }, dir)).toEqual({})
+  })
+
+  it('панель выключает тумблер: перекрытие перечитывается сразу, судья исчезает', async () => {
+    expect(typeof resolveJevField(hostStub, baseConfig, dir).judge?.ask).toBe('function')
     saveJevOverride(dir, { enabled: false })
-    expect(resolveJevField(baseConfig, dir)).toEqual({})
+    expect(resolveJevField(hostStub, baseConfig, dir)).toEqual({})
   })
 
-  it('面板覆盖补密钥：yml 无密钥时也能装配 judge', async () => {
-    saveJevOverride(dir, { enabled: true, apiKey: 'panel-key' })
-    const field = resolveJevField({ ...baseConfig, apiKey: undefined }, dir)
+  it('панель добавляет выбор: без провайдера в yml судья всё равно собирается', async () => {
+    saveJevOverride(dir, { enabled: true, provider: 'aitunnel', model: 'jev-1' })
+    const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined }, dir)
     expect(typeof field.judge?.ask).toBe('function')
   })
 })
