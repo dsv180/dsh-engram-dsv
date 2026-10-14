@@ -33,6 +33,8 @@ const LINKED_PACKAGES = [
   ['@deepseek-ai/dsh-client-ui-settings', 'packages/client/ui-settings'],
   ['@deepseek-ai/dsh-client-ui-renderer', 'packages/client/ui-renderer'],
   ['@deepseek-ai/dsh-client-ui-slots', 'packages/client/ui-slots'],
+  ['@deepseek-ai/dsh-client-ui-layout', 'packages/client/ui-layout'],
+  ['@deepseek-ai/dsh-client-ui-sidebar', 'packages/client/ui-sidebar'],
   ['@deepseek-ai/dsh-llm', 'packages/llm/llm'],
   ['@deepseek-ai/dsh-agent', 'packages/core/agent'],
   ['@deepseek-ai/dsh-scope', 'packages/core/scope'],
