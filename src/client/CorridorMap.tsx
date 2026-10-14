@@ -279,19 +279,28 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
     <div className={styles.mapWrap}>
       <svg ref={svgRef} viewBox={`0 0 ${String(width)} ${String(height)}`} className={styles.map}
         preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={scope}>
-        {/* 房间背景带（斑马纹区隔）。scope 切换通过父 svg key 重挂载触发 fade-in。 */}
+        {/* 房间块（v0.8.3 走廊 2.0：斑马纹升级为建筑平面 —— 圆角房间 + 房间色描边 + 门牌）。
+            每个房间 = 一个 kind 的领地；房间之间的间隙即「走廊」。scope 切换通过父 svg key 重挂载触发 fade-in。 */}
         {roomKinds.map((kind, idx) => {
           const band = width / Math.max(roomKinds.length, 1)
-          return <rect key={kind} x={band * idx} y={0} width={band} height={height} fill={idx % 2 === 0 ? 'rgba(127,127,127,0.04)' : 'transparent'} />
-        })}
-        {/* 房间标签条顶部。 */}
-        {roomKinds.map((kind, idx) => {
-          const band = width / Math.max(roomKinds.length, 1)
+          const color = KIND_PALETTE[kind] ?? '#7d8590'
+          const count = nodes.filter(n => n.kind === kind).length
           return (
-            <text key={`${kind}-label`} x={band * (idx + 0.5)} y={14} textAnchor="middle"
-              fill="rgba(127,127,127,0.7)" fontSize="10" fontFamily="ui-sans-serif, system-ui">
-              {roomLabel(t, kind)}
-            </text>
+            <g key={kind}>
+              <rect x={band * idx + 6} y={22} width={band - 12} height={height - 32} rx={10}
+                fill={color} fillOpacity={0.05} stroke={color} strokeOpacity={0.3}
+                strokeDasharray="none" strokeWidth={1.2}
+                style={{ transition: 'fill-opacity 200ms ease' }} />
+              {/* 门牌：房名 + 驻留数（左上角） */}
+              <text x={band * idx + 16} y={40} textAnchor="start"
+                fill={color} fontSize="11" fontWeight={600} fontFamily="ui-sans-serif, system-ui">
+                {roomLabel(t, kind)}
+              </text>
+              <text x={band * idx + 16} y={54} textAnchor="start"
+                fill="rgba(127,127,127,0.75)" fontSize="10" fontFamily="ui-sans-serif, system-ui">
+                {`${count} · ${t('corridorRoomOccupant')}`}
+              </text>
+            </g>
           )
         })}
         {/* 走廊边：高亮时画弹簧弧线（quadratic 曲线 + 垂直凸起 6px），其他边保持直线。

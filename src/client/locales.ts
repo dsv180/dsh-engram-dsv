@@ -157,6 +157,7 @@ export type EngramKey =
   | 'corridorLoad'
   | 'corridorAria'
   | 'corridorSummary'
+  | 'corridorRoomOccupant'
   | 'edgeSupersedes'
   | 'edgeContradicts'
   | 'edgeOther'
@@ -506,6 +507,7 @@ export const zh: Record<EngramKey, string> = {
   corridorLoad: '加载走廊鸟瞰…',
   corridorAria: '走廊鸟瞰图',
   corridorSummary: '{nodes} 条记忆 · {edges} 条走廊',
+  corridorRoomOccupant: '条驻留',
   edgeSupersedes: '推陈出新',
   edgeContradicts: '互斥',
   edgeOther: '相邻 / 支持 / 提炼',
@@ -847,6 +849,7 @@ export const en: Record<EngramKey, string> = {
   corridorLoad: 'Loading corridor overview…',
   corridorAria: 'Corridor overview map',
   corridorSummary: '{nodes} memories · {edges} corridors',
+  corridorRoomOccupant: 'staying',
   edgeSupersedes: 'supersedes',
   edgeContradicts: 'contradicts',
   edgeOther: 'related / supports / refines',
