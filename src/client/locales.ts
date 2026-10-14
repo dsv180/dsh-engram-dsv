@@ -95,6 +95,15 @@ export type EngramKey =
   | 'kpiActive'
   | 'kpiForgotten'
   | 'kpiSignal'
+  | 'pageHeaderTodaySubtitle'
+  | 'pageHeaderLibrarySubtitle'
+  | 'pageHeaderCorridorSubtitle'
+  | 'pageHeaderEpisodesSubtitle'
+  | 'pageHeaderEntitiesSubtitle'
+  | 'pageHeaderBeliefsSubtitle'
+  | 'pageHeaderLogSubtitle'
+  | 'pageHeaderBackfillSubtitle'
+  | 'pageHeaderJevSubtitle'
   | 'emptyHint'
   | 'relSupersededBy'
   | 'relSupersedes'
@@ -434,6 +443,15 @@ export const zh: Record<EngramKey, string> = {
   kpiActive: '开放',
   kpiForgotten: '闭馆',
   kpiSignal: '清晰度',
+  pageHeaderTodaySubtitle: '今日记忆库状态、入殿导航、待办与诊脉',
+  pageHeaderLibrarySubtitle: '全量记忆库,支持房间/状态/排序筛选,列表行点击展开铭牌',
+  pageHeaderCorridorSubtitle: '记忆关系图谱与检索实验台,支持走 1-3 跳邻居',
+  pageHeaderEpisodesSubtitle: '按会话分组的经历时间线,支持邻近扩展与摘要回看',
+  pageHeaderEntitiesSubtitle: '实体词典:人物/项目/工具/概念,按类别与名称筛选',
+  pageHeaderBeliefsSubtitle: '巩固信念与证据链,点证据 n 条展开只读回查',
+  pageHeaderLogSubtitle: '两库合并的完整操作日志,按类别筛选',
+  pageHeaderBackfillSubtitle: '把历史会话逐轮提炼进宫殿,先估算再执行,可暂停续做',
+  pageHeaderJevSubtitle: 'Jev 系统一裁决,配置覆盖与近期裁决观测',
   opWrite: '落成',
   opWriteMerge: '落成·并入',
   opUpdate: '修缮',
@@ -760,6 +778,15 @@ export const en: Record<EngramKey, string> = {
   kpiActive: 'Open',
   kpiForgotten: 'Closed',
   kpiSignal: 'Clarity',
+  pageHeaderTodaySubtitle: "Today's palace state, tour proposal, refurbs, and pulse",
+  pageHeaderLibrarySubtitle: 'Full memory palace, filter by room/status/sort, click a row to expand',
+  pageHeaderCorridorSubtitle: 'Memory graph and recall bench, walk 1-3 hops via neighbours',
+  pageHeaderEpisodesSubtitle: 'Sessions grouped by episode, with adjacent-window and summary recall',
+  pageHeaderEntitiesSubtitle: 'Entity dictionary (people/projects/tools/concepts), filter by kind and name',
+  pageHeaderBeliefsSubtitle: 'Consolidated beliefs with evidence chain, click "n evidence" for read-only recall',
+  pageHeaderLogSubtitle: 'Merged operation log across both DBs, filterable by category',
+  pageHeaderBackfillSubtitle: 'Distil historical sessions into the palace, estimate first then run, resumable',
+  pageHeaderJevSubtitle: 'Jev system-one adjudication, config overrides and recent decisions log',
   opWrite: 'opened',
   opWriteMerge: 'merged in',
   opUpdate: 'renovated',

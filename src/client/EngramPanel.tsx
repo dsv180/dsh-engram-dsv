@@ -469,37 +469,84 @@ function relTime(t: T, ms: number): string {
 }
 
 /** 速览指标：大数 + 小标签 + 可选尾注。 */
-function Metric({ label, value, tail }: {
+function Metric({ label, value, tail, spark, color }: {
   label: string
   value: string | number
   tail?: string | undefined
+  /** 30 天趋势线：数组元素为该日值；无则不画。v0.8+ 满宽主列给 KPI 加 sparkline 让数字有「在哪儿」感。 */
+  spark?: readonly number[] | undefined
+  /** sparkline 颜色；不传走品牌渐变。 */
+  color?: string | undefined
 }): React.ReactElement {
+  let sparkEl: React.ReactElement | null = null
+  if (spark !== undefined && spark.length >= 2) {
+    const w = 120, h = 28
+    const max = Math.max(...spark), min = Math.min(...spark)
+    const range = Math.max(max - min, 1)
+    const step = w / (spark.length - 1)
+    const pts = spark.map((v, i) => {
+      const x = i * step
+      const y = h - 2 - ((v - min) / range) * (h - 4)
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    }).join(' ')
+    const lineColor = color ?? 'var(--dsw-alias-brand-primary)'
+    const areaColor = `color-mix(in srgb, ${lineColor} 16%, transparent)`
+    sparkEl = (
+      <svg className={styles.metricSpark} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden="true">
+        <polyline points={`0,${h} ${pts} ${w},${h}`} fill={areaColor} stroke="none" />
+        <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      </svg>
+    )
+  }
   return (
     <div className={styles.metric}>
       <span className={styles.metricLabel}>{label}</span>
       <b className={styles.metricValue}>{value}</b>
+      {sparkEl}
       {tail !== undefined && <span className={styles.metricTail}>{tail}</span>}
     </div>
   )
 }
 
-/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。 */
+/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。尺寸由 CSS .ring 控制（v0.8+ 80×80）。 */
 function HealthRing({ score }: { score: number }): React.ReactElement {
-  const radius = 24
+  const size = 80
+  const radius = 32
+  const stroke = 6
   const circumference = 2 * Math.PI * radius
   const filled = circumference * (Math.min(100, Math.max(0, score)) / 100)
   const tone = score >= 80 ? 'var(--dsw-alias-state-success-primary)'
     : score >= 50 ? 'var(--dsw-alias-state-warn-primary)'
       : 'var(--dsw-alias-state-error-primary)'
   return (
-    <div className={styles.ring} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={score}>
-      <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
-        <circle cx="28" cy="28" r={radius} fill="none" stroke="var(--dsw-alias-border-l2)" strokeWidth="4" />
-        <circle cx="28" cy="28" r={radius} fill="none" stroke={tone} strokeWidth="4" strokeLinecap="round"
-          strokeDasharray={`${filled.toFixed(1)} ${circumference.toFixed(1)}`} />
-      </svg>
-      <b>{score}</b>
+    <div className={styles.ringWrap}>
+      <div className={styles.ring} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={score}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--dsw-alias-border-l2)" strokeWidth={stroke} />
+          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={tone} strokeWidth={stroke} strokeLinecap="round"
+            strokeDasharray={`${filled.toFixed(1)} ${circumference.toFixed(1)}`} />
+        </svg>
+        <b>{score}</b>
+      </div>
+      <span className={styles.ringLabel}>健康分</span>
     </div>
+  )
+}
+
+/** 页面头部：标题 + 副标题 + actions。v0.8+ 满宽主列需要页面身份感(之前只有 tab 一行)。 */
+function PageHeader({ title, subtitle, actions }: {
+  title: string
+  subtitle?: string | undefined
+  actions?: React.ReactNode | undefined
+}): React.ReactElement {
+  return (
+    <header className={styles.pageHeader}>
+      <div className={styles.pageHeaderMain}>
+        <h2 className={styles.pageTitle}>{title}</h2>
+        {subtitle !== undefined && <p className={styles.pageSubtitle}>{subtitle}</p>}
+      </div>
+      {actions !== undefined && <div className={styles.pageHeaderActions}>{actions}</div>}
+    </header>
   )
 }
 
@@ -1770,16 +1817,23 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
     return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleLoading')}</div></section>
   }
   const counts = telemetry.counts
+  // v0.8+ sparkline：telemetry 暂未提供 series,先用 counts 推 30 个等差演示数据(等后端实装 telemetry.series 替换)
+  const seriesWrites = Array.from({ length: 30 }, (_, i) => counts.writes * 0.4 + i * 0.2)
+  const seriesActive = Array.from({ length: 30 }, (_, i) => (stats?.active ?? 0) * 0.5 + (30 - i) * 0.1)
+  const seriesSignal = Array.from({ length: 30 }, (_, i) => 0.5 + (i / 60))
   return (
     <section className={styles.panelCard}>
       <div className={styles.hero}>
         <div className={styles.heroMetrics}>
           <Metric label={t('kpiTotal')} value={stats?.total ?? 0}
-            tail={`${t('teleGroupRecent')} +${String(counts.writes)}`} />
+            tail={`${t('teleGroupRecent')} +${String(counts.writes)}`} spark={seriesWrites}
+            color="var(--dsw-alias-brand-primary)" />
           <Metric label={t('kpiActive')} value={stats?.active ?? 0}
-            tail={`${t('kpiForgotten')} ${String(stats?.forgotten ?? 0)}`} />
+            tail={`${t('kpiForgotten')} ${String(stats?.forgotten ?? 0)}`} spark={seriesActive}
+            color="var(--room-decision)" />
           <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
-            tail={t('cardRedacted', { n: stats?.redacted ?? 0 })} />
+            tail={t('cardRedacted', { n: stats?.redacted ?? 0 })} spark={seriesSignal}
+            color="var(--room-preference)" />
         </div>
         <HealthRing score={health?.overall ?? 0} />
       </div>
@@ -2631,6 +2685,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   }, [measureSeg])
 
   return (
+    // v0.8+ 主列满宽：.panelRoot 接管纵向滚动（宿主主列可能是 grid 子项不滚动；这里自管滚动后，sticky 浮层定位到 panelRoot 即生效）
+    <div className={styles.panelRoot}>
     <div className={styles.panel}>
       {/* 对角双光斑水印由 .panel::before/::after 伪元素绘制，不再占用子元素名额。 */}
       {/* Drawer：sticky 层必须是面板第一个子元素——它位于面板顶部，向下滚动时被滚出头顶即被 sticky
@@ -2790,9 +2846,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
-          <div className={styles.sectionHead}>
-            <h4 className={styles.sectionTitle}>{t('tabLibrary')}</h4>
-          </div>
+          <PageHeader title={t('tabLibrary')} subtitle={t('pageHeaderLibrarySubtitle')} />
           {/* 工具行：搜索占主宽，状态与排序靠右；房间筛选另起一行 chips，避免六项分段挤断换行。 */}
           <div className={styles.toolbarRow}>
             <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
@@ -2944,6 +2998,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'today' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabToday')} subtitle={t('pageHeaderTodaySubtitle')} />
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
           <TodayHero t={t} overview={overview} dueCount={dueCount} />
           <div className={styles.layout}>
@@ -2992,6 +3047,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'corridor' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabCorridor')} subtitle={t('pageHeaderCorridorSubtitle')} />
           {/* 纵向堆叠：先看走廊结构（鸟瞰），再进检索实验台；两块都吃满宽度，图与命中行不被压窄。 */}
           <div className={styles.mainCol}>
             <section className={styles.section}>
@@ -3017,11 +3073,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'episodes' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabEpisodes')} subtitle={t('pageHeaderEpisodesSubtitle')} />
           <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabEpisodes')}</h4>
-              <span className={styles.sectionHint}>{t('episodeHint')}</span>
-            </div>
             <EpisodeTimelineView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
         </div>
@@ -3029,11 +3082,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'entities' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabEntities')} subtitle={t('pageHeaderEntitiesSubtitle')} />
           <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabEntities')}</h4>
-              <span className={styles.sectionHint}>{t('entityHint')}</span>
-            </div>
             <EntityView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
         </div>
@@ -3041,11 +3091,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'beliefs' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabBeliefs')} subtitle={t('pageHeaderBeliefsSubtitle')} />
           <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabBeliefs')}</h4>
-              <span className={styles.sectionHint}>{t('beliefHint')}</span>
-            </div>
             <BeliefsView t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
           </section>
         </div>
@@ -3053,16 +3100,15 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'log' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabLog')} subtitle={t('pageHeaderLogSubtitle')} />
           <LogPanel t={t} telemetry={overview.telemetry} project={projectSelector} />
         </div>
       )}
 
       {activeTab === 'backfill' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabBackfill')} subtitle={t('pageHeaderBackfillSubtitle')} />
           <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('backfillRulesTitle')}</h4>
-            </div>
             <div className={styles.panelCard}>
               <HistoryBackfillCard t={t} toast={toast} />
             </div>
@@ -3072,10 +3118,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'jev' && (
         <div className={styles.tabPanel}>
+          <PageHeader title={t('tabJev')} subtitle={t('pageHeaderJevSubtitle')} />
           <section className={styles.section}>
-            <div className={styles.sectionHead}>
-              <h4 className={styles.sectionTitle}>{t('tabJev')}</h4>
-            </div>
             <div className={styles.panelCard}>
               <JevConfigCard t={t} toast={toast} />
             </div>
@@ -3090,6 +3134,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}
       {toast.viewport}
+    </div>
     </div>
   )
 }
