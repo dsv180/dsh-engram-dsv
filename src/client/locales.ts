@@ -104,6 +104,12 @@ export type EngramKey =
   | 'pageHeaderLogSubtitle'
   | 'pageHeaderBackfillSubtitle'
   | 'pageHeaderJevSubtitle'
+  | 'heatmapTitle'
+  | 'heatmapTotal'
+  | 'heatmapActiveDays'
+  | 'heatmapUnit'
+  | 'heatmapLess'
+  | 'heatmapMore'
   | 'emptyHint'
   | 'relSupersededBy'
   | 'relSupersedes'
@@ -452,6 +458,12 @@ export const zh: Record<EngramKey, string> = {
   pageHeaderLogSubtitle: '两库合并的完整操作日志,按类别筛选',
   pageHeaderBackfillSubtitle: '把历史会话逐轮提炼进宫殿,先估算再执行,可暂停续做',
   pageHeaderJevSubtitle: 'Jev 系统一裁决,配置覆盖与近期裁决观测',
+  heatmapTitle: '近 90 天活动热力',
+  heatmapTotal: '次写入',
+  heatmapActiveDays: '个活跃日',
+  heatmapUnit: '次',
+  heatmapLess: '少',
+  heatmapMore: '多',
   opWrite: '落成',
   opWriteMerge: '落成·并入',
   opUpdate: '修缮',
@@ -787,6 +799,12 @@ export const en: Record<EngramKey, string> = {
   pageHeaderLogSubtitle: 'Merged operation log across both DBs, filterable by category',
   pageHeaderBackfillSubtitle: 'Distil historical sessions into the palace, estimate first then run, resumable',
   pageHeaderJevSubtitle: 'Jev system-one adjudication, config overrides and recent decisions log',
+  heatmapTitle: 'Last 90 days activity',
+  heatmapTotal: 'writes',
+  heatmapActiveDays: 'active days',
+  heatmapUnit: 'writes',
+  heatmapLess: 'Less',
+  heatmapMore: 'More',
   opWrite: 'opened',
   opWriteMerge: 'merged in',
   opUpdate: 'renovated',

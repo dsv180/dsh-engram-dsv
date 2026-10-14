@@ -550,6 +550,64 @@ function PageHeader({ title, subtitle, actions }: {
   )
 }
 
+/**
+ * 活动热力日历：GitHub contributions 风的 90 天 7 行网格，每格代表一天的写入/摄取/修缮计数。
+ * v0.8.1+ 嵌入「今日速览」Hero 下方做数据氛围。数据从 telemetry.dailyWrites 拿。
+ * 没有数据时返回 null（占位让位不显示，避免空白区域显得奇怪）。
+ */
+function ActivityHeatmap({ t, daily }: { t: T; daily?: ReadonlyArray<{ dayMs: number; count: number }> | undefined }): React.ReactElement | null {
+  if (daily === undefined || daily.length === 0) return null
+  const max = Math.max(1, ...daily.map(d => d.count))
+  // 把 daily 按"周"分列：先 pad 到周日，然后每 7 天一周
+  const firstDayMs = daily[0]!.dayMs
+  const firstDow = new Date(firstDayMs).getDay() // 0=Sun..6=Sat
+  const cells: Array<{ dayMs: number; count: number; level: 0 | 1 | 2 | 3 | 4 } | null> = [
+    ...Array(firstDow).fill(null),
+    ...daily.map(d => {
+      const ratio = d.count / max
+      const level: 0 | 1 | 2 | 3 | 4 = d.count === 0 ? 0 : ratio < 0.25 ? 1 : ratio < 0.5 ? 2 : ratio < 0.75 ? 3 : 4
+      return { dayMs: d.dayMs, count: d.count, level }
+    }),
+  ]
+  // 补到 7 的倍数
+  while (cells.length % 7 !== 0) cells.push(null)
+  const weeks: Array<Array<typeof cells[number]>> = []
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
+  const total = daily.reduce((acc, d) => acc + d.count, 0)
+  const activeDays = daily.filter(d => d.count > 0).length
+  return (
+    <section className={`${styles.panelCard} ${styles.heatmapCard}`}>
+      <div className={styles.heatmapHead}>
+        <h4 className={styles.heatmapTitle}>{t('heatmapTitle')}</h4>
+        <div className={styles.heatmapSummary}>
+          <span><b>{total}</b> {t('heatmapTotal')}</span>
+          <span><b>{activeDays}</b> {t('heatmapActiveDays')}</span>
+        </div>
+      </div>
+      <div className={styles.heatmapGrid} role="grid" aria-label={t('heatmapTitle')}>
+        {weeks.map((week, wi) => (
+          // 一列 7 格，自上而下 Sun..Sat（与 GitHub 一致）
+          <div key={wi} className={styles.heatmapCol}>
+            {week.map((cell, di) => cell === null
+              ? <span key={di} className={styles.heatmapCell} aria-hidden="true" />
+              : <span key={di} className={`${styles.heatmapCell} ${styles[`heatmapL${cell.level}`]}`}
+                  title={`${new Date(cell.dayMs).toLocaleDateString()} · ${cell.count} ${t('heatmapUnit')}`} />)}
+          </div>
+        ))}
+      </div>
+      <div className={styles.heatmapLegend} aria-hidden="true">
+        <span>{t('heatmapLess')}</span>
+        <span className={`${styles.heatmapCell} ${styles.heatmapL0}`} />
+        <span className={`${styles.heatmapCell} ${styles.heatmapL1}`} />
+        <span className={`${styles.heatmapCell} ${styles.heatmapL2}`} />
+        <span className={`${styles.heatmapCell} ${styles.heatmapL3}`} />
+        <span className={`${styles.heatmapCell} ${styles.heatmapL4}`} />
+        <span>{t('heatmapMore')}</span>
+      </div>
+    </section>
+  )
+}
+
 /** 细仪表条：重要性（品牌色）与置信（成功色）共用，conf 变体换色。 */
 function Meter({ value, conf }: { value: number; conf?: boolean }): React.ReactElement {
   return (
@@ -1760,6 +1818,8 @@ interface TelemetrySnapshot {
     readonly distillRequests: number
     readonly consolidations: number
   }
+  /** v0.8.1+ 每日写入序列（活动热力日历用）。 */
+  readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
 }
 
 /**
@@ -1788,7 +1848,8 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
     Promise.all([
       // stats 带 scope：project 时经 api() 注入选择器，host 让 project 段按选择器解析（缺省行为不变）。
       api<{ parts: StatsPart[] }>(`stats?scope=${scope}`),
-      api<TelemetrySnapshot>(`telemetry?days=7&scope=${scope}`),
+      // v0.8.1+ 取 90 天窗口给活动热力日历用
+      api<TelemetrySnapshot>(`telemetry?days=90&scope=${scope}`),
       api<HealthReport>(`health?scope=${scope}`),
     ])
       .then(([statRes, tele, health]) => {
@@ -3001,6 +3062,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           <PageHeader title={t('tabToday')} subtitle={t('pageHeaderTodaySubtitle')} />
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
           <TodayHero t={t} overview={overview} dueCount={dueCount} />
+          {/* v0.8.1+ 活动热力日历：90 天写入/摄取/修缮分布，GitHub 风的 7×N 网格 */}
+          <ActivityHeatmap t={t} daily={overview.telemetry === null ? undefined : overview.telemetry.dailyWrites} />
           <div className={styles.layout}>
             {/* 左：入殿导航（进宫的入口）；右：房间目录 + 翻新清单（要看的与要做的）。
                 今日到期不再单独成卡：消费者是 agent（review 工具链），面板只在速览条显示计数、在陈展提供筛选。 */}
