@@ -380,30 +380,22 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
 
   return (
     <div className={styles.mapWrap}>
-      <svg ref={svgRef} viewBox={`0 0 ${String(width)} ${String(height)}`} className={styles.map}
+      <svg ref={svgRef} viewBox={`0 0 ${String(width)} ${String(height)}`} className={`${styles.map} ${styles.mapGraph}`}
         preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={scope}>
-        {/* 房间块（v0.8.3 走廊 2.0：斑马纹升级为建筑平面 —— 圆角房间 + 房间色描边 + 门牌）。
-            每个房间 = 一个 kind 的领地；房间之间的间隙即「走廊」。scope 切换通过父 svg key 重挂载触发 fade-in。 */}
+        {/* 房间背景带（关系图模式用轻斑马纹分区即可;建筑房间块是平面图模式的语言）。 */}
+        {roomKinds.map((kind, idx) => {
+          const band = width / Math.max(roomKinds.length, 1)
+          return <rect key={kind} x={band * idx + 2} y={4} width={band - 4} height={height - 8} rx={8}
+            fill={idx % 2 === 0 ? 'rgba(127,127,127,0.05)' : 'transparent'} />
+        })}
         {roomKinds.map((kind, idx) => {
           const band = width / Math.max(roomKinds.length, 1)
           const color = KIND_PALETTE[kind] ?? '#7d8590'
-          const count = nodes.filter(n => n.kind === kind).length
           return (
-            <g key={kind}>
-              <rect x={band * idx + 6} y={22} width={band - 12} height={height - 32} rx={10}
-                fill={color} fillOpacity={0.05} stroke={color} strokeOpacity={0.3}
-                strokeDasharray="none" strokeWidth={1.2}
-                style={{ transition: 'fill-opacity 200ms ease' }} />
-              {/* 门牌：房名 + 驻留数（左上角） */}
-              <text x={band * idx + 16} y={40} textAnchor="start"
-                fill={color} fontSize="11" fontWeight={600} fontFamily="ui-sans-serif, system-ui">
-                {roomLabel(t, kind)}
-              </text>
-              <text x={band * idx + 16} y={54} textAnchor="start"
-                fill="rgba(127,127,127,0.75)" fontSize="10" fontFamily="ui-sans-serif, system-ui">
-                {`${count} · ${t('corridorRoomOccupant')}`}
-              </text>
-            </g>
+            <text key={`${kind}-label`} x={band * (idx + 0.5)} y={16} textAnchor="middle"
+              fill={color} fillOpacity={0.85} fontSize="10" fontWeight={600} fontFamily="ui-sans-serif, system-ui">
+              {roomLabel(t, kind)}
+            </text>
           )
         })}
         {/* 走廊边：高亮时画弹簧弧线（quadratic 曲线 + 垂直凸起 6px），其他边保持直线。
@@ -467,6 +459,12 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
                 <title>{`${n.title}（${n.kind}/${n.status}）`}</title>
               </circle>
               {isSelected && <circle r={String(n.r + 4)} fill="none" stroke={color} strokeOpacity={0.4} strokeWidth={1} />}
+              {nodes.length <= 40 && (
+                <text y={String(n.r + 12)} textAnchor="middle" fill="rgba(127,127,127,0.85)" fontSize="8"
+                  fontFamily="ui-sans-serif, system-ui" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                  {n.title.length > 9 ? `${n.title.slice(0, 9)}…` : n.title}
+                </text>
+              )}
             </g>
           )
         })}
@@ -488,6 +486,13 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
             </g>
           )
         })()}
+        {/* 零边提示：关系图的价值在边;无边时明说,不要让用户看一堆孤点。 */}
+        {edges.length === 0 && (
+          <text x={String(width / 2)} y={String(height / 2)} textAnchor="middle"
+            fill="rgba(127,127,127,0.75)" fontSize="12" fontFamily="ui-sans-serif, system-ui">
+            {t('corridorNoEdges')}
+          </text>
+        )}
       </svg>
       <div className={styles.legend}>
         {roomKinds.map(kind => (
@@ -499,14 +504,24 @@ export function CorridorMap(props: CorridorMapProps): ReactElement {
         <span className={styles.legendItem}>{t('corridorSummary', { nodes: nodes.length, edges: edges.length })}</span>
       </div>
       <div className={styles.legend} style={{ marginTop: 2 }}>
-        {Object.entries(EDGE_STYLE).map(([type, style]) => (
-          <span key={type} className={styles.legendItem}>
-            <svg width={20} height={6} aria-hidden="true">
-              <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
-            </svg>
-            <span>{type === 'supersedes' ? t('edgeSupersedes') : type === 'contradicts' ? t('edgeContradicts') : t('edgeOther')}</span>
-          </span>
-        ))}
+        {edges.length > 0 && ([
+          ['other', t('edgeOther'), EDGE_STYLE.related!],
+          ['supersedes', t('edgeSupersedes'), EDGE_STYLE.supersedes!],
+          ['contradicts', t('edgeContradicts'), EDGE_STYLE.contradicts!],
+        ] as const).map(([type, label, style]) => {
+          const present = type === 'other'
+            ? edges.some(e => e.type !== 'supersedes' && e.type !== 'contradicts')
+            : edges.some(e => e.type === type)
+          if (!present) return null
+          return (
+            <span key={type} className={styles.legendItem}>
+              <svg width={20} height={6} aria-hidden="true">
+                <line x1={0} y1={3} x2={20} y2={3} stroke={style.color} strokeWidth={style.width} strokeDasharray={style.dash} />
+              </svg>
+              <span>{label}</span>
+            </span>
+          )
+        })}
       </div>
     </div>
   )

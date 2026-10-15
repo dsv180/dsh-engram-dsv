@@ -175,6 +175,7 @@ export type EngramKey =
   | 'corridorHall'
   | 'corridorOverflow'
   | 'corridorFloorHint'
+  | 'corridorNoEdges'
   | 'corridorIndexStaying'
   | 'corridorIndexRooms'
   | 'edgeSupersedes'
@@ -544,6 +545,7 @@ export const zh: Record<EngramKey, string> = {
   corridorHall: '走廊 · 主通道',
   corridorOverflow: '+{n} 已开新房',
   corridorFloorHint: '点房间或右侧索引跳到「陈展」按房筛选',
+  corridorNoEdges: '记忆间还没有关系边 —— 蒸馏、取代或矛盾时会产生',
   corridorIndexStaying: '条驻留',
   corridorIndexRooms: '{n} 间房',
   edgeSupersedes: '推陈出新',
@@ -905,6 +907,7 @@ export const en: Record<EngramKey, string> = {
   corridorHall: 'Corridor · main hall',
   corridorOverflow: '+{n} overflow room',
   corridorFloorHint: 'Click a room or the index to filter the palace list',
+  corridorNoEdges: 'No edges yet — they form via distill, supersede, or contradiction',
   corridorIndexStaying: 'staying',
   corridorIndexRooms: '{n} rooms',
   edgeSupersedes: 'supersedes',

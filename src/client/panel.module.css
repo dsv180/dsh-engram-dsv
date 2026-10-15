@@ -373,6 +373,8 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .map { width: 100%; height: auto; display: block; background: color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent); border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); user-select: none; }
 /* 平面图专用：SVG 不随卡片拉伸到巨物（设计稿比例 720×380,限宽居中）。 */
 .mapFloorplan { max-width: 680px; margin: 0 auto; }
+/* 关系图专用：同样限宽,房间带与节点标签保持可读比例。 */
+.mapGraph { max-width: 860px; margin: 0 auto; }
 /* 走廊页平面模式：左平面图 + 右房间索引条（v0.8.7）。 */
 .floorplanGrid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
 @media (max-width: 960px) {
