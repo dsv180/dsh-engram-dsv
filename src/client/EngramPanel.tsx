@@ -508,11 +508,11 @@ function Metric({ label, value, tail, spark, color }: {
   )
 }
 
-/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。尺寸由 CSS .ring 控制（v0.8+ 80×80）。 */
+/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。尺寸由 CSS .ring 控制（v0.8.5 收敛为 64×64）。 */
 function HealthRing({ score }: { score: number }): React.ReactElement {
-  const size = 80
-  const radius = 32
-  const stroke = 6
+  const size = 64
+  const radius = 26
+  const stroke = 5
   const circumference = 2 * Math.PI * radius
   const filled = circumference * (Math.min(100, Math.max(0, score)) / 100)
   const tone = score >= 80 ? 'var(--dsw-alias-state-success-primary)'
