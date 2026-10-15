@@ -1522,8 +1522,8 @@ function EpisodeTimelineView({ t, scope, project, reloadTick }: {
 
   return (
     <>
-      {/* 过滤行：日期范围 + 可选会话 id；「应用」后生效，「重置」回到全量。 */}
-      <div className={styles.toolbarRow}>
+      {/* v0.8.9 过滤行收进工具条卡。 */}
+      <div className={styles.toolbarCard}>
         <input type="date" className={styles.input} value={sinceDate} aria-label={t('episodeSince')}
           onChange={event => { setSinceDate(event.target.value) }} />
         <span className={styles.episodeRangeSep} aria-hidden="true">–</span>
@@ -1705,8 +1705,8 @@ function EntityView({ t, scope, project, reloadTick }: {
 
   return (
     <>
-      {/* 过滤行：类别 chips；切换过滤时收起已展开的详情卡，避免与新列表错位。 */}
-      <div className={styles.chipRow}>
+      {/* v0.8.9 过滤区收进工具条卡:类别 chips + 搜索框 + 计数,一个容器。 */}
+      <div className={styles.toolbarCard}>
         {([
           ['all', t('entityKindAll')],
           ...ENTITY_KINDS.map(option => [option, t(ENTITY_KIND_KEY[option] ?? 'entityKindOther')] as const),
@@ -1717,10 +1717,11 @@ function EntityView({ t, scope, project, reloadTick }: {
             {label}
           </button>
         ))}
-      </div>
-      <div className={styles.toolbarRow}>
-        <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
-          onChange={event => { setQ(event.target.value.trim()); setDetail(null); setFacts(null) }} />
+        <span className={styles.searchBox}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
+          <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
+            onChange={event => { setQ(event.target.value.trim()); setDetail(null); setFacts(null) }} />
+        </span>
         {data !== null && <span className={styles.sectionHint}>{t('entityCount', { n: data.total })}</span>}
       </div>
       {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
@@ -1834,7 +1835,7 @@ function BeliefsView({ t, scope, project, reloadTick }: {
 
   return (
     <>
-      <div className={styles.chipRow}>
+      <div className={styles.toolbarCard}>
         {([
           ['all', t('beliefStatusAll')],
           ['active', t('beliefStatusActive')],
@@ -2305,10 +2306,19 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
             ? <span className={styles.backfillMuted}>{estimate.unavailable}</span>
             : (
               <>
-                <div className={styles.backfillNumbers}>
-                  <span className={styles.backfillMetric}>{t('backfillCandidates', { n: estimate.candidates })}</span>
-                  <span className={styles.backfillMetric}>{t('backfillPendingTurns', { n: estimate.pendingTurns })}</span>
-                  <span className={styles.backfillMetric}>{t('backfillAlready', { n: estimate.alreadyIngested })}</span>
+                <div className={styles.logTiles}>
+                  <span className={styles.statTile}>
+                    <span className={styles.statTileLabel}>{t('backfillLabelCandidates')}</span>
+                    <b className={styles.statTileValue}>{estimate.candidates}</b>
+                  </span>
+                  <span className={styles.statTile}>
+                    <span className={styles.statTileLabel}>{t('backfillLabelPending')}</span>
+                    <b className={styles.statTileValue}>{estimate.pendingTurns}</b>
+                  </span>
+                  <span className={styles.statTile}>
+                    <span className={styles.statTileLabel}>{t('backfillLabelSkipped')}</span>
+                    <b className={styles.statTileValue}>{estimate.alreadyIngested}</b>
+                  </span>
                 </div>
                 <div className={styles.backfillMuted}>
                   {t('backfillSkippedDetail', {
@@ -3026,10 +3036,13 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLibrary')} subtitle={t('pageHeaderLibrarySubtitle')} />
-          {/* 工具行：搜索占主宽，状态与排序靠右；房间筛选另起一行 chips，避免六项分段挤断换行。 */}
-          <div className={styles.toolbarRow}>
-            <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
-              onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
+          {/* v0.8.9 工具行收进工具条卡;房间 chips 仍单独一行。 */}
+          <div className={styles.toolbarCard}>
+            <span className={styles.searchBox}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
+              <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
+                onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
+            </span>
             <div className={styles.segGroup}>
               {([
                 ['all', t('allStatuses')],

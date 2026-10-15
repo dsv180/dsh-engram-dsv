@@ -104,6 +104,9 @@ export type EngramKey =
   | 'healthLabel'
   | 'tabOps'
   | 'pageHeaderOpsSubtitle'
+  | 'backfillLabelCandidates'
+  | 'backfillLabelPending'
+  | 'backfillLabelSkipped'
   | 'pageHeaderTodaySubtitle'
   | 'pageHeaderLibrarySubtitle'
   | 'pageHeaderCorridorSubtitle'
@@ -475,6 +478,9 @@ export const zh: Record<EngramKey, string> = {
   healthLabel: '宫殿健康',
   tabOps: '运维',
   pageHeaderOpsSubtitle: '历史会话回填与 Jev 裁决,后台管线集中一处',
+  backfillLabelCandidates: '候选会话',
+  backfillLabelPending: '待处理轮数',
+  backfillLabelSkipped: '已摄取跳过',
   pageHeaderTodaySubtitle: '今日记忆库状态、入殿导航、待办与诊脉',
   pageHeaderLibrarySubtitle: '全量记忆库,支持房间/状态/排序筛选,列表行点击展开铭牌',
   pageHeaderCorridorSubtitle: '记忆关系图谱与检索实验台,支持走 1-3 跳邻居',
@@ -833,6 +839,9 @@ export const en: Record<EngramKey, string> = {
   healthLabel: 'Palace health',
   tabOps: 'Ops',
   pageHeaderOpsSubtitle: 'Session backfill and Jev adjudication, one ops hub',
+  backfillLabelCandidates: 'Candidate sessions',
+  backfillLabelPending: 'Pending turns',
+  backfillLabelSkipped: 'Already captured',
   pageHeaderTodaySubtitle: "Today's palace state, tour proposal, refurbs, and pulse",
   pageHeaderLibrarySubtitle: 'Full memory palace, filter by room/status/sort, click a row to expand',
   pageHeaderCorridorSubtitle: 'Memory graph and recall bench, walk 1-3 hops via neighbours',
