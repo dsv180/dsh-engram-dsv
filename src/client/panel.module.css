@@ -185,7 +185,7 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 
 /* ---------- 双列工作台（v0.8+ 适配主列满宽：左入殿导航 · 房间目录 · 待办三块；右侧宽放画像 · 翻新清单；
    比例从 1:1.25 改为 1:1.6 给右侧画像/翻新更多呼吸；≤960px 回落单列） ---------- */
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: var(--space-5); align-items: start; margin-top: var(--space-5); }
+.layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; margin-top: var(--space-5); }
 .mainCol { min-width: 0; display: flex; flex-direction: column; gap: var(--space-5); }
 .sideCol { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; position: sticky; top: var(--space-3); }
 /* 窄屏：双列回落单列，侧栏取消 sticky 顺流排布。 */
@@ -395,17 +395,17 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .heatmapTitle { margin: 0; font-size: var(--fs-display); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .heatmapSummary { display: flex; gap: var(--space-5); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .heatmapSummary b { color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 4px; }
-/* 7 行 × N 列网格：每列 7 格 = 一周（Sun..Sat）。响应式：cell 11-12px。 */
-.heatmapGrid { display: flex; gap: 3px; overflow-x: auto; padding: 2px 0; }
-.heatmapCol { display: flex; flex-direction: column; gap: 3px; flex: none; }
-.heatmapCell { display: block; width: 12px; height: 12px; border-radius: 3px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); transition: transform 80ms var(--ease-spring); }
+/* 7 行 × N 列网格：每列 7 格 = 一周（Sun..Sat）。格子固定 14px,26 周 ≈ 470px 填满左宽列。 */
+.heatmapGrid { display: flex; gap: 4px; padding: 2px 0; overflow-x: auto; }
+.heatmapCol { display: flex; flex-direction: column; gap: 4px; flex: none; }
+.heatmapCell { display: block; width: 14px; height: 14px; border-radius: 3px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); transition: transform 80ms var(--ease-spring); }
 .heatmapCell:hover { transform: scale(1.4); outline: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 60%, transparent); outline-offset: 1px; }
 .heatmapL1 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL2 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL3 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 70%, var(--dsw-alias-bg-layer-1)); }
 .heatmapL4 { background: var(--dsw-alias-brand-primary); }
 .heatmapLegend { display: flex; align-items: center; gap: 4px; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
-.heatmapLegend .heatmapCell { width: 10px; height: 10px; }
+.heatmapLegend .heatmapCell { width: 10px; height: 10px; aspect-ratio: auto; flex: none; }
 /* 活动条目：单条入场；列表项 stagger 由 nth-child 驱动。 */
 .timeline li { animation: itemIn var(--dur-base) var(--ease-spring) both; }
 .timeline li:nth-child(2) { animation-delay: 40ms; }
@@ -443,7 +443,7 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .refurbHead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-bottom: var(--space-2); }
 .refurbHead .button { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-micro); }
 .refurbCount { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
-.refurbList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--dsw-alias-border-l1); animation: refurbReflow var(--dur-slow) var(--ease-spring) backwards; }
+.refurbList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--dsw-alias-border-l1); animation: refurbReflow var(--dur-slow) var(--ease-spring) backwards; max-height: 320px; overflow-y: auto; }
 /* 行式与陈展列表同一语言：分隔线取代色块，卡内工具行（建议数 + 重新扫描）单独一行。 */
 .refurbItem { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); animation: refurbItemIn var(--dur-base) var(--ease-spring) backwards; }
 .refurbList > .refurbItem:last-child { border-bottom: 0; }

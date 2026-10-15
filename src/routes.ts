@@ -649,7 +649,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'GET' && route === 'telemetry') {
             // 宫殿遥测：本地聚合 op_log 近 N 天的关键指标，全部数据本地保留。
             // 可选 scope 查询：限定只看某一库（不传 = 三库聚合，向后兼容）。
-            const windowDays = Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 7) || 7))
+            const windowDays = Math.min(366, Math.max(1, Number(url.searchParams.get('days') ?? 7) || 7))
             const rawScope = url.searchParams.get('scope')
             const scopeFilter: 'user' | 'project' | 'shared' | undefined =
               rawScope === 'user' ? 'user' : rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : undefined

@@ -1875,8 +1875,8 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
     Promise.all([
       // stats 带 scope：project 时经 api() 注入选择器，host 让 project 段按选择器解析（缺省行为不变）。
       api<{ parts: StatsPart[] }>(`stats?scope=${scope}`),
-      // v0.8.1+ 取 90 天窗口给活动热力日历用
-      api<TelemetrySnapshot>(`telemetry?days=90&scope=${scope}`),
+      // v0.8.6+ 取 26 周(182 天)窗口给活动热力日历,正好填满左宽列
+      api<TelemetrySnapshot>(`telemetry?days=182&scope=${scope}`),
       api<HealthReport>(`health?scope=${scope}`),
     ])
       .then(([statRes, tele, health]) => {
@@ -3090,11 +3090,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {/* 今日速览：主指标 + 健康环，替代原常驻日报条。 */}
           <TodayHero t={t} overview={overview} dueCount={dueCount} />
           {/* v0.8.1+ 活动热力日历：90 天写入/摄取/修缮分布，GitHub 风的 7×N 网格 */}
-          <ActivityHeatmap t={t} daily={overview.telemetry === null ? undefined : overview.telemetry.dailyWrites} />
           <div className={styles.layout}>
-            {/* 左：入殿导航（进宫的入口）；右：房间目录 + 翻新清单（要看的与要做的）。
+            {/* v0.8.6 dashboard 结构：左宽列 = 半年热力 + 入殿导航；右窄列 = 房间目录 + 翻新清单 + 画像。
                 今日到期不再单独成卡：消费者是 agent（review 工具链），面板只在速览条显示计数、在陈展提供筛选。 */}
             <div className={styles.mainCol}>
+              <ActivityHeatmap t={t} daily={overview.telemetry === null ? undefined : overview.telemetry.dailyWrites} />
               <section className={styles.section}>
                 <div className={styles.sectionHead}>
                   <h4 className={styles.sectionTitle}>{t('tourProposalTitle')}</h4>
@@ -3105,14 +3105,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               </section>
             </div>
             <aside className={styles.sideCol}>
-              <section className={styles.section}>
-                <div className={styles.sectionHead}>
-                  <h4 className={styles.sectionTitle}>{t('profileTitle')}</h4>
-                </div>
-                <div className={styles.panelCard}>
-                  <ProfileCard t={t} scope={scope} project={projectSelector} />
-                </div>
-              </section>
               <section className={styles.section}>
                 <div className={styles.sectionHead}>
                   <h4 className={styles.sectionTitle}>{t('roomsTitle')}</h4>
@@ -3128,6 +3120,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 </div>
                 <div className={styles.panelCard}>
                   <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} />
+                </div>
+              </section>
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('profileTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <ProfileCard t={t} scope={scope} project={projectSelector} />
                 </div>
               </section>
             </aside>
