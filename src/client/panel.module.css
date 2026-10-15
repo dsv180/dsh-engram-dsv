@@ -44,10 +44,11 @@
 
 /* ---------- 根容器 ---------- */
 /* 不设 overflow:hidden：sticky 浮层依赖最近滚动容器是宿主弹窗的滚动区；面板自身的裁剪交给水印伪元素 inset:0 内敛实现。 */
-.panel { max-width: 1240px; margin: 0 auto; animation: panelIn var(--dur-slow) var(--ease-out) both; position: relative; isolation: isolate; min-height: 0; }
+.panel { max-width: 1240px; margin: 0 auto; animation: panelIn var(--dur-slow) var(--ease-out) both; position: relative; isolation: isolate; min-height: 0; box-sizing: border-box; }
 /* 自身接管纵向滚动：宿主主列可能是 grid 子项（不滚动），这里声明 overflow-y 保证长列表/日志/回填
-   页可独立滚动。内边距只在这一层给（面板内容层不再叠加，避免双重留白）。sticky 浮层定位到本层。 */
-.panelRoot { width: 100%; height: 100%; overflow-y: auto; overflow-x: hidden; padding: var(--space-4) var(--space-5) var(--space-6); }
+   页可独立滚动。内边距只在这一层给（面板内容层不再叠加，避免双重留白）。sticky 浮层定位到本层。
+   v0.8.7 安全区：border-box（否则 100%+padding 溢出容器右缘，文字被裁）+ 四周留足 24-32px。 */
+.panelRoot { width: 100%; height: 100%; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: var(--space-5) var(--space-6) var(--space-7); }
 /* 对角双光斑水印：右上琥珀 + 左下玫瑰。伪元素 inset:0 铺满面板，渐变中心用 at 定位到边缘之外——
    光斑视觉在面板外，但绘制面不溢出（旧版负偏移需要 overflow:hidden，会吞掉 sticky 浮层的滚动参照）。
    isolation 建立 stacking context，z-index:-1 让水印垫在流内容之下、panel 背景之上。
@@ -358,6 +359,23 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 /* ---------- 走廊鸟瞰图（中度版：拖拽 + hover 高亮 + tooltip + 响应式 viewBox） ---------- */
 .mapWrap { display: flex; flex-direction: column; gap: var(--space-3); }
 .map { width: 100%; height: auto; display: block; background: color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent); border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); user-select: none; }
+/* 平面图专用：SVG 不随卡片拉伸到巨物（设计稿比例 720×380,限宽居中）。 */
+.mapFloorplan { max-width: 680px; margin: 0 auto; }
+/* 走廊页平面模式：左平面图 + 右房间索引条（v0.8.7）。 */
+.floorplanGrid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+@media (max-width: 960px) {
+  .floorplanGrid { grid-template-columns: 1fr; }
+}
+.roomIndex { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.roomIndexStat { font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); padding: 2px 2px var(--space-2); }
+.roomIndexStat b { font-size: 20px; font-weight: 600; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.roomIndexRow { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) var(--space-3); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); cursor: pointer; text-align: left; transition: border-color var(--dur-fast) var(--ease-spring), transform var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring); }
+.roomIndexRow:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 5%, var(--dsw-alias-bg-layer-1)); transform: translateX(2px); }
+.roomIndexName { font-size: var(--fs-body); font-weight: 500; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roomIndexMeta { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+.roomIndexCount { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.roomBar { position: relative; width: 64px; height: 4px; border-radius: 2px; background: var(--dsw-alias-border-l1); overflow: hidden; }
+.roomBarFill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; }
 .node { cursor: grab; transition: transform var(--dur-fast) var(--ease-spring); }
 .node:active { cursor: grabbing; }
 .tooltip { pointer-events: none; }

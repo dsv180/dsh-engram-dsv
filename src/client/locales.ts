@@ -163,6 +163,8 @@ export type EngramKey =
   | 'corridorHall'
   | 'corridorOverflow'
   | 'corridorFloorHint'
+  | 'corridorIndexStaying'
+  | 'corridorIndexRooms'
   | 'edgeSupersedes'
   | 'edgeContradicts'
   | 'edgeOther'
@@ -517,7 +519,9 @@ export const zh: Record<EngramKey, string> = {
   corridorModeGraph: '关系图',
   corridorHall: '走廊 · 主通道',
   corridorOverflow: '+{n} 已开新房',
-  corridorFloorHint: '点房间跳到「陈展」按房筛选 · 共 {nodes} 条驻留',
+  corridorFloorHint: '点房间或右侧索引跳到「陈展」按房筛选',
+  corridorIndexStaying: '条驻留',
+  corridorIndexRooms: '{n} 间房',
   edgeSupersedes: '推陈出新',
   edgeContradicts: '互斥',
   edgeOther: '相邻 / 支持 / 提炼',
@@ -864,7 +868,9 @@ export const en: Record<EngramKey, string> = {
   corridorModeGraph: 'Graph',
   corridorHall: 'Corridor · main hall',
   corridorOverflow: '+{n} overflow room',
-  corridorFloorHint: 'Click a room to filter the palace list · {nodes} staying',
+  corridorFloorHint: 'Click a room or the index to filter the palace list',
+  corridorIndexStaying: 'staying',
+  corridorIndexRooms: '{n} rooms',
   edgeSupersedes: 'supersedes',
   edgeContradicts: 'contradicts',
   edgeOther: 'related / supports / refines',

@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, zh, type EngramKey } from './locales.ts'
-import { CorridorMap, FloorplanMap } from './CorridorMap.tsx'
+import { CorridorMap, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 
@@ -1331,6 +1331,13 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
   const [failed, setFailed] = useState<string | null>(null)
   // v0.8.4 走廊双模式：平面图（建筑平面,默认,设计稿 #floorplan）/ 关系图（力导向,保留边价值）
   const [mode, setMode] = usePersistedState<'floorplan' | 'graph'>('corridor.mode', 'floorplan', ['floorplan', 'graph'])
+  // v0.8.7 右侧房间索引条：按驻留数降序（与平面图排房一致）
+  const roomCounts = useMemo(() => {
+    if (graph === null) return []
+    const counts = new Map<string, number>()
+    for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([kind, count]) => ({ kind, count }))
+  }, [graph])
   useEffect(() => {
     let cancelled = false
     api<CorridorGraph>(`corridor?status=active,archived&scope=${scope}`)
@@ -1356,12 +1363,33 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
             {t('corridorModeGraph')}
           </button>
         </div>
-        {mode === 'floorplan' && (
-          <span className={styles.sectionHint}>{t('corridorFloorHint', { nodes: graph.nodes.length })}</span>
-        )}
       </div>
       {mode === 'floorplan'
-        ? <FloorplanMap nodes={graph.nodes} onOpenRoom={onOpenRoom} t={t} />
+        ? (
+          <div className={styles.floorplanGrid}>
+            <FloorplanMap nodes={graph.nodes} onOpenRoom={onOpenRoom} t={t} />
+            <aside className={styles.roomIndex}>
+              <div className={styles.roomIndexStat}>
+                <b>{graph.nodes.length}</b> {t('corridorIndexStaying')} · {t('corridorIndexRooms', { n: roomCounts.length })}
+              </div>
+              {roomCounts.map(room => (
+                <button key={room.kind} type="button" className={styles.roomIndexRow}
+                  onClick={() => onOpenRoom(room.kind)}>
+                  <span className={styles.roomSwatch} style={{ background: KIND_PALETTE[room.kind] ?? '#7d8590' }} aria-hidden="true" />
+                  <span className={styles.roomIndexName}>{kindLabel(t, room.kind)}</span>
+                  <span className={styles.roomIndexMeta}>
+                    <span className={styles.roomBar} aria-hidden="true">
+                      <span className={styles.roomBarFill}
+                        style={{ width: `${String(Math.min(100, Math.round((room.count / 9) * 100)))}%`, background: KIND_PALETTE[room.kind] ?? '#7d8590' }} />
+                    </span>
+                    <span className={styles.roomIndexCount}>{String(room.count)} / 9</span>
+                  </span>
+                </button>
+              ))}
+              <span className={styles.sectionHint}>{t('corridorFloorHint', { nodes: graph.nodes.length })}</span>
+            </aside>
+          </div>
+        )
         : <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />}
     </div>
   )

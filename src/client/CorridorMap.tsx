@@ -43,8 +43,8 @@ interface CorridorEdge {
   readonly type: string
 }
 
-/** 房间色板：5 个语义色相（按 kind 分组）。 */
-const KIND_PALETTE: Readonly<Record<string, string>> = {
+/** 房间色板：5 个语义色相（按 kind 分组）。导出供宿主面板的房间索引条共用同一色源。 */
+export const KIND_PALETTE: Readonly<Record<string, string>> = {
   fact: '#5b8def',
   preference: '#f0a85c',
   decision: '#9b6bd9',
@@ -167,7 +167,7 @@ export function FloorplanMap({ nodes, onOpenRoom, t }: {
 
   return (
     <div className={styles.mapWrap}>
-      <svg viewBox={`0 0 ${String(width)} ${String(height)}`} className={styles.map}
+      <svg viewBox={`0 0 ${String(width)} ${String(height)}`} className={`${styles.map} ${styles.mapFloorplan}`}
         preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={rooms.map(r => r.kind).join('-')}>
         {/* 外墙 */}
         <rect x={6} y={6} width={width - 12} height={height - 12} rx={14}
