@@ -325,7 +325,8 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .empty { text-align: center; color: var(--dsw-alias-label-secondary); padding: var(--space-8) var(--space-4) calc(var(--space-7) + 16px); font-size: var(--fs-body); animation: fadeSoft var(--dur-slow) var(--ease-spring) both; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
 .empty b { display: block; color: var(--dsw-alias-label-primary); font-size: var(--fs-h2); font-weight: 600; margin: 0; letter-spacing: -0.01em; }
 .empty span { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); max-width: 360px; line-height: 1.55; }
-.empty::before { content: ''; display: block; width: 64px; height: 64px; margin: 0; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); background: linear-gradient(135deg, color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent), transparent 70%); }
+.emptyArt { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 20px; background: linear-gradient(135deg, color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent), color-mix(in srgb, var(--dsw-alias-brand-primary) 4%, transparent)); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-border-l2)); }
+.emptyArtIcon { width: 36px; height: 36px; stroke: color-mix(in srgb, var(--dsw-alias-brand-primary) 75%, var(--dsw-alias-label-primary)); fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- 侧栏卡片（统一面板单元） ---------- */
 /* 卡片是静态容器：描边只表达边界，不给 hover 反馈（不可点的不装作可点）。
@@ -574,11 +575,19 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .metricLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); white-space: nowrap; letter-spacing: 0.02em; }
 /* 主指标 32px：与宿主 KPI 卡同级；sparkline 在数字下方 */
 .metricValue { font-size: 32px; line-height: 1.05; font-weight: 600; letter-spacing: -0.02em; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }
-.metricSpark { display: block; width: 110px; height: 22px; margin-top: 2px; }
+.metricSpark { display: block; width: 120px; height: 28px; margin-top: 2px; }
 .metricTail { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
-.ring { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
+/* delta 行（设计稿）：up=绿 ↑ / down=红 ↓ / flat=中性灰。 */
+.metricDelta { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.metricDeltaUp { color: var(--dsw-alias-state-success-primary); }
+.metricDeltaDown { color: var(--dsw-alias-state-error-primary); }
+/* 今日到期 > 0:数字警示色。 */
+.metricValueError { color: var(--dsw-alias-state-error-primary); }
+.ring { position: relative; width: 120px; height: 120px; flex-shrink: 0; }
 .ring svg { display: block; transform: rotate(-90deg); }
-.ring b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ring b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 环独立小卡（设计稿 .ring-wrap）：淡底 + 描边 + 内边距,与 KPI 区隔。 */
+.ringCard { background: color-mix(in srgb, var(--dsw-alias-bg-card, var(--dsw-alias-bg-layer-1)) 70%, transparent); border: 1px solid var(--dsw-alias-border-soft); border-radius: var(--radius-card); padding: var(--space-4) var(--space-5); display: flex; flex-direction: column; align-items: center; }
 .ringLabel { display: block; text-align: center; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); margin-top: 4px; letter-spacing: 0.02em; }
 
 /* ---------- 房间色相（五间房各一色；pill 与房间目录共用） ---------- */
@@ -615,6 +624,11 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .roomSwatch.roomSkill { background: var(--room-skill); }
 .roomCount { color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 
+/* ---------- 管家日志（v0.8.8:近 7 天计数 stat 瓦片行 + 工具条 + 宽表） ---------- */
+.logTiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3); margin-bottom: var(--space-3); }
+.logTile { display: flex; flex-direction: column; gap: 4px; padding: var(--space-3) var(--space-4); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); }
+.logTileTop { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.logTileValue { font-size: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
 /* ---------- 管家日志（工具条 + 整页宽表：色点 · 时间 · 操作 · 宫殿 · 摘要） ---------- */
 /* 工具条：标题与条数居左，三类计数居中，类别筛选靠右；窄屏整体换行。 */
 .logToolbar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
@@ -649,6 +663,14 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .profileDiffDel { padding: 0 var(--space-2); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-label-tertiary); text-decoration: line-through; white-space: pre-wrap; word-break: break-word; }
 .profileDiffSame { padding: 0 var(--space-2); color: var(--dsw-alias-label-tertiary); white-space: pre-wrap; word-break: break-word; }
 
+/* 实体卡行（v0.8.8）：色点 + 名称/别名两行 + 计数 + 查看。 */
+.entityRow { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-card); margin-bottom: var(--space-2); transition: border-color var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring); }
+.entityRow:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, var(--dsw-alias-border-l2)); }
+.entityDot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.entityMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.entityName { font-size: var(--fs-body); font-weight: 500; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entityAliases { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 情景时间线视图（episodes tab）：过滤行 + 会话组卡 + 邻近扩展卡。 */
 .episodeRangeSep { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); }
 .episodeAround { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); }
@@ -669,6 +691,10 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .beliefText { margin: 0; font-size: var(--fs-ctrl); line-height: 1.55; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
 .beliefMeta { display: flex; align-items: center; gap: var(--space-2); }
 .beliefTime { margin-left: auto; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+/* 信念强度点:证据数 0-6 可视化（v0.8.8）。 */
+.beliefDots { display: inline-flex; align-items: center; gap: 3px; }
+.beliefDot, .beliefDotOn { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-border-l2); }
+.beliefDotOn { background: var(--dsw-alias-brand-primary); }
 
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; }

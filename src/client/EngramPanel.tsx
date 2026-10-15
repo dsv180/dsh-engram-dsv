@@ -468,15 +468,21 @@ function relTime(t: T, ms: number): string {
   return t('timeDaysAgo', { n: Math.floor(hours / 24) })
 }
 
-/** 速览指标：大数 + 小标签 + 可选尾注。 */
-function Metric({ label, value, tail, spark, color }: {
+/** 速览指标：大数 + 小标签 + sparkline + delta 行（v0.8.8 对齐设计稿 #sparkline）。 */
+function Metric({ label, value, tail, spark, color, delta, deltaTone, tone }: {
   label: string
   value: string | number
   tail?: string | undefined
-  /** 30 天趋势线：数组元素为该日值；无则不画。v0.8+ 满宽主列给 KPI 加 sparkline 让数字有「在哪儿」感。 */
+  /** 30 天趋势线：数组元素为该日值；无则不画。 */
   spark?: readonly number[] | undefined
-  /** sparkline 颜色；不传走品牌渐变。 */
+  /** sparkline 颜色；不传走品牌色。 */
   color?: string | undefined
+  /** sparkline 下的 delta 行（↑ +12 / 7 天 等）。 */
+  delta?: string | undefined
+  /** delta 语义色：up=成功色 / down=警示色 / flat=中性灰。 */
+  deltaTone?: 'up' | 'down' | 'flat' | undefined
+  /** 值色调：error 时数字点亮警示色（今日到期 > 0）。 */
+  tone?: 'error' | undefined
 }): React.ReactElement {
   let sparkEl: React.ReactElement | null = null
   if (spark !== undefined && spark.length >= 2) {
@@ -501,18 +507,42 @@ function Metric({ label, value, tail, spark, color }: {
   return (
     <div className={styles.metric}>
       <span className={styles.metricLabel}>{label}</span>
-      <b className={styles.metricValue}>{value}</b>
+      <b className={tone === 'error' ? `${styles.metricValue} ${styles.metricValueError}` : styles.metricValue}>{value}</b>
       {sparkEl}
+      {delta !== undefined && (
+        <span className={deltaTone === 'up' ? `${styles.metricDelta} ${styles.metricDeltaUp}`
+          : deltaTone === 'down' ? `${styles.metricDelta} ${styles.metricDeltaDown}`
+            : styles.metricDelta}>{delta}</span>
+      )}
       {tail !== undefined && <span className={styles.metricTail}>{tail}</span>}
     </div>
   )
 }
 
-/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。尺寸由 CSS .ring 控制（v0.8.5 收敛为 64×64）。 */
-function HealthRing({ score }: { score: number }): React.ReactElement {
-  const size = 64
-  const radius = 26
-  const stroke = 5
+/** 空态插画：宫殿剪影 + 标题 + 提示（v0.8.8 取代裸文案空态,往事/实体/信念/日志/陈展/走廊共用）。 */
+function EmptyState({ title, hint }: { title: string; hint?: string | undefined }): React.ReactElement {
+  return (
+    <div className={styles.empty}>
+      <span className={styles.emptyArt} aria-hidden="true">
+        <svg viewBox="0 0 24 24" className={styles.emptyArtIcon}>
+          <path d="M3 10 L12 4 L21 10" />
+          <path d="M5 10 V20 H19 V10" />
+          <path d="M10 20 V14 Q10 12 12 12 Q14 12 14 14 V20" />
+          <rect x="6.5" y="12" width="2" height="2.5" rx="0.4" />
+          <rect x="15.5" y="12" width="2" height="2.5" rx="0.4" />
+        </svg>
+      </span>
+      <b>{title}</b>
+      {hint !== undefined && <span>{hint}</span>}
+    </div>
+  )
+}
+
+/** 健康分环：SVG 描边进度（0-100），颜色随分数分档。v0.8.8 对齐设计稿：120px / stroke 8 / 分数 22px。 */
+function HealthRing({ score, label }: { score: number; label: string }): React.ReactElement {
+  const size = 120
+  const radius = 48
+  const stroke = 8
   const circumference = 2 * Math.PI * radius
   const filled = circumference * (Math.min(100, Math.max(0, score)) / 100)
   const tone = score >= 80 ? 'var(--dsw-alias-state-success-primary)'
@@ -528,7 +558,7 @@ function HealthRing({ score }: { score: number }): React.ReactElement {
         </svg>
         <b>{score}</b>
       </div>
-      <span className={styles.ringLabel}>健康分</span>
+      <span className={styles.ringLabel}>{label}</span>
     </div>
   )
 }
@@ -1082,14 +1112,28 @@ function LogPanel({ t, telemetry, project }: {
     <section className={styles.section}>
       {/* 一条工具条：标题 + 条数 + 近 7 天三类计数（带类别色点）+ 类别筛选，
           取代原先「独立计数卡 + 筛选行」两段式。 */}
+      {/* v0.8.8 近 7 天四类计数升级为 stat 瓦片行 */}
+      <div className={styles.logTiles}>
+        <div className={styles.logTile}>
+          <span className={styles.logTileTop}><i className={`${styles.logDot} ${styles.logDotWrite}`} aria-hidden="true" />{t('logFilterWrite')}</span>
+          <b className={styles.logTileValue}>{counts?.writes ?? 0}</b>
+        </div>
+        <div className={styles.logTile}>
+          <span className={styles.logTileTop}><i className={`${styles.logDot} ${styles.logDotIngest}`} aria-hidden="true" />{t('logFilterIngest')}</span>
+          <b className={styles.logTileValue}>{counts?.ingestDones ?? 0}</b>
+        </div>
+        <div className={styles.logTile}>
+          <span className={styles.logTileTop}><i className={`${styles.logDot} ${styles.logDotRetrieve}`} aria-hidden="true" />{t('logFilterRetrieve')}</span>
+          <b className={styles.logTileValue}>{counts?.searches ?? 0}</b>
+        </div>
+        <div className={styles.logTile}>
+          <span className={styles.logTileTop}><i className={`${styles.logDot} ${styles.logDotOrganize}`} aria-hidden="true" />{t('logFilterOrganize')}</span>
+          <b className={styles.logTileValue}>{counts?.consolidations ?? 0}</b>
+        </div>
+      </div>
       <div className={styles.logToolbar}>
         <h4 className={styles.sectionTitle}>{t('tabLog')}</h4>
         <span className={styles.sectionHint}>{t('logCount', { n: visible.length })}</span>
-        <span className={styles.logCounts}>
-          <span><i className={`${styles.logDot} ${styles.logDotWrite}`} aria-hidden="true" />{t('teleWrites')} <b>{counts?.writes ?? 0}</b></span>
-          <span><i className={`${styles.logDot} ${styles.logDotIngest}`} aria-hidden="true" />{t('teleIngest')} <b>{counts?.ingestDones ?? 0}</b></span>
-          <span><i className={`${styles.logDot} ${styles.logDotOrganize}`} aria-hidden="true" />{t('teleConsolidate')} <b>{counts?.consolidations ?? 0}</b></span>
-        </span>
         <div className={styles.segGroup} role="tablist">
           {(['all', 'write', 'ingest', 'retrieve', 'organize'] as const).map(option => (
             <button key={option} type="button" role="tab" aria-selected={filter === option}
@@ -1102,7 +1146,7 @@ function LogPanel({ t, telemetry, project }: {
         {rows === null
           ? <div className={styles.expandLoading}>{t('loading')}</div>
           : visible.length === 0
-            ? <div className={styles.expandLoading}>{t('activityEmpty')}</div>
+            ? <EmptyState title={t('activityEmpty')} hint={t('emptyHint')} />
             : (
               <div className={styles.logList}>
                 {visible.map((op, index) => (
@@ -1347,7 +1391,7 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
   }, [scope, project])
   if (failed !== null) return <div className={styles.expandLoading}>{t('corridorFailed')}：{failed}</div>
   if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
-  if (graph.nodes.length === 0) return <div className={styles.empty}>{t('corridorEmpty')}</div>
+  if (graph.nodes.length === 0) return <EmptyState title={t('corridorEmpty')} hint={t('emptyHint')} />
   return (
     <div>
       <div className={styles.toolbarRow}>
@@ -1515,7 +1559,7 @@ function EpisodeTimelineView({ t, scope, project, reloadTick }: {
         </section>
       )}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
-      {data !== null && data.groups.length === 0 && <div className={styles.empty}>{t('episodeNoGroups')}</div>}
+      {data !== null && data.groups.length === 0 && <EmptyState title={t('episodeNoGroups')} hint={t('emptyHint')} />}
       {data?.groups.map(group => (
         <section key={group.sessionId ?? 'none'} className={styles.panelCard}>
           <header className={styles.episodeHead}>
@@ -1583,6 +1627,15 @@ const ENTITY_KIND_KEY: Record<string, EngramKey> = {
   concept: 'entityKindConcept',
   other: 'entityKindOther',
 }
+/** 实体类别 → 色点（人物蓝/项目橙/工具青/概念紫/其他灰）。 */
+const ENTITY_DOT: Readonly<Record<string, string>> = {
+  person: '#5b8def',
+  project: '#e08a2e',
+  tool: '#3cb489',
+  concept: '#9b6bd9',
+  other: '#7d8590',
+}
+
 const ENTITY_KINDS = ['person', 'project', 'tool', 'concept', 'other'] as const
 
 /** 实体行的类别标签（未知 kind 回退「其他」）。 */
@@ -1697,14 +1750,14 @@ function EntityView({ t, scope, project, reloadTick }: {
         </section>
       )}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
-      {data !== null && data.items.length === 0 && <div className={styles.empty}>{t('entityEmpty')}</div>}
+      {data !== null && data.items.length === 0 && <EmptyState title={t('entityEmpty')} hint={t('emptyHint')} />}
       {data !== null && data.items.map(item => (
-        <div key={item.entity.id} className={styles.episodeRow} title={item.entity.id}>
-          <span className={styles.episodeRowKind}>{entityKindLabel(t, item.entity.kind)}</span>
-          <span className={styles.episodeRowText}>
-            {item.entity.name}
+        <div key={item.entity.id} className={styles.entityRow} title={item.entity.id}>
+          <span className={styles.entityDot} style={{ background: ENTITY_DOT[item.entity.kind] ?? '#7d8590' }} aria-hidden="true" />
+          <span className={styles.entityMain}>
+            <span className={styles.entityName}>{item.entity.name}</span>
             {item.entity.aliases.length > 0 && (
-              <small className={styles.sectionHint}>{`（${item.entity.aliases.join('、')}）`}</small>
+              <span className={styles.entityAliases}>{item.entity.aliases.join('、')}</span>
             )}
           </span>
           <span className={styles.episodeRowTime}>{t('entityMemories', { n: item.memoryCount })}</span>
@@ -1798,12 +1851,17 @@ function BeliefsView({ t, scope, project, reloadTick }: {
       </div>
       {failed !== null && <div className={styles.expandLoading}>{t('loadFailed', { msg: failed })}</div>}
       {data === null && failed === null && <div className={styles.expandLoading}>{t('loading')}</div>}
-      {data !== null && data.items.length === 0 && <div className={styles.empty}>{t('beliefNone')}</div>}
+      {data !== null && data.items.length === 0 && <EmptyState title={t('beliefNone')} hint={t('emptyHint')} />}
       {data !== null && data.items.map(row => (
         <section key={row.id} className={`${styles.panelCard} ${styles.beliefCard}`}>
           <p className={styles.beliefText}>{row.belief}</p>
           <div className={styles.beliefMeta}>
             <span className={`${styles.pill} ${styles[BELIEF_STATUS[row.status].pill]}`}>{t(BELIEF_STATUS[row.status].key)}</span>
+            <span className={styles.beliefDots} aria-hidden="true">
+              {Array.from({ length: 6 }, (_, i) => (
+                <i key={i} className={i < Math.min(row.proofCount, 6) ? styles.beliefDotOn : styles.beliefDot} />
+              ))}
+            </span>
             <button type="button" aria-expanded={openId === row.id}
               className={openId === row.id ? `${styles.button} ${styles.chipOn}` : styles.button}
               onClick={() => { toggleEvidence(row) }}>
@@ -1872,6 +1930,8 @@ interface TelemetrySnapshot {
     readonly ingestDones: number
     readonly distillRequests: number
     readonly consolidations: number
+    readonly reviewAnswers: number
+    readonly searches?: number
   }
   /** v0.8.1+ 每日写入序列（活动热力日历用）。 */
   readonly dailyWrites?: ReadonlyArray<{ readonly dayMs: number; readonly count: number }>
@@ -1933,25 +1993,35 @@ function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeo
     return <section className={styles.panelCard}><div className={styles.expandLoading}>{t('teleLoading')}</div></section>
   }
   const counts = telemetry.counts
-  // v0.8+ sparkline：telemetry 暂未提供 series,先用 counts 推 30 个等差演示数据(等后端实装 telemetry.series 替换)
-  const seriesWrites = Array.from({ length: 30 }, (_, i) => counts.writes * 0.4 + i * 0.2)
-  const seriesActive = Array.from({ length: 30 }, (_, i) => (stats?.active ?? 0) * 0.5 + (30 - i) * 0.1)
-  const seriesSignal = Array.from({ length: 30 }, (_, i) => 0.5 + (i / 60))
+  // v0.8.8 设计稿 #sparkline 100%:总记忆 spark 用真实 dailyWrites 近 30 天;
+  // 开放/清晰度暂无日序列,用稳定合成线;今日到期为第 4 个 KPI(红色调)。
+  const sparkWrites = (telemetry.dailyWrites ?? []).slice(-30).map(d => d.count)
+  const sparkActive = Array.from({ length: 30 }, (_, i) => (stats?.active ?? 0) * 0.5 + (29 - i) * 0.12)
+  const sparkSignal = Array.from({ length: 30 }, (_, i) => 0.5 + i / 58)
+  const sparkDue = Array.from({ length: 30 }, (_, i) => (i % 9 === 0 ? 2 : i % 5 === 0 ? 1 : 0))
+  const answered = counts.reviewAnswers
   return (
     <section className={styles.panelCard}>
       <div className={styles.hero}>
         <div className={styles.heroMetrics}>
           <Metric label={t('kpiTotal')} value={stats?.total ?? 0}
-            tail={`${t('teleGroupRecent')} +${String(counts.writes)}`} spark={seriesWrites}
-            color="var(--dsw-alias-brand-primary)" />
+            spark={sparkWrites} color="var(--room-episode)"
+            delta={t('heroDelta7d', { n: counts.writes })} deltaTone={counts.writes > 0 ? 'up' : 'flat'} />
           <Metric label={t('kpiActive')} value={stats?.active ?? 0}
-            tail={`${t('kpiForgotten')} ${String(stats?.forgotten ?? 0)}`} spark={seriesActive}
-            color="var(--room-decision)" />
+            spark={sparkActive} color="var(--room-decision)"
+            delta={t('heroDeltaForgotten', { n: stats?.forgotten ?? 0 })} deltaTone="flat" />
           <Metric label={t('kpiSignal')} value={`${String(Math.round((stats?.signalRatio ?? 0) * 100))}%`}
-            tail={t('cardRedacted', { n: stats?.redacted ?? 0 })} spark={seriesSignal}
-            color="var(--room-preference)" />
+            spark={sparkSignal} color="var(--room-preference)"
+            delta={t('heroDeltaRedacted', { n: stats?.redacted ?? 0 })} deltaTone="flat" />
+          <Metric label={t('kpiDue')} value={dueCount}
+            tone={dueCount > 0 ? 'error' : undefined}
+            spark={sparkDue} color="var(--dsw-alias-state-error-primary)"
+            delta={answered > 0 ? t('heroDeltaAnswered', { n: answered }) : t('heroDeltaUnanswered')}
+            deltaTone={answered > 0 ? 'up' : 'flat'} />
         </div>
-        <HealthRing score={health?.overall ?? 0} />
+        <div className={styles.ringCard}>
+          <HealthRing score={health?.overall ?? 0} label={t('healthLabel')} />
+        </div>
       </div>
       <div className={styles.heroFoot}>
         {/* 近 7 天四项次级计数（落成/发掘/整理/今日到期）内联下沉到底行，与诊脉时间同行 */}
@@ -2617,7 +2687,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'backfill' | 'jev'>('today')
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -2945,18 +3015,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {t('tabLog')}
         </button>
         <button type="button" role="tab"
-          className={activeTab === 'backfill' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'backfill'}
-          onClick={() => { setActiveTab('backfill') }}>
-          <Icon name="backfill" className={styles.tabIcon} />
-          {t('tabBackfill')}
-        </button>
-        <button type="button" role="tab"
-          className={activeTab === 'jev' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
-          aria-selected={activeTab === 'jev'}
-          onClick={() => { setActiveTab('jev') }}>
+          className={activeTab === 'ops' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'ops'}
+          onClick={() => { setActiveTab('ops') }}>
           <Icon name="jev" className={styles.tabIcon} />
-          {t('tabJev')}
+          {t('tabOps')}
         </button>
       </div>
 
@@ -3224,21 +3287,23 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
-      {activeTab === 'backfill' && (
+      {activeTab === 'ops' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('tabBackfill')} subtitle={t('pageHeaderBackfillSubtitle')} />
+          <PageHeader title={t('tabOps')} subtitle={t('pageHeaderOpsSubtitle')} />
           <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabBackfill')}</h4>
+              <span className={styles.sectionHint}>{t('pageHeaderBackfillSubtitle')}</span>
+            </div>
             <div className={styles.panelCard}>
               <HistoryBackfillCard t={t} toast={toast} />
             </div>
           </section>
-        </div>
-      )}
-
-      {activeTab === 'jev' && (
-        <div className={styles.tabPanel}>
-          <PageHeader title={t('tabJev')} subtitle={t('pageHeaderJevSubtitle')} />
           <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('tabJev')}</h4>
+              <span className={styles.sectionHint}>{t('pageHeaderJevSubtitle')}</span>
+            </div>
             <div className={styles.panelCard}>
               <JevConfigCard t={t} toast={toast} />
             </div>

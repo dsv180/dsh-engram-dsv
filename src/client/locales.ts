@@ -95,6 +95,15 @@ export type EngramKey =
   | 'kpiActive'
   | 'kpiForgotten'
   | 'kpiSignal'
+  | 'kpiDue'
+  | 'heroDelta7d'
+  | 'heroDeltaForgotten'
+  | 'heroDeltaRedacted'
+  | 'heroDeltaAnswered'
+  | 'heroDeltaUnanswered'
+  | 'healthLabel'
+  | 'tabOps'
+  | 'pageHeaderOpsSubtitle'
   | 'pageHeaderTodaySubtitle'
   | 'pageHeaderLibrarySubtitle'
   | 'pageHeaderCorridorSubtitle'
@@ -457,6 +466,15 @@ export const zh: Record<EngramKey, string> = {
   kpiActive: '开放',
   kpiForgotten: '闭馆',
   kpiSignal: '清晰度',
+  kpiDue: '今日到期',
+  heroDelta7d: '↑ +{n} / 7 天',
+  heroDeltaForgotten: '{n} 闭馆',
+  heroDeltaRedacted: '{n} 条脱敏',
+  heroDeltaAnswered: '{n} 已作答',
+  heroDeltaUnanswered: '今日未作答',
+  healthLabel: '宫殿健康',
+  tabOps: '运维',
+  pageHeaderOpsSubtitle: '历史会话回填与 Jev 裁决,后台管线集中一处',
   pageHeaderTodaySubtitle: '今日记忆库状态、入殿导航、待办与诊脉',
   pageHeaderLibrarySubtitle: '全量记忆库,支持房间/状态/排序筛选,列表行点击展开铭牌',
   pageHeaderCorridorSubtitle: '记忆关系图谱与检索实验台,支持走 1-3 跳邻居',
@@ -806,6 +824,15 @@ export const en: Record<EngramKey, string> = {
   kpiActive: 'Open',
   kpiForgotten: 'Closed',
   kpiSignal: 'Clarity',
+  kpiDue: 'Due today',
+  heroDelta7d: '↑ +{n} / 7d',
+  heroDeltaForgotten: '{n} closed',
+  heroDeltaRedacted: '{n} redacted',
+  heroDeltaAnswered: '{n} answered',
+  heroDeltaUnanswered: 'not answered today',
+  healthLabel: 'Palace health',
+  tabOps: 'Ops',
+  pageHeaderOpsSubtitle: 'Session backfill and Jev adjudication, one ops hub',
   pageHeaderTodaySubtitle: "Today's palace state, tour proposal, refurbs, and pulse",
   pageHeaderLibrarySubtitle: 'Full memory palace, filter by room/status/sort, click a row to expand',
   pageHeaderCorridorSubtitle: 'Memory graph and recall bench, walk 1-3 hops via neighbours',

@@ -27,6 +27,7 @@ export interface TelemetrySnapshot {
     readonly searchRewrites: number
     readonly consumptions: number
     readonly consolidations: number
+    readonly reviewAnswers: number
   }
   /** 各 scope 的活跃记忆数与开放率（signal ratio）。 */
   readonly scopes: ReadonlyArray<{
@@ -97,7 +98,7 @@ export async function aggregateTelemetry(
   const countsAgg = {
     ingestRequests: 0, ingestDones: 0, searches: 0, writes: 0, updates: 0,
     forgets: 0, restores: 0, distillRequests: 0, compressRequests: 0,
-    searchRewrites: 0, consumptions: 0, consolidations: 0,
+    searchRewrites: 0, consumptions: 0, consolidations: 0, reviewAnswers: 0,
   }
   // scopeViews 局部可变（push），返回时满足 TelemetrySnapshot['scopes'] 的 readonly 形状。
   type ScopeView = TelemetrySnapshot['scopes'][number]
@@ -124,6 +125,7 @@ export async function aggregateTelemetry(
       countsAgg.searchRewrites += counts['search-rewrite-request'] ?? 0
       countsAgg.consumptions += (counts['outcome-report'] ?? 0)
       countsAgg.consolidations += counts['consolidation'] ?? 0
+      countsAgg.reviewAnswers += counts['review-answer'] ?? 0
       scopeViews.push({ scope, active: stats.active, total: stats.total, signalRatio: stats.signalRatio })
       for (const [day, n] of daily) dailyTotals.set(day, (dailyTotals.get(day) ?? 0) + n)
     } catch {
