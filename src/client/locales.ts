@@ -107,6 +107,8 @@ export type EngramKey =
   | 'backfillLabelCandidates'
   | 'backfillLabelPending'
   | 'backfillLabelSkipped'
+  | 'backfillStateIdle'
+  | 'backfillPollFailed'
   | 'pageHeaderTodaySubtitle'
   | 'pageHeaderLibrarySubtitle'
   | 'pageHeaderCorridorSubtitle'
@@ -482,6 +484,8 @@ export const zh: Record<EngramKey, string> = {
   backfillLabelCandidates: '候选会话',
   backfillLabelPending: '待处理轮数',
   backfillLabelSkipped: '已摄取跳过',
+  backfillStateIdle: '未在运行',
+  backfillPollFailed: '状态拉取失败——服务可能重启过,进度已丢失;重新「开始回填」即可按幂等续做',
   pageHeaderTodaySubtitle: '今日记忆库状态、入殿导航、待办与诊脉',
   pageHeaderLibrarySubtitle: '全量记忆库,支持房间/状态/排序筛选,列表行点击展开铭牌',
   pageHeaderCorridorSubtitle: '记忆关系图谱与检索实验台,支持走 1-3 跳邻居',
@@ -844,6 +848,8 @@ export const en: Record<EngramKey, string> = {
   backfillLabelCandidates: 'Candidate sessions',
   backfillLabelPending: 'Pending turns',
   backfillLabelSkipped: 'Already captured',
+  backfillStateIdle: 'Not running',
+  backfillPollFailed: 'Status unreachable — the server may have restarted; start again to resume (idempotent)',
   pageHeaderTodaySubtitle: "Today's palace state, tour proposal, refurbs, and pulse",
   pageHeaderLibrarySubtitle: 'Full memory palace, filter by room/status/sort, click a row to expand',
   pageHeaderCorridorSubtitle: 'Memory graph and recall bench, walk 1-3 hops via neighbours',

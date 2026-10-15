@@ -417,6 +417,8 @@ export async function runHistoryBackfill(
         failures.push({ sessionId: candidate.header.id, turn, reason: error instanceof Error ? error.message : String(error) })
       }
       progress.turnsDone += 1
+      // v0.8.12 逐轮推进度:此前只在会话结束推,单轮 LLM 提炼数十秒时 UI 长时间停在 0,像卡死。
+      onProgress({ ...progress, currentSession: candidate.header.id })
     }
     // 会话收尾：生成一句话摘要（增强信息，失败静默），供情景时间线组头展示。
     await ensureSessionSummary({

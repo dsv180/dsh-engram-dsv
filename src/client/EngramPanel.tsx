@@ -2192,12 +2192,14 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
 
   // 进度轮询：运行中每 1.5 秒一次；空闲只拉一次拿最终态。
   const running = status?.progress.state === 'running'
+  // v0.8.12:轮询失败不再静默——服务重启会杀掉运行中的回填,吞掉错误会让 UI 永远停在「回填中」。
+  const [pollFailed, setPollFailed] = useState(false)
   useEffect(() => {
     let cancelled = false
     const poll = (): void => {
       api<BackfillStatusView>('history-backfill/status')
-        .then((data) => { if (!cancelled) setStatus(data) })
-        .catch(() => { /* 轮询失败静默重试，不打断面板 */ })
+        .then((data) => { if (!cancelled) { setStatus(data); setPollFailed(false) } })
+        .catch(() => { if (!cancelled) setPollFailed(true) })
     }
     poll()
     if (!running) return () => { cancelled = true }
@@ -2229,12 +2231,17 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
   }
 
   const progress = status?.progress
-  const stateLabel = progress === undefined
+  // v0.8.12:服务重启后 status 返回 done 0/0 哨兵——显示「未在运行」而不是误导的「已完成」。
+  const freshBoot = progress !== undefined
+    && progress.state === 'done' && progress.sessionsTotal === 0
+    && progress.turnsPlanned === 0 && progress.turnsDone === 0
+  const stateLabel = progress === undefined || pollFailed
     ? ''
-    : progress.state === 'running' ? t('backfillStateRunning')
-      : progress.state === 'done' ? t('backfillStateDone')
-        : progress.state === 'cancelled' ? t('backfillStateCancelled')
-          : t('backfillStateFailed')
+    : freshBoot ? t('backfillStateIdle')
+      : progress.state === 'running' ? t('backfillStateRunning')
+        : progress.state === 'done' ? t('backfillStateDone')
+          : progress.state === 'cancelled' ? t('backfillStateCancelled')
+            : t('backfillStateFailed')
   const percent = progress === undefined || progress.turnsPlanned === 0
     ? 0
     : Math.min(100, Math.round((progress.turnsDone / progress.turnsPlanned) * 100))
@@ -2344,7 +2351,12 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
       {progress !== undefined && (
         <div className={styles.backfillProgress}>
           <div className={styles.backfillProgressHead}>
-            <span>{stateLabel}</span>
+            <span>
+              {pollFailed ? t('backfillPollFailed') : stateLabel}
+              {!pollFailed && progress.currentSession !== undefined && stateLabel === t('backfillStateRunning') && (
+                <span className={styles.backfillMuted}>{` · #${progress.currentSession.slice(0, 8)}`}</span>
+              )}
+            </span>
             <span>{t('backfillProgressTurns', { done: progress.turnsDone, total: progress.turnsPlanned })}</span>
           </div>
           <div className={styles.progressBar}><i style={{ width: `${String(percent)}%` }} /></div>
