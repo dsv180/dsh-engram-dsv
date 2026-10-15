@@ -87,6 +87,109 @@ function nodeRadius(n: CorridorNode): number {
   return Math.max(4, Math.min(14, 4 + 10 * n.importance * n.confidence))
 }
 
+/** 房间容量（与 src/palace/slots.ts 的容量 9 对齐；满员开新房）。 */
+const ROOM_CAPACITY = 9
+
+/**
+ * 走廊 2.0 · 建筑平面图（设计稿 prototypes/visual-upgrade.html #floorplan 的落地版）：
+ * 外墙包住整个宫殿，中央一条主通道，房间分左右两列驻留各 kind 的记忆。
+ * 每间房：门牌（房名 + 驻留数）+ 底部 9 格桩位点阵（填充数 = 驻留数，满员出 +N 开新房提示）。
+ * 点房间 → onOpenRoom(kind)（宿主接「陈展」按房筛选）。无关系边——边在「关系图」模式（CorridorMap）。
+ */
+export function FloorplanMap({ nodes, onOpenRoom, t }: {
+  nodes: readonly CorridorNode[]
+  onOpenRoom: (kind: string) => void
+  t: CorridorT
+}): ReactElement {
+  const width = 720
+  const height = 380
+  const [hoverKind, setHoverKind] = useState<string | null>(null)
+  /** 按驻留数降序（大房间放左上），最多画 6 间（kind 理论 5 种 + 扩容房示意）。 */
+  const rooms = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const n of nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([kind, count]) => ({ kind, count }))
+  }, [nodes])
+  const leftCol = rooms.filter((_, i) => i % 2 === 0)
+  const rightCol = rooms.filter((_, i) => i % 2 === 1)
+
+  const renderRoom = (room: { kind: string; count: number }, x: number, y: number, w: number, h: number): ReactElement => {
+    const color = KIND_PALETTE[room.kind] ?? '#7d8590'
+    const hovered = hoverKind === room.kind
+    const filled = Math.min(room.count, ROOM_CAPACITY)
+    const pipSize = 12
+    const pipGap = 5
+    const overflow = room.count > ROOM_CAPACITY ? room.count - ROOM_CAPACITY : 0
+    return (
+      <g key={room.kind} onMouseEnter={() => { setHoverKind(room.kind) }}
+        onMouseLeave={() => { setHoverKind(prev => prev === room.kind ? null : prev) }}
+        onClick={() => onOpenRoom(room.kind)} style={{ cursor: 'pointer' }}>
+        <rect x={x} y={y} width={w} height={h} rx={10}
+          fill={color} fillOpacity={hovered ? 0.1 : 0.06}
+          stroke={color} strokeOpacity={hovered ? 0.8 : 0.35}
+          strokeWidth={hovered ? 2 : 1.2}
+          style={{ transition: 'fill-opacity 160ms ease, stroke-opacity 160ms ease, stroke-width 160ms ease' }} />
+        {/* 门牌：房名 + 驻留数 */}
+        <text x={x + 14} y={y + 24} fill={color} fontSize="12" fontWeight={600}
+          fontFamily="ui-sans-serif, system-ui">{roomLabel(t, room.kind)}</text>
+        <text x={x + w - 14} y={y + 24} textAnchor="end" fill="rgba(127,127,127,0.8)" fontSize="11"
+          style={{ fontVariantNumeric: 'tabular-nums' }}
+          fontFamily="ui-sans-serif, system-ui">{`${String(room.count)} / ${String(ROOM_CAPACITY)}`}</text>
+        {/* 桩位点阵：9 格，填充数 = 驻留数 */}
+        {Array.from({ length: ROOM_CAPACITY }, (_, i) => (
+          <rect key={i} x={x + 14 + i * (pipSize + pipGap)} y={y + h - 26} width={pipSize} height={pipSize} rx={3}
+            fill={i < filled ? color : 'none'}
+            fillOpacity={i < filled ? 0.85 : 0}
+            stroke={color} strokeOpacity={i < filled ? 0 : 0.3} strokeWidth={1} />
+        ))}
+        {/* 满员开新房提示 */}
+        {overflow > 0 && (
+          <text x={x + 14 + ROOM_CAPACITY * (pipSize + pipGap) + 4} y={y + h - 16}
+            fill={color} fontSize="10" fontFamily="ui-sans-serif, system-ui">
+            {t('corridorOverflow', { n: overflow })}
+          </text>
+        )}
+      </g>
+    )
+  }
+
+  const renderColumn = (col: typeof rooms, x: number): ReactElement[] => {
+    const colW = 320
+    const top = 40
+    const bottom = height - 14
+    const gap = 12
+    const h = Math.min(160, (bottom - top - (col.length - 1) * gap) / Math.max(col.length, 1))
+    return col.map((room, i) => renderRoom(room, x, top + i * (h + gap), colW, h))
+  }
+
+  return (
+    <div className={styles.mapWrap}>
+      <svg viewBox={`0 0 ${String(width)} ${String(height)}`} className={styles.map}
+        preserveAspectRatio="xMidYMid meet" role="img" aria-label={t('corridorAria')} key={rooms.map(r => r.kind).join('-')}>
+        {/* 外墙 */}
+        <rect x={6} y={6} width={width - 12} height={height - 12} rx={14}
+          fill="var(--dsw-alias-bg-base)" stroke="var(--dsw-alias-border-l2)" strokeWidth={1.5} />
+        {/* 中央主通道：虚线描边 + 旋转门牌 */}
+        <rect x={width / 2 - 9} y={64} width={18} height={height - 110} rx={8}
+          fill="none" stroke="var(--dsw-alias-brand-primary)" strokeOpacity={0.4}
+          strokeWidth={1.2} strokeDasharray="5 4" />
+        <text x={width / 2} y={height / 2} textAnchor="middle"
+          fill="var(--dsw-alias-brand-primary)" fillOpacity={0.75} fontSize="10" fontWeight={600}
+          fontFamily="ui-sans-serif, system-ui"
+          transform={`rotate(-90 ${String(width / 2)} ${String(height / 2)})`}>
+          {t('corridorHall')}
+        </text>
+        {/* 左右两列房间（房间之间的间隙即走廊） */}
+        {renderColumn(leftCol, 20)}
+        {renderColumn(rightCol, 380)}
+      </svg>
+    </div>
+  )
+}
+
 /** 单步力更新（带冷却 alpha）。 */
 function step(nodes: PositionedNode[], edges: readonly CorridorEdge[], width: number, height: number, alpha: number): void {
   const REPLUSION = 4800

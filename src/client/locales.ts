@@ -158,6 +158,11 @@ export type EngramKey =
   | 'corridorAria'
   | 'corridorSummary'
   | 'corridorRoomOccupant'
+  | 'corridorModeFloor'
+  | 'corridorModeGraph'
+  | 'corridorHall'
+  | 'corridorOverflow'
+  | 'corridorFloorHint'
   | 'edgeSupersedes'
   | 'edgeContradicts'
   | 'edgeOther'
@@ -508,6 +513,11 @@ export const zh: Record<EngramKey, string> = {
   corridorAria: '走廊鸟瞰图',
   corridorSummary: '{nodes} 条记忆 · {edges} 条走廊',
   corridorRoomOccupant: '条驻留',
+  corridorModeFloor: '平面图',
+  corridorModeGraph: '关系图',
+  corridorHall: '走廊 · 主通道',
+  corridorOverflow: '+{n} 已开新房',
+  corridorFloorHint: '点房间跳到「陈展」按房筛选 · 共 {nodes} 条驻留',
   edgeSupersedes: '推陈出新',
   edgeContradicts: '互斥',
   edgeOther: '相邻 / 支持 / 提炼',
@@ -850,6 +860,11 @@ export const en: Record<EngramKey, string> = {
   corridorAria: 'Corridor overview map',
   corridorSummary: '{nodes} memories · {edges} corridors',
   corridorRoomOccupant: 'staying',
+  corridorModeFloor: 'Floorplan',
+  corridorModeGraph: 'Graph',
+  corridorHall: 'Corridor · main hall',
+  corridorOverflow: '+{n} overflow room',
+  corridorFloorHint: 'Click a room to filter the palace list · {nodes} staying',
   edgeSupersedes: 'supersedes',
   edgeContradicts: 'contradicts',
   edgeOther: 'related / supports / refines',

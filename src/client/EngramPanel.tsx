@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, zh, type EngramKey } from './locales.ts'
-import { CorridorMap } from './CorridorMap.tsx'
+import { CorridorMap, FloorplanMap } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 
@@ -1318,15 +1318,19 @@ interface CorridorGraph {
   readonly edges: ReadonlyArray<{ readonly id: string; readonly from: string; readonly to: string; readonly type: string }>
 }
 
-function CorridorPanel({ t, scope, project, onSelect }: {
+function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
   t: T
   scope: 'user' | 'project' | 'shared'
   /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
   project: string | null
   onSelect: (id: string) => void
+  /** 平面图模式点房间 → 宿主接「陈展」按房筛选。 */
+  onOpenRoom: (kind: string) => void
 }): React.ReactElement {
   const [graph, setGraph] = useState<CorridorGraph | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  // v0.8.4 走廊双模式：平面图（建筑平面,默认,设计稿 #floorplan）/ 关系图（力导向,保留边价值）
+  const [mode, setMode] = usePersistedState<'floorplan' | 'graph'>('corridor.mode', 'floorplan', ['floorplan', 'graph'])
   useEffect(() => {
     let cancelled = false
     api<CorridorGraph>(`corridor?status=active,archived&scope=${scope}`)
@@ -1337,7 +1341,30 @@ function CorridorPanel({ t, scope, project, onSelect }: {
   if (failed !== null) return <div className={styles.expandLoading}>{t('corridorFailed')}：{failed}</div>
   if (graph === null) return <div className={styles.expandLoading}>{t('corridorLoad')}</div>
   if (graph.nodes.length === 0) return <div className={styles.empty}>{t('corridorEmpty')}</div>
-  return <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />
+  return (
+    <div>
+      <div className={styles.toolbarRow}>
+        <div className={styles.segGroup}>
+          <button type="button" role="tab" aria-selected={mode === 'floorplan'}
+            className={mode === 'floorplan' ? `${styles.segItem} ${styles.on}` : styles.segItem}
+            onClick={() => { setMode('floorplan') }}>
+            {t('corridorModeFloor')}
+          </button>
+          <button type="button" role="tab" aria-selected={mode === 'graph'}
+            className={mode === 'graph' ? `${styles.segItem} ${styles.on}` : styles.segItem}
+            onClick={() => { setMode('graph') }}>
+            {t('corridorModeGraph')}
+          </button>
+        </div>
+        {mode === 'floorplan' && (
+          <span className={styles.sectionHint}>{t('corridorFloorHint', { nodes: graph.nodes.length })}</span>
+        )}
+      </div>
+      {mode === 'floorplan'
+        ? <FloorplanMap nodes={graph.nodes} onOpenRoom={onOpenRoom} t={t} />
+        : <CorridorMap scope={scope} nodes={graph.nodes} edges={graph.edges} onSelect={onSelect} t={t} />}
+    </div>
+  )
 }
 
 /** GET /api/engram/episode-timeline 的情景行（host 已精简为四字段）。 */
@@ -3118,7 +3145,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 <h4 className={styles.sectionTitle}>{t('sectionCorridor')}</h4>
               </div>
               <div className={styles.panelCard}>
-                <CorridorPanel t={t} scope={scope} project={projectSelector} onSelect={openReview} />
+                <CorridorPanel t={t} scope={scope} project={projectSelector} onSelect={openReview}
+                  onOpenRoom={kind => { setKind(kind); setOffset(0); setExpanded(null); clearSelection(); setActiveTab('library') }} />
               </div>
             </section>
             <section className={styles.section}>
