@@ -5,6 +5,7 @@
  */
 
 import { mkdir } from 'node:fs/promises'
+import { message } from '../i18n/messages.ts'
 import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
 
@@ -45,6 +46,6 @@ export async function createLocalEmbedder(cacheDir: string, remoteHost?: string)
     cached = { dir: cacheDir, embedder }
     return embedder
   } catch (error) {
-    throw new EngramError('EMBEDDER_DOWNLOAD_FAILED', '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试', { cause: error })
+    throw new EngramError('EMBEDDER_DOWNLOAD_FAILED', message('store.embedderDownloadFailed'), { cause: error })
   }
 }

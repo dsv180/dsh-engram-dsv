@@ -39,7 +39,7 @@ describe('翻新清单扫描', () => {
       { length: DEFAULT_REFURB_OPTIONS.minActive - 1 },
       (_, index) => memory(`m${String(index)}`, { imageryScore: 0.2 }),
     )
-    expect(gatherRefurbSuggestions(small)).toHaveLength(0)
+    expect(gatherRefurbSuggestions(small, 'en')).toHaveLength(0)
   })
 
   it('达到 minActive 后按门牌纪律逐条给出补挂建议', () => {
@@ -47,14 +47,14 @@ describe('翻新清单扫描', () => {
       { length: DEFAULT_REFURB_OPTIONS.minActive },
       (_, index) => memory(`m${String(index)}`, { imageryScore: 0.2 }),
     )
-    const suggestions = gatherRefurbSuggestions(records)
+    const suggestions = gatherRefurbSuggestions(records, 'en')
     expect(suggestions).toHaveLength(DEFAULT_REFURB_OPTIONS.minActive)
     expect(suggestions.every(suggestion => suggestion.action === 'review')).toBe(true)
   })
 
   it('低重要性且长期未访问的条目建议降级', () => {
     const stale = memory('old', { importance: 0.1, lastAccessedAt: Date.now() - 200 * 86_400_000 })
-    const suggestions = gatherRefurbSuggestions([stale, ...fillers(DEFAULT_REFURB_OPTIONS.minActive - 1)])
+    const suggestions = gatherRefurbSuggestions([stale, ...fillers(DEFAULT_REFURB_OPTIONS.minActive - 1)], 'en')
     expect(suggestions.map(suggestion => suggestion.action)).toEqual(['demote'])
     expect(suggestions[0]?.primaryId).toBe('old')
   })
@@ -62,7 +62,7 @@ describe('翻新清单扫描', () => {
   it('超长内容建议拆分、从未访问的高重要性条目建议复习', () => {
     const long = memory('long', { content: 'x'.repeat(401) })
     const buried = memory('buried', { importance: 0.8, accessCount: 0 })
-    const suggestions = gatherRefurbSuggestions([long, buried, ...fillers(DEFAULT_REFURB_OPTIONS.minActive - 2)])
+    const suggestions = gatherRefurbSuggestions([long, buried, ...fillers(DEFAULT_REFURB_OPTIONS.minActive - 2)], 'en')
     expect(suggestions.map(suggestion => suggestion.action).sort()).toEqual(['review', 'split'])
   })
 })

@@ -6,6 +6,7 @@
  */
 
 import type { SearchHit } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 改写查询上限（协议内常量：更多查询线性放大检索与强化成本，收益递减）。 */
 export const MAX_REWRITE_QUERIES = 3
@@ -16,11 +17,17 @@ export const RRF_CONSTANT = 60
 /** 改写输出 token 上限（3 个短查询足够）。 */
 export const REWRITE_MAX_TOKENS = 200
 
-/** 改写系统指令：只输出 JSON 字符串数组，不回答问题。 */
-export const REWRITE_SYSTEM = [
-  `把用户输入的检索查询改写为最多 ${MAX_REWRITE_QUERIES} 个互补的检索查询（同义词、上下位概念、不同措辞），用于长期记忆库的语义+关键词混合检索。`,
-  '只输出一个 JSON 字符串数组，不要输出 JSON 以外的任何内容；无法改进时输出只含原查询的数组。',
-].join('\n')
+/**
+ * 改写系统指令：只输出 JSON 字符串数组，不回答问题。
+ * Функция, а не константа: модульная константа вычислилась бы при импорте модуля —
+ * раньше, чем плагин узнает язык из настроек, — и промпт навсегда остался бы английским.
+ */
+export function rewriteSystem(): string {
+  return [
+    message('llm.rewriteSystemIntro', { max: MAX_REWRITE_QUERIES }),
+    message('llm.rewriteSystemJsonOnly'),
+  ].join('\n')
+}
 
 /**
  * 归一化改写结果：接受字符串或字符串数组，单行化、截断 500 字符、

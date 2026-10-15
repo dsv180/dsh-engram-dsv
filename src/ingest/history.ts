@@ -22,6 +22,7 @@ import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
 import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
 import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
+import { message } from '../i18n/messages.ts'
 import type { MemoryJudge } from '../write-disposition.ts'
 
 /** 历史会话 header 的窄视图（session-persistence 的 SessionHeader 子集，只依赖用到的字段）。 */
@@ -170,20 +171,20 @@ const ESTIMATE_CONCURRENCY = 4
  */
 export function mergeHistoryRules(defaults: ResolvedHistoryRules, overrides: HistoryBackfillRules): ResolvedHistoryRules {
   const days = overrides.days ?? defaults.days
-  if (!Number.isInteger(days) || days < 0 || days > 3650) throw new Error('historyBackfill: days 必须是 [0, 3650] 的整数（0 = 不限）')
+  if (!Number.isInteger(days) || days < 0 || days > 3650) throw new Error(message('llm.backfillDaysRange'))
   const maxTurnsPerSession = overrides.maxTurnsPerSession ?? defaults.maxTurnsPerSession
   if (!Number.isInteger(maxTurnsPerSession) || maxTurnsPerSession < 1 || maxTurnsPerSession > 500) {
-    throw new Error('historyBackfill: maxTurnsPerSession 必须是 [1, 500] 的整数')
+    throw new Error(message('llm.backfillMaxTurnsRange'))
   }
   const maxTotalTurns = overrides.maxTotalTurns ?? defaults.maxTotalTurns
   if (!Number.isInteger(maxTotalTurns) || maxTotalTurns < 1 || maxTotalTurns > 5000) {
-    throw new Error('historyBackfill: maxTotalTurns 必须是 [1, 5000] 的整数')
+    throw new Error(message('llm.backfillMaxTotalTurnsRange'))
   }
   // 辅助模型必须成对给（只给一半是配置错误，loud 失败而不是静默忽略）。
   const hasProvider = overrides.provider !== undefined && overrides.provider !== ''
   const hasModel = overrides.model !== undefined && overrides.model !== ''
   if (hasProvider !== hasModel) {
-    throw new Error('historyBackfill: provider 与 model 必须成对提供')
+    throw new Error(message('llm.backfillProviderModelPair'))
   }
   return {
     days,
@@ -290,7 +291,9 @@ async function selectSessions(deps: HistoryBackfillDeps, rules: ResolvedHistoryR
 }
 
 /** 环境不支持读取历史会话时的统一说明。 */
-const UNAVAILABLE_REASON = '当前环境未挂载会话持久化服务（会话日志不可读，例如 headless 组合），无法回填历史会话'
+function backfillUnavailableReason(): string {
+  return message('llm.backfillUnavailable')
+}
 
 /**
  * 估算：候选会话数、规则内轮数、以及扣掉已摄取后的真正待处理轮数。
@@ -307,7 +310,7 @@ export async function estimateHistoryBackfill(
 ): Promise<HistoryEstimate> {
   const rules = mergeHistoryRules(defaults, overrides)
   if (deps.source === undefined) {
-    return { rules, candidates: 0, eligibleTurns: 0, pendingTurns: 0, alreadyIngested: 0, skipped: { subagent: 0, seeded: 0, noCwd: 0, tooOld: 0, unreadable: 0 }, truncated: false, unavailable: UNAVAILABLE_REASON }
+    return { rules, candidates: 0, eligibleTurns: 0, pendingTurns: 0, alreadyIngested: 0, skipped: { subagent: 0, seeded: 0, noCwd: 0, tooOld: 0, unreadable: 0 }, truncated: false, unavailable: backfillUnavailableReason() }
   }
   const { candidates, skipped, truncated } = await selectSessions(deps, rules)
   const auditStore = await deps.resolveExistingUserStore()

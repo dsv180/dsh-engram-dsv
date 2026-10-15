@@ -80,7 +80,7 @@ export interface ImageryLabel {
 
 /** 桩位：记忆在宫殿中的固定位置（房间名 + 房内序号）。地点法核心——位置固定，巡游顺序才稳定。 */
 export interface Slot {
-  /** 房间名（默认按 kind 映射：事实厅/偏好阁/决策堂/往事廊/技法坊；满员自动开「<名>-2」）。 */
+  /** Идентификатор комнаты (по умолчанию по kind: fact/preference/decision/episode/skill; при заполнении открывается «<id>-2»). Имя для показа берётся из словаря языка — в данных языка нет. */
   readonly room: string
   /** 房内桩位序号（从 1 起）。 */
   readonly index: number

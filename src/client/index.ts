@@ -21,7 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { bindEngramSection } from './EngramPanel.tsx'
 import type { SessionsLike, WorkspacesLike } from './EngramPanel.tsx'
 import { EngramPanelIcon } from './EngramPanelIcon.tsx'
-import { NS, en, zh, type EngramKey } from './locales.ts'
+import { NS, en, ru, zh, type EngramKey } from './locales/index.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -44,7 +44,22 @@ export const PANEL_ID = 'engram' as MainPanelId
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-engram: dictionaries')
+  // Встроенные словари: объектная форма требует обе локали, поставляемые хостом (zh/en).
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-engram: built-in dictionaries')
+  // Русский — внешний язык: хост поставляет только zh и en, поэтому плагин объявляет
+  // язык сам. Без addLanguage «русский» нельзя было бы выбрать в настройках DSH.
+  // Цепочка отката обязана сходиться к английскому — он язык по умолчанию.
+  // Язык мог быть объявлен и раньше (например, отдельным плагином локализации):
+  // повторное объявление бросает, и это не ошибка — словарь ниже подхватится всё равно.
+  ctx.effect(() => {
+    try {
+      return ctx.locale.addLanguage({ id: 'ru', label: 'Русский', fallback: 'en' })
+    } catch {
+      return () => {}
+    }
+  }, 'dsh-engram: ru language')
+  // Словарь внешнего языка регистрируется по-локально, отдельно от встроенных.
+  ctx.effect(() => ctx.locale.register(NS, 'ru', ru), 'dsh-engram: ru dictionary')
   const t = ctx.locale.bind(NS)
   // 可选服务：按运行时形状取用（不硬依赖 @deepseek-ai/dsh-api-* 客户端包）；
   // 用 getter 现取而不是 apply 时取实例——这两个服务可能在本插件之后才挂载。

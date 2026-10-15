@@ -10,6 +10,8 @@
 
 import type { LlmRoute, SessionEventLike } from '../llm/client.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
+import { message } from '../i18n/messages.ts'
+import { chitchatPatterns, noCapturePatterns } from '../i18n/patterns.ts'
 import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramEntityKind, EngramKind, EngramScope, EntityMention, FactMention, FactWriteInput, MemoryId } from '../types.ts'
@@ -54,16 +56,13 @@ export function decodeTurnKey(detail: string): { sessionId: string; turn: number
   return { sessionId: detail.slice(0, sep), turn }
 }
 
-const INGEST_SYSTEM = [
-  '从对话记录中提取值得跨会话长期记住的用户信息（事实/偏好/决策/经历/做事方法）。',
-  '只输出一个 JSON 数组，每项形如 {"content": "一句话完整表述", "kind": "fact|preference|decision|episode|skill", "scope": "project|user", "importance": 0到1的小数, "entities": [{"name": "实体名", "kind": "person|project|tool|concept|other", "aliases": ["别名"]}], "facts": [{"entity": "实体名", "content": "关于该实体的一句话事实"}]}。',
-  'entities 是这条记忆里提到的具体对象（人名/项目名/工具名/概念名），没有就省略该字段；实体名要短（专名本身，不超过 20 字），aliases 列出该实体的其他叫法，没有就省略。',
-  'facts 列出这条记忆中关于具体实体的客观事实（状态/归属/关系/数据），entity 必须取该条 entities 里出现过的实体名，一条一个知识点，没有就省略该字段。',
-  'scope 决定这条记忆进哪座宫殿：只跟当前项目/仓库有关的（技术选型、项目约定、架构决策、该项目自身的事实）用 project；与具体项目无关、跨项目通用的（个人偏好、习惯、用户本人的经历、通用事实）用 user。拿不准用 project。',
-  '忠实转述：原文中被否定、拒绝或纠正的内容，记录时必须保持其被否定的语义，不得写成正面断言；不要添加原文没有的关联、判断或结论。',
-  '只提取明确、可复用的信息；寒暄、临时上下文、你自己的回答不要提取。没有值得记的就输出 []。',
-  '不要输出 JSON 以外的任何内容。',
-].join('\n')
+/**
+ * Системная инструкция извлечения: текст живёт в словаре (`llm.ingestSystem`),
+ * берётся в момент вызова — язык становится известен только при сборке плагина.
+ */
+function ingestSystemPrompt(): string {
+  return message('llm.ingestSystem')
+}
 
 /** 实体提及 kind 的合法值集合（模型输出边界校验用）。 */
 const ENTITY_KINDS: readonly EngramEntityKind[] = ['person', 'project', 'tool', 'concept', 'other']
@@ -147,7 +146,15 @@ export interface IngestOutcome {
   readonly deferred: number
   /** DROP 处置数：空内容 / 同批重复等低熵候选。 */
   readonly dropped: number
-  /** 跳过原因；null = 正常完成。 */
+  /**
+   * Причина пропуска; null = обычное завершение.
+   *
+   * Значения — это же и ключи словаря панели (SKIP_KEY в EngramPanel.tsx), поэтому
+   * список один на обе половины: 'low-activity', 'chitchat', 'capture-forbidden',
+   * 'no-user-content', 'already-ingested', 'no-such-turn', 'no-previous-turn',
+   * 'no-route-in-log', 'unparseable-output', 'empty-answer'. Опечатка здесь стоит
+   * пользователю локализованной подписи: неизвестное значение показывается как есть.
+   */
   readonly skipped: string | null
 }
 
@@ -256,11 +263,12 @@ export type IngestSlice = 'previous' | 'last' | number
 /** 活动评分门槛：低于该值的上一轮不值得起一次辅助 LLM 摄取（四信号公式见 activityScore）。 */
 export const ACTIVITY_THRESHOLD = 5
 
-/** 寒暄正则：整段用户输入只含问候/感谢等无信息内容时跳过摄取。 */
-const CHITCHAT_RE = /^(?:你好|您好|嗨|哈喽|hello|hi|hey|谢谢|感谢|ok|okay|好的|在吗|收到|辛苦了)[!！,.，。?？~\s]*$/iu
-
-/** 显式禁记正则：用户明确要求不要记住本轮内容时跳过摄取（窄匹配整句指令，避免误伤）。 */
-const NO_CAPTURE_RE = /(?:不要|别|不用|无需)(?:把这?[个件些条]?|把上一?轮|把刚才)?(?:记|存)(?:住|录|下来|进去|到记忆|进记忆)|don'?t\s+(?:remember|record|save)\s+(?:this|that|it)/i
+/*
+ * Образцы болтовни и запрета запоминать переехали в языковой пакет
+ * (`i18n/patterns.ts`): это языковые данные, и меняться они должны вместе с пакетом.
+ * Форма авторских правил сохранена — болтовня привязана к сообщению целиком, запрет
+ * ищется в любом месте; заменены только сами слова.
+ */
 
 /** 上一轮的活动信号（摄取节流的输入）。 */
 export interface TurnSignals {
@@ -292,14 +300,27 @@ export function activityScore(signals: TurnSignals): number {
     + toolDiversity(signals.toolNames.size)
 }
 
-/** 判断用户输入是否为纯寒暄（无信息内容）。 */
+/**
+ * 判断用户输入是否为纯寒暄（无信息内容）。
+ *
+ * Русская доработка (F-10): слова берутся из языкового пакета и проверяются для
+ * английского набора и набора действующего языка. Привязка к сообщению целиком сохранена
+ * намеренно: срабатывание пропускает сообщение целиком, поэтому список должен оставаться
+ * узким — при сомнении лучше записать.
+ */
 export function isChitchat(text: string): boolean {
-  return CHITCHAT_RE.test(text.trim())
+  const trimmed = text.trim()
+  return chitchatPatterns().some((pattern) => pattern.test(trimmed))
 }
 
-/** 判断用户输入是否显式要求不要记住。 */
+/**
+ * 判断用户输入是否显式要求不要记住。
+ *
+ * Русская доработка (F-10): формы запрета тоже языковые. Отрицание в образцах обязательно:
+ * «запомни это» и «не запоминай это» — противоположные указания, путать их нельзя.
+ */
 export function forbidsCapture(text: string): boolean {
-  return NO_CAPTURE_RE.test(text)
+  return noCapturePatterns().some((pattern) => pattern.test(text))
 }
 
 /** 从事件切片提取活动信号（用户文本排除插件注入的快照消息）。 */
@@ -441,13 +462,13 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
 
   // 防回声室附注：上一轮调用过召回工具时，提示提取模型既有记忆的复述不是新信息。
   const recallNote = hasRecallToolCalls(scoped)
-    ? '（注意：上一轮调用过记忆召回工具（engram_search 等），其返回已省略；助手回答中复述的既有记忆不是新信息，不要提取。）'
+    ? message('llm.ingestRecallNote')
     : ''
-  const userText = `从下面这轮对话（JSON 数组）提取值得长期记住的信息：\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
+  const userText = `${message('llm.ingestUserPrompt')}\n${JSON.stringify(cleaned)}${recallNote === '' ? '' : `\n${recallNote}`}`
   deps.logRequest({ route, round, userText, maxTokens: INGEST_MAX_TOKENS, mode: deps.mode })
   let raw = await deps.call({
     route,
-    system: INGEST_SYSTEM,
+    system: ingestSystemPrompt(),
     userText,
     maxTokens: INGEST_MAX_TOKENS,
     purpose: 'engram-ingest',
@@ -460,7 +481,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
   if (parsed === undefined && raw.trim() === '') {
     raw = await deps.call({
       route,
-      system: INGEST_SYSTEM,
+      system: ingestSystemPrompt(),
       userText,
       maxTokens: INGEST_MAX_TOKENS,
       purpose: 'engram-ingest',
@@ -550,6 +571,9 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
         ? [decision.neighbor]
         : (await confirmContradictions(deps.judge, content, [decision.neighbor])) ?? [decision.neighbor]
       for (const neighbor of neighbors) {
+        // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
+        // связь «противоречит сама себе» (см. то же место в tools/create.ts).
+        if (neighbor.id === record.id) continue
         await target.linkEdge(record.id, neighbor.id, 'contradicts')
       }
       deferred += 1
@@ -595,16 +619,16 @@ export async function ingestFinalTurn(deps: IngestDeps): Promise<IngestOutcome |
         // pending 落库失败：摄取本就尽力而为，不再升级。
       }
     }
-    console.warn('[dsh-engram] 会话结束的末轮摄取失败（已记入待补做队列，不影响对话）：', error)
+    console.warn(message('llm.warnFinalIngestFailed'), error)
     return null
   }
 }
 
 /** 会话摘要提示词：一句话概括整场会话，供情景时间线的组头展示。 */
-const SESSION_SUMMARY_SYSTEM = [
-  '概括下面这段会话：用一句话（不超过 60 字）说明这场会话主要做了什么、达成了什么结果。',
-  '直接输出摘要本身，不要前缀、引号或任何解释。',
-].join('\n')
+function sessionSummarySystemPrompt(): string {
+  return message('llm.sessionSummarySystem')
+}
+
 /** 会话摘要输出 token 上限（一句话足够）。 */
 const SESSION_SUMMARY_MAX_TOKENS = 160
 /** 会话摘要的输入截断上限（字符）：摘要只需主题级信息，超长会话截尾。 */
@@ -670,12 +694,12 @@ export async function ensureSessionSummary(deps: SessionSummaryDeps): Promise<vo
   if (dialog === '') return
   const store = await deps.openStore()
   if (await store.getSessionSummary(deps.sessionId) !== undefined) return
-  const userText = `概括下面这段会话：\n${dialog}`
+  const userText = `${message('llm.sessionSummaryUserPrompt')}\n${dialog}`
   deps.logRequest({ route, round: deps.round ?? 0, userText, maxTokens: SESSION_SUMMARY_MAX_TOKENS, mode: deps.mode })
   try {
     const raw = await deps.call({
       route,
-      system: SESSION_SUMMARY_SYSTEM,
+      system: sessionSummarySystemPrompt(),
       userText,
       maxTokens: SESSION_SUMMARY_MAX_TOKENS,
       purpose: 'engram-session-summary',

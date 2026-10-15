@@ -7,11 +7,11 @@
  * @module @kenz1117/dsh-engram/imagery/score
  */
 
+import { DATE_ANCHOR } from '../i18n/dates.ts'
+import { message } from '../i18n/messages.ts'
+
 /** 低分阈值：低于此值 save 输出附增强建议，refurb 生成「门牌不合规」动议。 */
 export const PLACARD_LOW_THRESHOLD = 0.5
-
-/** 日期/时间锚点：ISO 日期、中文年月、相对时间词。 */
-const DATE_ANCHOR = /\d{4}[-/年.]\s?\d{1,2}|[今昨]天|本周|上周|周[一二三四五六日天]|\d{1,2}月\d{1,2}[日号]/
 
 /** 差异化比较的前缀长度：前 6 字相同即视为「近似到无法区分」。 */
 const DIFF_PREFIX_LEN = 6
@@ -52,5 +52,5 @@ export function scorePlacard(caption: string | null | undefined, context: Placar
  */
 export function placardImprovementHint(score: number): string | null {
   if (score >= PLACARD_LOW_THRESHOLD) return null
-  return '门牌不合规（宫殿纪律：唯一 · 差异化 · 带日期）：建议用 engram_update 的 imagery 参数挂一个 4-30 字、含日期锚点、与同房其他门牌前 6 字不重复的铭牌。'
+  return message('misc.placardImprovementHint')
 }

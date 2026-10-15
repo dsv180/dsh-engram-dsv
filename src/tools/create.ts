@@ -23,7 +23,7 @@ import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityI
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
 import {
-  MAX_REWRITE_QUERIES, REWRITE_MAX_TOKENS, REWRITE_SYSTEM, RRF_CONSTANT,
+  MAX_REWRITE_QUERIES, REWRITE_MAX_TOKENS, rewriteSystem, RRF_CONSTANT,
   mergeQueryResults, normalizeRewriteQueries,
 } from '../retrieve/rewrite.ts'
 import { RECALL_TOTAL_CHARS, enforceBudget, fitWithinBudget, truncateItem } from '../retrieve/budget.ts'
@@ -35,6 +35,9 @@ import { placardImprovementHint } from '../imagery/score.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
 import { applyMerge, confirmContradictions, decideWrite } from '../write-disposition.ts'
 import type { MemoryJudge, WriteDisposition } from '../write-disposition.ts'
+import type { EngramLanguage } from '../i18n/language.ts'
+import { message } from '../i18n/messages.ts'
+import { resolveRoomInput, roomLabel } from '../i18n/rooms.ts'
 
 /** 工具依赖：分库打开器、嵌入器承诺、辅助 LLM 调用与导出目录。 */
 export interface ToolDeps {
@@ -57,6 +60,11 @@ export interface ToolDeps {
   readonly queryRewrite: boolean
   /** 导出文件目录（engram_export 写入）。 */
   readonly exportDir: string
+  /**
+   * Язык текстов, которые формирует плагин (имена комнат, сообщения инструментов).
+   * Приходит из разобранной конфигурации: «auto» там уже развёрнут в язык системы.
+   */
+  readonly language: EngramLanguage
   /** 历史回填（可选：缺省时不注册 engram_ingest_history，表示环境不支持读取历史会话）。 */
   readonly historyBackfill?: {
     /** 估算：候选会话数 / 规则内轮数 / 真正待处理轮数。 */
@@ -85,16 +93,16 @@ function sessionCwdOf(exec: ToolRunContext): string | undefined {
 function parseTimeParam(raw: string | undefined, toolName: string, field: string): number | undefined {
   if (raw === undefined) return undefined
   const ms = Date.parse(raw)
-  if (Number.isNaN(ms)) throw new Error(`${toolName}: ${field} 不是可解析时间 ${raw}`)
+  if (Number.isNaN(ms)) throw new Error(message('tool.paramNotParsableTime', { tool: toolName, field, value: raw }))
   return ms
 }
 
 /** 工具入参正数解析（分钟/条数等计数）：缺省 fallback；非有限数字或越界 loud 失败。 */
 function parseCountParam(raw: number | undefined, toolName: string, field: string, fallback: number, min: number, max: number): number {
   if (raw === undefined) return fallback
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error(`${toolName}: ${field} 必须是有限数字，收到 ${String(raw)}`)
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error(message('tool.paramMustBeFiniteNumber', { tool: toolName, field, value: raw }))
   const value = Math.floor(raw)
-  if (value < min || value > max) throw new Error(`${toolName}: ${field} 需在 ${String(min)}-${String(max)} 之间，收到 ${String(value)}`)
+  if (value < min || value > max) throw new Error(message('tool.paramOutOfRange', { tool: toolName, field, min, max, value }))
   return value
 }
 
@@ -103,71 +111,106 @@ function renderFactLine(index: number, fact: FactRecord): string {
   const valid = new Date(fact.validAt).toISOString().slice(0, 10)
   const state = fact.invalidAt === null
     ? ''
-    : `（已失效 ${new Date(fact.invalidAt).toISOString().slice(0, 10)}，被 ${fact.replacedBy ?? '未知事实'} 取代）`
-  return `${index + 1}. ${fact.content}（id=${fact.id}, 生效 ${valid}）${state}`
+    : message('tool.factLineInvalid', {
+        invalidAt: new Date(fact.invalidAt).toISOString().slice(0, 10),
+        replacedBy: fact.replacedBy ?? message('tool.factReplacedByUnknown'),
+      })
+  return message('tool.factLine', { index: index + 1, content: fact.content, id: fact.id, validAt: valid, state })
 }
 
 /** 历史回填估算的模型可读文本（零成本，先看数再决定跑不跑）。 */
 function renderHistoryEstimate(estimate: HistoryEstimate): string {
-  if (estimate.unavailable !== undefined) return `历史回填不可用：${estimate.unavailable}`
+  if (estimate.unavailable !== undefined) return message('tool.historyUnavailable', { reason: estimate.unavailable })
   const rules = estimate.rules
-  const window = rules.days === 0 ? '不限' : `${String(rules.days)} 天`
+  const window = rules.days === 0 ? message('tool.historyDaysUnlimited') : message('tool.historyDays', { days: rules.days })
+  const yesNo = (flag: boolean): string => (flag ? message('tool.historyYes') : message('tool.historyNo'))
   const lines = [
-    `历史回填估算：候选 ${String(estimate.candidates)} 个会话 · 规则内 ${String(estimate.eligibleTurns)} 轮 · 待处理 ${String(estimate.pendingTurns)} 轮（此前已摄取 ${String(estimate.alreadyIngested)} 轮会自动跳过）。`,
-    `规则：时间窗 ${window} · 单会话≤${String(rules.maxTurnsPerSession)} 轮 · 总轮数≤${String(rules.maxTotalTurns)} · 含子代理 ${rules.includeSubagents ? '是' : '否'} · 含种子 ${rules.includeSeeded ? '是' : '否'} · 含无 cwd ${rules.includeNoCwd ? '是' : '否'}`,
-    `已排除：子代理 ${String(estimate.skipped.subagent)} · 种子 ${String(estimate.skipped.seeded)} · 无 cwd ${String(estimate.skipped.noCwd)} · 超时间窗 ${String(estimate.skipped.tooOld)} · 日志不可读 ${String(estimate.skipped.unreadable)}`,
+    message('tool.historyEstimateSummary', {
+      candidates: estimate.candidates,
+      eligibleTurns: estimate.eligibleTurns,
+      pendingTurns: estimate.pendingTurns,
+      alreadyIngested: estimate.alreadyIngested,
+    }),
+    message('tool.historyEstimateRules', {
+      window,
+      maxTurnsPerSession: rules.maxTurnsPerSession,
+      maxTotalTurns: rules.maxTotalTurns,
+      subagents: yesNo(rules.includeSubagents),
+      seeded: yesNo(rules.includeSeeded),
+      noCwd: yesNo(rules.includeNoCwd),
+    }),
+    message('tool.historyEstimateSkipped', {
+      subagent: estimate.skipped.subagent,
+      seeded: estimate.skipped.seeded,
+      noCwd: estimate.skipped.noCwd,
+      tooOld: estimate.skipped.tooOld,
+      unreadable: estimate.skipped.unreadable,
+    }),
   ]
   if (estimate.truncated) {
-    lines.push('注意：候选超出总轮数上限，本次只会处理最近的一部分会话；可调大 maxTotalTurns 或缩小时间窗分几次跑。')
+    lines.push(message('tool.historyEstimateTruncated'))
   }
-  lines.push('实际 LLM 调用次数不超过待处理轮数（低活动/寒暄/显式禁记的轮次会被节流跳过）。确认要真正回填请再传 dryRun=false。')
+  lines.push(message('tool.historyEstimateNote'))
   return lines.join('\n')
 }
 
 /** 历史回填执行结果的模型可读文本。 */
 function renderHistoryRun(result: HistoryRunResult): string {
-  const state = result.state === 'done' ? '完成' : result.state === 'cancelled' ? '已中止（可重跑续做）' : '失败'
+  const state = result.state === 'done'
+    ? message('tool.historyStateDone')
+    : result.state === 'cancelled' ? message('tool.historyStateCancelled') : message('tool.historyStateFailed')
   const lines = [
-    `历史回填${state}：处理 ${String(result.sessionsDone)}/${String(result.sessionsTotal)} 个会话 · ${String(result.turnsDone)} 轮 → 写入 ${String(result.memoriesWritten)} 条记忆；跳过 ${String(result.turnsSkipped)} 轮 · 失败 ${String(result.turnsFailed)} 轮。`,
+    message('tool.historyRunSummary', {
+      state,
+      sessionsDone: result.sessionsDone,
+      sessionsTotal: result.sessionsTotal,
+      turnsDone: result.turnsDone,
+      memoriesWritten: result.memoriesWritten,
+      turnsSkipped: result.turnsSkipped,
+      turnsFailed: result.turnsFailed,
+    }),
   ]
   const reasons = Object.entries(result.skipReasons).sort(([, a], [, b]) => b - a)
   if (reasons.length > 0) {
-    lines.push(`跳过原因：${reasons.map(([reason, count]) => `${reason} ${String(count)}`).join(' · ')}`)
+    const listed = reasons.map(([reason, count]) => message('tool.historySkipReason', { reason, count })).join(' · ')
+    lines.push(message('tool.historyRunSkipReasons', { reasons: listed }))
   }
   if (result.failures.length > 0) {
-    const shown = result.failures.slice(0, 3).map(failure => `${failure.sessionId.slice(-12)} 第 ${String(failure.turn)} 轮：${failure.reason}`)
-    lines.push(`失败明细（前 ${String(shown.length)} 条）：${shown.join('；')}`)
+    const shown = result.failures.slice(0, 3).map(failure =>
+      message('tool.historyFailureEntry', { sessionId: failure.sessionId.slice(-12), turn: failure.turn, reason: failure.reason }))
+    lines.push(message('tool.historyRunFailures', { count: shown.length, entries: shown.join(message('tool.separatorSemicolon')) }))
     // 最常见的一种失败：历史会话记录的路由在当前环境没有对应模型配置。
-    lines.push('若失败原因是历史会话记录的路由在当前环境不可用，可在 cordis.yml 配 provider/model，或让一个会话先用目标模型跑一轮（回填会优先复用当前在用的路由）后重跑——已完成的轮次会自动跳过。')
+    lines.push(message('tool.historyRunRouteHint'))
   }
-  lines.push('同一批可重复执行：已完成的轮次按幂等键跳过，只补未完成的部分。')
+  lines.push(message('tool.historyRunIdempotent'))
   return lines.join('\n')
 }
 
-/** 证据门策略的可读提示。 */
-const STRATEGY_HINT: Record<NextStrategy, string> = {
-  answer: '可以据此作答',
-  search_keyword: '换关键词再检索（engram_search）',
-  search_room: '收窄到具体房间再检索（engram_search 带 room）',
-  search_timeline: '按时间线找（engram_timeline 或 engram_episode_timeline 查情景）',
-  ask_user: '向用户澄清缺失的信息',
-  stop: '不回答，并向用户说明缺少什么',
+/** 证据门策略的可读提示（取值时才解析语言：模块级常量不能把语言固化在加载期）。 */
+const STRATEGY_HINT: Record<NextStrategy, () => string> = {
+  answer: () => message('tool.strategyAnswer'),
+  search_keyword: () => message('tool.strategySearchKeyword'),
+  search_room: () => message('tool.strategySearchRoom'),
+  search_timeline: () => message('tool.strategySearchTimeline'),
+  ask_user: () => message('tool.strategyAskUser'),
+  stop: () => message('tool.strategyStop'),
 }
 
 /** 证据门判定的模型可读文本（含被拒绝的 ref 与强制改写说明）。 */
 function renderAssessText(verdict: AssessVerdict, batchId: string): string {
   const lines = [
     verdict.sufficient
-      ? `证据判定：充足（批次 ${batchId}，${String(verdict.evidenceRefs.length)} 条有效证据）——可以据此作答。`
-      : `证据判定：不足（批次 ${batchId}）。`,
+      ? message('tool.assessSufficient', { batchId, count: verdict.evidenceRefs.length })
+      : message('tool.assessInsufficient', { batchId }),
   ]
-  if (verdict.evidenceRefs.length > 0) lines.push(`有效证据：${verdict.evidenceRefs.join('、')}`)
-  if (verdict.rejectedRefs.length > 0) lines.push(`无效 ref（不属于该批次，已忽略）：${verdict.rejectedRefs.join('、')}`)
-  if (verdict.droppedRefs.length > 0) lines.push(`超出上限被丢弃（单次最多 ${String(MAX_EVIDENCE_REFS)} 条）：${verdict.droppedRefs.join('、')}`)
-  lines.push(`缺口：${verdict.missing === '' ? '（未填写）' : verdict.missing}${verdict.missingTruncated ? '（已截断）' : ''}`)
-  lines.push(`下一步：${verdict.nextStrategy} —— ${STRATEGY_HINT[verdict.nextStrategy]}`)
+  if (verdict.evidenceRefs.length > 0) lines.push(message('tool.assessEvidenceRefs', { refs: verdict.evidenceRefs.join(message('tool.separatorIdea')) }))
+  if (verdict.rejectedRefs.length > 0) lines.push(message('tool.assessRejectedRefs', { refs: verdict.rejectedRefs.join(message('tool.separatorIdea')) }))
+  if (verdict.droppedRefs.length > 0) lines.push(message('tool.assessDroppedRefs', { max: MAX_EVIDENCE_REFS, refs: verdict.droppedRefs.join(message('tool.separatorIdea')) }))
+  const missing = `${verdict.missing === '' ? message('tool.assessMissingEmpty') : verdict.missing}${verdict.missingTruncated ? message('tool.assessMissingTruncated') : ''}`
+  lines.push(message('tool.assessMissing', { missing }))
+  lines.push(message('tool.assessNextStep', { strategy: verdict.nextStrategy, hint: STRATEGY_HINT[verdict.nextStrategy]() }))
   if (verdict.forced) {
-    lines.push('注意：判定由代码修正——sufficient 需同时满足「你声称充足」「至少一条属于本批次的有效证据」「nextStrategy=answer」。')
+    lines.push(message('tool.assessForcedNote'))
   }
   return lines.join('\n')
 }
@@ -207,7 +250,7 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
   try {
     const raw = await deps.call({
       route,
-      system: REWRITE_SYSTEM,
+      system: rewriteSystem(),
       userText: query,
       maxTokens: REWRITE_MAX_TOKENS,
       purpose: 'engram-rewrite',
@@ -271,25 +314,33 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const items = value.items ?? []
       const merged = items.filter(item => item.disposition === 'merge').length
       const deferred = items.filter(item => item.disposition === 'defer').length
-      const parts = [`已批量保存 ${value.count} 条记忆`]
+      const parts = [message('tool.saveBatchSaved', { count: value.count })]
       const states: string[] = []
-      if (merged > 0) states.push(`并入强化 ${merged} 条既有记忆`)
-      if (deferred > 0) states.push(`${deferred} 条与现有记忆高度相似待裁决`)
-      if (states.length > 0) parts.push(states.join('，'))
+      if (merged > 0) states.push(message('tool.saveBatchMerged', { count: merged }))
+      if (deferred > 0) states.push(message('tool.saveBatchDeferred', { count: deferred }))
+      if (states.length > 0) parts.push(states.join(message('tool.separatorClause')))
       for (const item of items) {
-        const slot = item.slot === undefined ? '' : `, ${item.slot.room}#${item.slot.index}`
-        const state = item.disposition === 'merge' ? `, 并入 ${item.mergedInto}` : item.disposition === 'defer' ? ', 待裁决' : ''
-        parts.push(`${item.id}（kind=${item.kind}, importance=${item.importance}${slot}${state}）`)
+        const slot = item.slot === undefined ? '' : `, ${roomLabel(item.slot.room, deps.language)}#${item.slot.index}`
+        const state = item.disposition === 'merge'
+          ? message('tool.saveItemMergedInto', { id: item.mergedInto ?? '' })
+          : item.disposition === 'defer' ? message('tool.saveItemDeferred') : ''
+        parts.push(message('tool.saveItemLine', { id: item.id, kind: item.kind, importance: item.importance, slot, state }))
       }
       const failures = value.failed ?? []
       if (failures.length > 0) {
-        parts.push(`${failures.length} 条失败：${failures.map(entry => `#${entry.index + 1} ${entry.reason}`).join('；')}`)
+        const entries = failures.map(entry => message('tool.saveFailureEntry', { index: entry.index + 1, reason: entry.reason }))
+        parts.push(message('tool.saveFailuresSummary', { count: failures.length, entries: entries.join(message('tool.separatorSemicolon')) }))
       }
-      parts.push('后续会话可用 engram_search 召回。')
-      return parts.join('；')
+      parts.push(message('tool.saveRecallNote'))
+      return parts.join(message('tool.separatorSemicolon'))
     }
     if (value.text !== undefined) return value.text
-    return `已保存记忆 ${value.id}（kind=${value.kind}, importance=${value.importance}）。后续会话可用 engram_search 召回。`
+    return message('tool.saveAcceptedText', {
+      id: value.id ?? '',
+      kind: value.kind ?? '',
+      importance: value.importance ?? 0,
+      slot: '',
+    })
   }
 
   /** 单条写入的处置结果（批量与单条共用）。 */
@@ -339,7 +390,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     })
     if (decision.disposition === 'defer') {
       // defer 时 embedding 必然存在（decideWrite 在无嵌入时只判 accept）。
-      const candidates = await store.findContradictions(embedding as Float32Array)
+      // Запись уже сохранена, поэтому она обязательно попадает в свой же список
+      // ближайших соседей (косинус с собой равен единице). Исключаем себя, иначе
+      // каждая отложенная запись порождает связь «противоречит сама себе».
+      const candidates = (await store.findContradictions(embedding as Float32Array))
+        .filter(candidate => candidate.id !== record.id)
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
       const confirmed = deps.judge === undefined
         ? candidates
@@ -383,7 +438,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   /** 批量保存：统一清洗/校验/批量内去重，一次批量嵌入，逐条写入；单条失败不阻塞其余。 */
   async function saveBatch(sourceSessionId: string | null, items: readonly unknown[], rawScope: unknown): Promise<SaveBatchResult> {
-    if (items.length > MAX_SAVE_BATCH) throw new Error(`engram_save: 单次最多保存 ${MAX_SAVE_BATCH} 条`)
+    if (items.length > MAX_SAVE_BATCH) throw new Error(message('tool.saveTooManyInBatch', { max: MAX_SAVE_BATCH }))
     const scope = scopeOf(rawScope, 'project')
     const store = await deps.openStore(scope)
     const embedder = await deps.embedder
@@ -392,20 +447,20 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     const failed: { index: number; reason: string }[] = []
     const seen = new Set<string>()
     for (const [index, raw] of items.entries()) {
-      if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: '条目必须是对象' }); continue }
+      if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: message('tool.reasonItemMustBeObject') }); continue }
       const candidate = raw as { content?: unknown; kind?: unknown; importance?: unknown; entities?: unknown }
       if (typeof candidate.content !== 'string' || candidate.content.trim() === '') {
-        failed.push({ index, reason: 'content 缺失或为空' }); continue
+        failed.push({ index, reason: message('tool.reasonContentMissingOrEmpty') }); continue
       }
       if (!KINDS.includes(candidate.kind as EngramKind)) {
-        failed.push({ index, reason: 'kind 无效' }); continue
+        failed.push({ index, reason: message('tool.reasonKindInvalid') }); continue
       }
       const content = redactSecrets(sanitizeProtocolText(candidate.content))
       if (content.trim() === '') {
-        failed.push({ index, reason: '清洗后内容为空（只含协议标签或密钥）' }); continue
+        failed.push({ index, reason: message('tool.reasonContentEmptyAfterSanitize') }); continue
       }
       const key = content.toLowerCase()
-      if (seen.has(key)) { failed.push({ index, reason: '批量内重复' }); continue }
+      if (seen.has(key)) { failed.push({ index, reason: message('tool.reasonDuplicateInBatch') }); continue }
       seen.add(key)
       prepared.push({
         index,
@@ -455,40 +510,40 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const save = defineTool({
     name: 'engram_save',
-    description: '保存长期记忆（跨会话可用），支持单条（content/kind）或批量（items，最多 10 条，单条失败不影响其余）。kind：fact 事实 / preference 偏好 / decision 决策 / episode 经历 / skill 方法。scope：project 仅当前项目，user 全局。',
+    description: message('tool.saveDescription'),
     parameters: {
-      content: { type: 'string', description: '记忆正文（单条模式必填），一句话完整表达' },
-      kind: { type: 'string', enum: [...KINDS], description: '记忆种类（单条模式必填）' },
+      content: { type: 'string', description: message('tool.saveContentDescription') },
+      kind: { type: 'string', enum: [...KINDS], description: message('tool.saveKindDescription') },
       entities: {
         type: 'array',
-        description: '本条记忆提到的实体（可选，仅单条模式）：人名/项目名/工具名/概念名，用于按实体检索',
+        description: message('tool.saveEntitiesDescription'),
         items: { type: 'object', additionalProperties: false, properties: {
-          name: { type: 'string', required: true, description: '实体名（专名本身，不超过 20 字）' },
-          kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: '实体种类，默认 other' },
-          aliases: { type: 'array', items: { type: 'string' }, description: '该实体的其他叫法' },
+          name: { type: 'string', required: true, description: message('tool.entityNameDescription') },
+          kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: message('tool.entityKindDescription') },
+          aliases: { type: 'array', items: { type: 'string' }, description: message('tool.entityAliasesDescription') },
         } },
       },
       items: {
         type: 'array',
-        description: '批量保存条目数组，每项 {content, kind, importance?, entities?}；与 content/kind 二选一',
+        description: message('tool.saveItemsDescription'),
         items: { type: 'object', additionalProperties: false, properties: {
-          content: { type: 'string', required: true, description: '记忆正文' },
-          kind: { type: 'string', enum: [...KINDS], required: true, description: '记忆种类' },
-          importance: { type: 'number', description: '重要性 0-1' },
+          content: { type: 'string', required: true, description: message('tool.saveItemContentDescription') },
+          kind: { type: 'string', enum: [...KINDS], required: true, description: message('tool.saveItemKindDescription') },
+          importance: { type: 'number', description: message('tool.saveItemImportanceDescription') },
           entities: {
             type: 'array',
-            description: '该条提到的实体',
+            description: message('tool.saveItemEntitiesDescription'),
             items: { type: 'object', additionalProperties: false, properties: {
-              name: { type: 'string', required: true, description: '实体名（专名本身，不超过 20 字）' },
-              kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: '实体种类，默认 other' },
-              aliases: { type: 'array', items: { type: 'string' }, description: '该实体的其他叫法' },
+              name: { type: 'string', required: true, description: message('tool.entityNameDescription') },
+              kind: { type: 'string', enum: ['person', 'project', 'tool', 'concept', 'other'], description: message('tool.entityKindDescription') },
+              aliases: { type: 'array', items: { type: 'string' }, description: message('tool.entityAliasesDescription') },
             } },
           },
         } },
       },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
-      importance: { type: 'number', description: '重要性 0-1，默认 0.5（仅单条模式）' },
-      placard: { type: 'string', description: '门牌（可选，仅单条模式）：4-30 字铭牌。宫殿纪律：唯一 · 差异化 · 带日期锚点（如「2026-09 向量检索选型」），禁止与既有门牌近似到无法区分' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.scopeDescriptionProject') },
+      importance: { type: 'number', description: message('tool.saveImportanceDescription') },
+      placard: { type: 'string', description: message('tool.savePlacardDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -524,19 +579,19 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       // 批量模式：items 与 content/kind 互斥，同传 loud 失败。
       if (input.items !== undefined) {
         if (input.content !== undefined || input.kind !== undefined) {
-          throw new Error('engram_save: items 与 content/kind 参数不能同时使用')
+          throw new Error(message('tool.saveItemsConflict'))
         }
         if (!Array.isArray(input.items) || input.items.length === 0) {
-          throw new Error('engram_save: items 必须是非空数组')
+          throw new Error(message('tool.saveItemsMustBeNonEmpty'))
         }
         return saveBatch(sourceSessionId, input.items, input.scope)
       }
       if (typeof input.content !== 'string' || typeof input.kind !== 'string') {
-        throw new Error('engram_save: 需要 content/kind（单条）或 items（批量）参数')
+        throw new Error(message('tool.saveParamsRequired'))
       }
       // 入库前协议剥离 + 密钥脱敏（模型可能把会话中的密钥或协议块原样写进记忆）。
       const content = redactSecrets(sanitizeProtocolText(input.content))
-      if (content.trim() === '') throw new Error('engram_save: 清洗后内容为空（原文只含协议标签或密钥）')
+      if (content.trim() === '') throw new Error(message('tool.saveContentEmptyAfterSanitize'))
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
       const embedder = await deps.embedder
@@ -570,7 +625,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           disposition: 'merge' as const,
           ...(outcome.relatedId === undefined ? {} : { mergedInto: outcome.relatedId }),
           ...(outcome.similarity === undefined ? {} : { similarity: outcome.similarity }),
-          text: `与既有记忆高度重复（相似度 ${sim}），已并入 ${outcome.relatedId} 并强化其置信度与访问计数，未新建条目。若这是修正而非复述，请用 engram_update 归并。`,
+          text: message('tool.saveMergeText', { similarity: sim, mergedInto: outcome.relatedId ?? '' }),
         }
       }
       // 门牌质量提示：低分（不合「唯一·差异化·带日期」纪律）附增强建议。
@@ -579,30 +634,31 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         : `\n${placardImprovementHint(record.imageryScore) ?? ''}`
       // DEFER：疑似矛盾/修正——落库并建 contradicts 边，报告候选由模型/用户裁决。
       if (outcome.disposition === 'defer') {
-        const listed = candidates.map(candidate => `「${candidate.content}」（id=${candidate.id}）`).join('；')
+        const listed = candidates.map(candidate => message('tool.contradictionEntry', { content: candidate.content, id: candidate.id })).join(message('tool.separatorSemicolon'))
         return {
           id: record.id,
           kind: record.kind,
           importance: record.importance,
           disposition: 'defer' as const,
           ...(outcome.similarity === undefined ? {} : { similarity: outcome.similarity }),
-          text: `已保存 ${record.id}。注意：与现有记忆高度相似——${listed}。若这是修正而非新事实，请用 engram_update 归并，或 engram_forget 去重。${placardHint}`,
+          text: message('tool.saveDeferText', { id: record.id, listed, placardHint }),
         }
       }
-      const base = `已保存记忆 ${record.id}（kind=${record.kind}, importance=${record.importance}${record.slot === undefined ? '' : `, ${record.slot.room}#${record.slot.index}`}）。后续会话可用 engram_search 召回。`
+      const slot = record.slot === undefined ? '' : `, ${roomLabel(record.slot.room, deps.language)}#${record.slot.index}`
+      const base = message('tool.saveAcceptedText', { id: record.id, kind: record.kind, importance: record.importance, slot })
       return { id: record.id, kind: record.kind, importance: record.importance, disposition: 'accept' as const, text: `${base}${placardHint}` }
     },
   })
 
   const search = defineTool({
     name: 'engram_search',
-    description: '语义 + 关键词混合检索长期记忆。宫殿纪律：先想进哪个房间——事实厅（fact）/偏好阁（preference）/决策堂（decision）/往事廊（episode）/技法坊（skill），带上 room 参数只查该房间，更快更准；不确定房间时缺省全库检索。user 作用域存偏好与通用事实，project 作用域存项目约定与决策。结果行尾给出 id，供 engram_update/engram_forget 引用。',
+    description: message('tool.searchDescription'),
     parameters: {
-      query: { type: 'string', required: true, description: '检索文本' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      room: { type: 'string', description: '房间路由：只在指定房间内检索（如「决策堂」）。房间目录见 engram_stats 输出' },
-      limit: { type: 'number', description: '返回条数上限，默认 8' },
-      asOf: { type: 'string', description: '时点回看（可选，ISO 日期如 2026-03-01）：结果行附各记忆关联实体在该时点仍有效的事实快照，回答「当时」类问题时防止过时事实误导' },
+      query: { type: 'string', required: true, description: message('tool.searchQueryDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      room: { type: 'string', description: message('tool.searchRoomDescription') },
+      limit: { type: 'number', description: message('tool.searchLimitDescription') },
+      asOf: { type: 'string', description: message('tool.searchAsOfDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -614,7 +670,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     async execute(args, exec) {
       const input = args as { query: string; scope?: unknown; room?: unknown; limit?: number; asOf?: unknown }
       const scopes = scopesOf(input.scope)
-      const rooms = typeof input.room === 'string' && input.room.trim() !== '' ? [input.room.trim()] : undefined
+      const rooms = typeof input.room === 'string' && input.room.trim() !== ''
+        ? [resolveRoomInput(input.room) ?? input.room.trim()]
+        : undefined
       const limit = input.limit ?? 8
       const asOfMs = parseTimeParam(typeof input.asOf === 'string' ? input.asOf : undefined, 'engram_search', 'asOf')
       // 多查询改写：辅助 LLM 可用时生成 ≤3 个互补查询分别检索后 RRF 融合；
@@ -673,56 +731,56 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         }
       }
       const candidates = merged.map((hit, index) => {
-        const ref = evidenceRefOf(hit.record.scope, hit.record.id, hit.record.slot)
-        const edge = hit.viaEdge === undefined ? '' : `（经 ${hit.viaEdge.type} 关联自 ${hit.viaEdge.from}）`
-        const slot = hit.record.slot === undefined ? '' : ` ${hit.record.slot.room}#${hit.record.slot.index}`
-        const date = ` 刻于 ${new Date(hit.record.createdAt).toISOString().slice(0, 10)}`
-        const cues = hit.cues === undefined ? '' : ` 相邻桩位: ${hit.cues.neighbors.join(', ')}`
+        const ref = evidenceRefOf(hit.record.scope, hit.record.id, hit.record.slot, deps.language)
+        const edge = hit.viaEdge === undefined ? '' : message('tool.searchViaEdge', { type: hit.viaEdge.type, from: hit.viaEdge.from })
+        const slot = hit.record.slot === undefined ? '' : ` ${roomLabel(hit.record.slot.room, deps.language)}#${hit.record.slot.index}`
+        const date = message('tool.searchCreatedAt', { date: new Date(hit.record.createdAt).toISOString().slice(0, 10) })
+        const cues = hit.cues === undefined ? '' : message('tool.searchNeighborCues', { cues: hit.cues.neighbors.join(', ') })
         const notes = factNotes.get(String(hit.record.id))
-        const facts = notes === undefined ? '' : ` 时点事实: ${notes.join('；')}`
+        const facts = notes === undefined ? '' : message('tool.searchAsOfFacts', { facts: notes.join(message('tool.separatorSemicolon')) })
         return {
           ref,
-          line: `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}（id=${hit.record.id}, ref=${ref}）${edge}${cues}${facts}`,
+          line: `${index + 1}. [${hit.record.scope}/${hit.record.kind}]${slot}${date} ${truncateItem(hit.record.content)}${message('tool.searchHitIdRef', { id: hit.record.id, ref })}${edge}${cues}${facts}`,
         }
       })
       const { kept, dropped } = fitWithinBudget(candidates, entry => entry.line.length, RECALL_TOTAL_CHARS)
       const lines = kept.map(entry => entry.line)
-      if (dropped > 0) lines.push(`（另有 ${dropped} 条未展示：缩小查询范围或降低 limit 后重试）`)
+      if (dropped > 0) lines.push(message('store.budgetDropped', { count: dropped }))
       // 证据门：把本次真正输出的 ref 登记成批次，engram_assess 只能引用这里登记过的 ref。
       const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
       const batch = sessionId === undefined || kept.length === 0
         ? undefined
         : evidenceBatches.register(sessionId, kept.map(entry => entry.ref))
-      const prefix = degraded && lines.length > 0 ? '（语义嵌入不可用，仅关键词检索）\n' : ''
-      const roomNote = rooms === undefined ? '' : `（房间路由：${rooms.join('、')}）\n`
-      const asOfNote = asOfMs === undefined ? '' : `（时点回看：行尾「时点事实」为关联实体在 ${new Date(asOfMs).toISOString().slice(0, 10)} 仍有效的事实快照）\n`
+      const prefix = degraded && lines.length > 0 ? message('tool.searchDegradedPrefix') : ''
+      const roomNote = rooms === undefined ? '' : message('tool.searchRoomRoutePrefix', { rooms: rooms.join(message('tool.separatorIdea')) })
+      const asOfNote = asOfMs === undefined ? '' : message('tool.searchAsOfPrefix', { date: new Date(asOfMs).toISOString().slice(0, 10) })
       const batchNote = batch === undefined
         ? ''
-        : `\n批次 ${batch.batchId}（${String(batch.refs.size)} 条可引用证据）：作答前用 engram_assess 判定证据是否充分，evidenceRefs 只能引用上面的 ref。`
+        : message('tool.searchBatchNote', { batchId: batch.batchId, count: batch.refs.size })
       // 输出包协议标签：记忆正文是不可信历史上下文，当前请求为检索词本身。
-      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${asOfNote}${lines.join('\n') || '无命中'}${batchNote}`, 'tool_search', input.query) }
+      return { degraded, text: renderMemoryPacket(`${prefix}${roomNote}${asOfNote}${lines.join('\n') || message('tool.searchNoHits')}${batchNote}`, 'tool_search', input.query) }
     },
   })
 
   const factsTool = defineTool({
     name: 'engram_facts',
-    description: '实体事实链：查询某实体的时序事实（asOf 时点回看 / includeInvalid 全链展开），或写入与修正事实（facts 数组）。事实是关于具体实体的一条客观陈述（状态/归属/关系/数据）。修正过时事实时传 replaces=旧事实 id：旧事实软失效、新事实接棒，历史链保留——不要反复保存互相矛盾的事实，用取代链表达演变。',
+    description: message('tool.factsDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 project' },
-      entityId: { type: 'string', description: '查询模式：实体 id（engram_search/engram_entities 输出中获取；与 entity 二选一，优先）' },
-      entity: { type: 'string', description: '查询模式：实体名（按名称与别名精确匹配；未命中不新建，返回近似候选）' },
-      asOf: { type: 'string', description: '时点回看（ISO 日期或毫秒时间戳）：只看该时点仍有效的事实' },
-      includeInvalid: { type: 'boolean', description: 'true 展开全链（含已失效事实，查看事实演变历史）' },
-      limit: { type: 'number', description: '返回条数上限，默认 20' },
-      offset: { type: 'number', description: '分页偏移，默认 0' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.scopeDescriptionProject') },
+      entityId: { type: 'string', description: message('tool.factsEntityIdDescription') },
+      entity: { type: 'string', description: message('tool.factsEntityDescription') },
+      asOf: { type: 'string', description: message('tool.factsAsOfDescription') },
+      includeInvalid: { type: 'boolean', description: message('tool.factsIncludeInvalidDescription') },
+      limit: { type: 'number', description: message('tool.limitDescription20') },
+      offset: { type: 'number', description: message('tool.factsOffsetDescription') },
       facts: {
         type: 'array',
-        description: '写入模式：事实数组（与查询参数二选一），每项 {entity 或 entityId, content, replaces?}',
+        description: message('tool.factsWriteDescription'),
         items: { type: 'object', additionalProperties: false, properties: {
-          entity: { type: 'string', description: '实体名（与 entityId 二选一；实体不存在时新建）' },
-          entityId: { type: 'string', description: '实体 id（优先于 entity）' },
-          content: { type: 'string', required: true, description: '事实陈述（一句话，不超过 500 字符）' },
-          replaces: { type: 'string', description: '被取代的旧事实 id（旧事实软失效；id 不存在时按无取代写入）' },
+          entity: { type: 'string', description: message('tool.factsItemEntityDescription') },
+          entityId: { type: 'string', description: message('tool.factsItemEntityIdDescription') },
+          content: { type: 'string', required: true, description: message('tool.factsItemContentDescription') },
+          replaces: { type: 'string', description: message('tool.factsItemReplacesDescription') },
         } },
       },
     },
@@ -754,23 +812,23 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       // —— 写入模式：facts 与查询参数互斥（照 engram_save 的 items 模式）。
       if (input.facts !== undefined) {
         if (input.entityId !== undefined || input.entity !== undefined || input.asOf !== undefined || input.includeInvalid !== undefined) {
-          throw new Error('engram_facts: facts（写入）与 entityId/entity/asOf/includeInvalid（查询）参数不能同时使用')
+          throw new Error(message('tool.factsWriteConflict'))
         }
         if (!Array.isArray(input.facts) || input.facts.length === 0) {
-          throw new Error('engram_facts: facts 必须是非空数组')
+          throw new Error(message('tool.factsMustBeNonEmptyArray'))
         }
-        if (input.facts.length > MAX_SAVE_BATCH) throw new Error(`engram_facts: 单次最多写入 ${MAX_SAVE_BATCH} 条事实`)
+        if (input.facts.length > MAX_SAVE_BATCH) throw new Error(message('tool.factsTooManyPerCall', { max: MAX_SAVE_BATCH }))
         const failed: { index: number; reason: string }[] = []
         const prepared: { index: number; input: FactWriteInput }[] = []
         for (const [index, raw] of input.facts.entries()) {
-          if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: '条目必须是对象' }); continue }
+          if (raw === null || typeof raw !== 'object') { failed.push({ index, reason: message('tool.reasonItemMustBeObject') }); continue }
           const candidate = raw as { entity?: unknown; entityId?: unknown; content?: unknown; replaces?: unknown }
           if (typeof candidate.content !== 'string' || candidate.content.trim() === '') {
-            failed.push({ index, reason: 'content 缺失或为空' }); continue
+            failed.push({ index, reason: message('tool.reasonContentMissingOrEmpty') }); continue
           }
           // 入库前协议剥离 + 密钥脱敏（与 engram_save 同一清洗纪律）。
           const content = redactSecrets(sanitizeProtocolText(candidate.content))
-          if (content.trim() === '') { failed.push({ index, reason: '清洗后内容为空（只含协议标签或密钥）' }); continue }
+          if (content.trim() === '') { failed.push({ index, reason: message('tool.reasonContentEmptyAfterSanitize') }); continue }
           try {
             let entityId: EntityId
             if (typeof candidate.entityId === 'string' && candidate.entityId.trim() !== '') {
@@ -779,10 +837,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
               // 按名写入走消解（未命中新建）；kind 固定 other（事实挂靠不负责实体归类）。
               const resolved = await store.resolveEntities([{ name: candidate.entity.trim(), kind: 'other' }])
               const resolvedEntity = resolved[0]
-              if (resolvedEntity === undefined) { failed.push({ index, reason: '实体消解未返回结果' }); continue }
+              if (resolvedEntity === undefined) { failed.push({ index, reason: message('tool.reasonEntityResolveEmpty') }); continue }
               entityId = resolvedEntity.id
             } else {
-              failed.push({ index, reason: '需要 entity 或 entityId' }); continue
+              failed.push({ index, reason: message('tool.reasonEntityRequired') }); continue
             }
             prepared.push({
               index,
@@ -810,20 +868,22 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
             ...(entry.input.replaces === undefined ? {} : { replaced: entry.input.replaces }),
           })
         }
-        const parts = [`已写入 ${String(records.length)} 条事实`]
+        const parts = [message('tool.factsWrittenSummary', { count: records.length })]
         const replacedCount = prepared.filter(entry => entry.input.replaces !== undefined).length
-        if (replacedCount > 0) parts.push(`其中 ${String(replacedCount)} 条声明取代旧事实（旧事实已软失效，历史链保留；id 不存在时按无取代写入）`)
+        if (replacedCount > 0) parts.push(message('tool.factsReplacedSummary', { count: replacedCount }))
         for (const item of items) {
-          parts.push(`${item.id} → 实体 ${item.entityId}${item.replaced === undefined ? '' : `（取代 ${item.replaced}）`}`)
+          const replaced = item.replaced === undefined ? '' : message('tool.factsReplacedSuffix', { id: item.replaced })
+          parts.push(message('tool.factsWrittenItem', { id: item.id, entityId: item.entityId, replaced }))
         }
         if (failed.length > 0) {
-          parts.push(`${String(failed.length)} 条失败：${failed.map(entry => `#${String(entry.index + 1)} ${entry.reason}`).join('；')}`)
+          const entries = failed.map(entry => message('tool.saveFailureEntry', { index: entry.index + 1, reason: entry.reason }))
+          parts.push(message('tool.saveFailuresSummary', { count: failed.length, entries: entries.join(message('tool.separatorSemicolon')) }))
         }
         return {
           count: records.length,
           items,
           ...(failed.length > 0 ? { failed } : {}),
-          text: parts.join('；'),
+          text: parts.join(message('tool.separatorSemicolon')),
         }
       }
       // —— 查询模式：entityId 优先；entity 名走「列表子串查 + 归一精确过滤」，
@@ -831,7 +891,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const hasEntityId = typeof input.entityId === 'string' && input.entityId.trim() !== ''
       const hasEntityName = typeof input.entity === 'string' && input.entity.trim() !== ''
       if (!hasEntityId && !hasEntityName) {
-        throw new Error('engram_facts: 需要 entityId/entity（查询）或 facts（写入）参数')
+        throw new Error(message('tool.factsParamsRequired'))
       }
       const limit = parseCountParam(typeof input.limit === 'number' ? input.limit : undefined, 'engram_facts', 'limit', 20, 1, 100)
       const offset = parseCountParam(typeof input.offset === 'number' ? input.offset : undefined, 'engram_facts', 'offset', 0, 0, 100000)
@@ -841,7 +901,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       if (hasEntityId) {
         entityId = asEntityId((input.entityId as string).trim())
         const detail = await store.entityDetail(entityId, 0)
-        if (detail === undefined) throw new Error(`engram_facts: 实体 ${input.entityId} 不存在`)
+        if (detail === undefined) throw new Error(message('tool.factsEntityIdNotFound', { id: String(input.entityId) }))
         entityName = detail.entity.name
       } else {
         const name = (input.entity as string).trim()
@@ -851,19 +911,24 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           normalizeEntityName(item.entity.name) === normalized
           || item.entity.aliases.some(alias => normalizeEntityName(alias) === normalized))
         if (matches.length === 0) {
-          const near = candidates.map(item => `${item.entity.name}（id=${item.entity.id}）`).join('；')
+          const near = candidates.map(item => message('tool.entityWithId', { name: item.entity.name, id: item.entity.id })).join(message('tool.separatorSemicolon'))
           return {
             total: 0,
-            text: `未找到实体「${name}」（按名称与别名精确匹配，不自动新建）。${near === '' ? '词典中没有近似名称。' : `近似候选：${near}。可用 entityId 精确查询。`}`,
+            text: message('tool.factsEntityNotFoundByName', {
+              name,
+              tail: near === ''
+                ? message('tool.factsNoNearNames')
+                : message('tool.factsNearCandidates', { near }),
+            }),
           }
         }
         if (matches.length > 1) {
-          const listed = matches.map(item => `${item.entity.name}（id=${item.entity.id}）`).join('；')
-          return { total: 0, text: `名称「${name}」匹配到 ${String(matches.length)} 个实体：${listed}。请用 entityId 指定。` }
+          const listed = matches.map(item => message('tool.entityWithId', { name: item.entity.name, id: item.entity.id })).join(message('tool.separatorSemicolon'))
+          return { total: 0, text: message('tool.factsNameAmbiguous', { name, count: matches.length, listed }) }
         }
         const match = matches[0]
         if (match === undefined) {
-          return { total: 0, text: `未找到实体「${name}」。` }
+          return { total: 0, text: message('tool.factsEntityNotFoundShort', { name }) }
         }
         entityId = match.entity.id
         entityName = match.entity.name
@@ -875,9 +940,14 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         limit,
         offset,
       })
-      const header = `实体「${entityName}」的事实（共 ${String(total)} 条${asOfMs === undefined ? '' : `，时点 ${new Date(asOfMs).toISOString().slice(0, 10)}`}${includeInvalid ? '，全链含已失效' : ''}）`
+      const header = message('tool.factsHeader', {
+        name: entityName,
+        count: total,
+        asOf: asOfMs === undefined ? '' : message('tool.factsHeaderAsOf', { date: new Date(asOfMs).toISOString().slice(0, 10) }),
+        fullChain: includeInvalid ? message('tool.factsHeaderFullChain') : '',
+      })
       const lines = facts.map((fact, index) => renderFactLine(index, fact))
-      const body = lines.length === 0 ? '没有符合条件的事实。' : lines.join('\n')
+      const body = lines.length === 0 ? message('tool.factsEmpty') : lines.join('\n')
       // 输出包协议标签：事实摘自历史记忆，属不可信历史上下文；当前请求以实体名近似。
       return { total, text: renderMemoryPacket(`${header}\n${body}`, 'tool_facts', hasEntityName ? (input.entity as string) : entityId) }
     },
@@ -885,13 +955,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const assess = defineTool({
     name: 'engram_assess',
-    description: '证据门：检索（engram_search）之后、作答之前，判定「检索到的内容是否足以回答当前问题」。提交 batchId、sufficient、最多 8 条 evidenceRefs（只能引用该批次输出里的 ref=…）、缺口说明 missing（≤160 字符）与下一步 nextStrategy。代码强制校验：sufficient 需同时满足「你声称充足」「至少一条属于本批次的有效证据」「nextStrategy=answer」，否则判为不足并把策略改回继续检索；不属于该批次的 ref 会被拒绝并列出。判词与拒绝明细写入审计日志。',
+    description: message('tool.assessDescription'),
     parameters: {
-      batchId: { type: 'string', required: true, description: 'engram_search 输出末尾给出的批次 id（如 batch-3）' },
-      sufficient: { type: 'boolean', required: true, description: '证据是否足以回答当前问题（true 时 nextStrategy 必须为 answer）' },
-      evidenceRefs: { type: 'array', items: { type: 'string' }, description: '引用的证据 ref（最多 8 条，只能取该批次输出里的 ref=…）' },
-      missing: { type: 'string', description: '缺少什么维度的信息（≤160 字符）' },
-      nextStrategy: { type: 'string', enum: [...NEXT_STRATEGIES], description: '下一步：answer 作答 / search_keyword 换关键词 / search_room 换房间 / search_timeline 查时间线 / ask_user 问用户 / stop 不回答' },
+      batchId: { type: 'string', required: true, description: message('tool.assessBatchIdDescription') },
+      sufficient: { type: 'boolean', required: true, description: message('tool.assessSufficientDescription') },
+      evidenceRefs: { type: 'array', items: { type: 'string' }, description: message('tool.assessEvidenceRefsDescription') },
+      missing: { type: 'string', description: message('tool.assessMissingDescription') },
+      nextStrategy: { type: 'string', enum: [...NEXT_STRATEGIES], description: message('tool.assessNextStrategyDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -903,11 +973,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
     async execute(args, exec) {
       const input = args as { batchId?: unknown; sufficient?: unknown; evidenceRefs?: unknown; missing?: unknown; nextStrategy?: unknown }
-      if (typeof input.batchId !== 'string' || input.batchId.trim() === '') throw new Error('engram_assess: batchId 必填（取自 engram_search 输出末尾）')
+      if (typeof input.batchId !== 'string' || input.batchId.trim() === '') throw new Error(message('tool.assessBatchIdRequired'))
       const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
       const batch = sessionId === undefined ? undefined : evidenceBatches.get(sessionId, input.batchId.trim())
       if (batch === undefined) {
-        throw new Error(`engram_assess: 批次 ${input.batchId} 不存在或已过期（每个会话保留最近 ${String(MAX_BATCHES_PER_SESSION)} 个批次）——请重新 engram_search 取新批次`)
+        throw new Error(message('tool.assessBatchNotFound', { batchId: input.batchId, max: MAX_BATCHES_PER_SESSION }))
       }
       const verdict = assessEvidence(batch, {
         sufficient: input.sufficient === true,
@@ -932,13 +1002,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const timeline = defineTool({
     name: 'engram_timeline',
-    description: '按时间范围与主题浏览记忆（默认时间倒序，最近 20 条）。order=tour 时改按固定巡游路线的桩位顺序走（未上路线者排末尾），输出附宫殿坐标——适合按宫殿固定路线复述；多作用域按 user→project→shared 顺序拼接（桩位顺序只在各自库内有意义）。无参数直接列出最近记录。',
+    description: message('tool.timelineDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      topic: { type: 'string', description: '主题子串' },
-      since: { type: 'string', description: '起始时间（ISO 或可解析日期）' },
-      until: { type: 'string', description: '结束时间' },
-      order: { type: 'string', enum: ['time', 'tour'], description: "排序：缺省 'time' 按创建时间倒序；'tour' 按固定巡游路线桩位顺序" },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      topic: { type: 'string', description: message('tool.timelineTopicDescription') },
+      since: { type: 'string', description: message('tool.sinceDescription') },
+      until: { type: 'string', description: message('tool.untilDescription') },
+      order: { type: 'string', enum: ['time', 'tour'], description: message('tool.timelineOrderDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -967,25 +1037,25 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         : results.flat().sort((a, b) => b.createdAt - a.createdAt).slice(0, 20)
       // 输出包协议标签：记忆正文是不可信历史上下文；timeline 无查询参数，当前请求以占位句代替。
       const body = enforceBudget(rows.map(record => {
-        const slot = order === 'tour' && record.slot !== undefined ? ` ${record.slot.room}#${record.slot.index}` : ''
-        return `${new Date(record.createdAt).toISOString()}${slot} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`
+        const slot = order === 'tour' && record.slot !== undefined ? ` ${roomLabel(record.slot.room, deps.language)}#${record.slot.index}` : ''
+        return `${new Date(record.createdAt).toISOString()}${slot} [${record.scope}/${record.kind}] ${truncateItem(record.content)}${message('tool.idSuffix', { id: record.id })}`
       }))
-      const tail = order === 'tour' ? '\n（按固定巡游路线桩位顺序；未上路线者按创建时间排末尾）' : ''
-      return { text: renderMemoryPacket(`${body.join('\n') || '时间线为空'}${tail}`, 'tool_timeline', input.topic ?? '（对话继续）') }
+      const tail = order === 'tour' ? message('tool.timelineTourTail') : ''
+      return { text: renderMemoryPacket(`${body.join('\n') || message('tool.timelineEmpty')}${tail}`, 'tool_timeline', input.topic ?? message('store.conversationContinues')) }
     },
   })
 
   const episodeTimeline = defineTool({
     name: 'engram_episode_timeline',
-    description: 'episode 情景记忆的独立时间线：按日期范围与来源会话浏览经历，输出按会话分组（组间新→旧，组内时间升序），适合回答「那天/那段时间我们做了什么」。around 传锚点记忆 id 时切换为时间邻近扩展——列出锚点创建时刻 ± 窗口内的情景（忽略日期过滤），回答「当时前后还发生了什么」。',
+    description: message('tool.episodeTimelineDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      since: { type: 'string', description: '起始日期（ISO 或可解析日期）' },
-      until: { type: 'string', description: '结束日期' },
-      sessionId: { type: 'string', description: '只看该来源会话的情景（id 精确匹配，从本工具输出的「会话 …」组头取得）' },
-      around: { type: 'string', description: '锚点记忆 id：切换为时间邻近扩展模式（与 since/until/sessionId 互斥，此时忽略它们）' },
-      windowMinutes: { type: 'number', description: `邻近窗口分钟数（around 模式，默认 ${String(EPISODE_PROXIMITY_MS_DEFAULT / 60000)}）` },
-      limit: { type: 'number', description: `最多返回条数（默认 ${String(EPISODE_TIMELINE_LIMIT_DEFAULT)}）` },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      since: { type: 'string', description: message('tool.sinceDateDescription') },
+      until: { type: 'string', description: message('tool.untilDateDescription') },
+      sessionId: { type: 'string', description: message('tool.episodeSessionIdDescription') },
+      around: { type: 'string', description: message('tool.episodeAroundDescription') },
+      windowMinutes: { type: 'number', description: message('tool.episodeWindowMinutesDescription', { minutes: EPISODE_PROXIMITY_MS_DEFAULT / 60000 }) },
+      limit: { type: 'number', description: message('tool.episodeLimitDescription', { limit: EPISODE_TIMELINE_LIMIT_DEFAULT }) },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1001,7 +1071,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const aroundId = input.around?.trim()
       // 输出行与 engram_timeline 同一格式，模型无需区分两种时间线的行文。
       const renderRow = (record: MemoryRecord): string =>
-        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${truncateItem(record.content)}（id=${record.id}）`
+        `${new Date(record.createdAt).toISOString()} [${record.scope}/${record.kind}] ${truncateItem(record.content)}${message('tool.idSuffix', { id: record.id })}`
       if (aroundId !== undefined && aroundId !== '') {
         const windowMinutes = parseCountParam(input.windowMinutes, 'engram_episode_timeline', 'windowMinutes', EPISODE_PROXIMITY_MS_DEFAULT / 60000, 1, 24 * 60)
         const anchor = asMemoryId(aroundId)
@@ -1012,16 +1082,16 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           const result = await store.episodeTimeline({ scopes: [scope], around: anchor, proximityMs: windowMinutes * 60_000, limit })
           const around = result.around!
           const lines = around.neighbors.length === 0
-            ? [`锚点：${renderRow(around.anchor)}`, '邻近窗口内没有情景记忆。']
+            ? [message('tool.episodeAnchor', { row: renderRow(around.anchor) }), message('tool.episodeNoNeighbors')]
             : [
-                `锚点：${renderRow(around.anchor)}`,
-                `邻近情景（±${String(windowMinutes)} 分钟，${String(around.neighbors.length)} 条，按时间正序）：`,
+                message('tool.episodeAnchor', { row: renderRow(around.anchor) }),
+                message('tool.episodeNeighborsHeader', { minutes: windowMinutes, count: around.neighbors.length }),
                 ...around.neighbors.map(renderRow),
               ]
           const body = enforceBudget(lines)
           return { text: renderMemoryPacket(body.join('\n'), 'tool_episode_timeline', aroundId) }
         }
-        throw new Error(`engram_episode_timeline: 锚点 ${aroundId} 不存在`)
+        throw new Error(message('tool.episodeAnchorNotFound', { id: aroundId }))
       }
       const results = await Promise.all(scopes.map(async (scope) => {
         const store = await deps.openStore(scope)
@@ -1038,26 +1108,35 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const lines: string[] = []
       for (const group of groups) {
         lines.push(group.sessionId === null
-          ? `[无会话来源] ${new Date(group.startedAt).toISOString()} ~ ${new Date(group.endedAt).toISOString()}（${String(group.episodes.length)} 条）`
-          : `[会话 ${group.sessionId}] ${new Date(group.startedAt).toISOString()} ~ ${new Date(group.endedAt).toISOString()}（${String(group.episodes.length)} 条）`)
+          ? message('tool.episodeGroupNoSession', {
+              start: new Date(group.startedAt).toISOString(),
+              end: new Date(group.endedAt).toISOString(),
+              count: group.episodes.length,
+            })
+          : message('tool.episodeGroupSession', {
+              sessionId: group.sessionId,
+              start: new Date(group.startedAt).toISOString(),
+              end: new Date(group.endedAt).toISOString(),
+              count: group.episodes.length,
+            }))
         // 组头摘要：摄取期生成的一句话概括，模型不用逐条展开就能定位目标会话。
-        if (group.summary !== undefined) lines.push(`  摘要：${group.summary}`)
+        if (group.summary !== undefined) lines.push(message('tool.episodeGroupSummary', { summary: group.summary }))
         for (const record of group.episodes) lines.push(`- ${renderRow(record)}`)
       }
       const body = enforceBudget(lines)
-      return { text: renderMemoryPacket(body.join('\n') || '情景时间线为空', 'tool_episode_timeline', sessionId ?? '（对话继续）') }
+      return { text: renderMemoryPacket(body.join('\n') || message('tool.episodeEmpty'), 'tool_episode_timeline', sessionId ?? message('store.conversationContinues')) }
     },
   })
 
   const update = defineTool({
     name: 'engram_update',
-    description: '修正一条记忆：写入新条目并把旧条目标记为被取代（链条保留，可审计）。id 来自 engram_search 结果。',
+    description: message('tool.updateDescription'),
     parameters: {
-      id: { type: 'string', required: true, description: '要修正的旧条目 id' },
-      content: { type: 'string', required: true, description: '修正后的正文' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '旧条目作用域，默认 project' },
-      kind: { type: 'string', enum: [...KINDS], description: '种类，默认继承旧条目' },
-      placard: { type: 'string', description: '门牌（可选）：4-30 字铭牌，替换旧条目门牌。宫殿纪律：唯一 · 差异化 · 带日期锚点' },
+      id: { type: 'string', required: true, description: message('tool.updateIdDescription') },
+      content: { type: 'string', required: true, description: message('tool.updateContentDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.updateScopeDescription') },
+      kind: { type: 'string', enum: [...KINDS], description: message('tool.updateKindDescription') },
+      placard: { type: 'string', description: message('tool.updatePlacardDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -1065,17 +1144,17 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         superseded: { type: 'string', required: true },
       } },
       render: (_args, value) =>
-        [{ type: 'text', text: `已写入修正记忆 ${value.id}；旧条目 ${value.superseded} 已归档并建立取代链。` }],
+        [{ type: 'text', text: message('tool.updateRendered', { id: value.id, superseded: value.superseded }) }],
     },
     async execute(args) {
       const input = args as { id: string; content: string; scope?: unknown; kind?: EngramKind; placard?: unknown }
       // 入库前协议剥离 + 密钥脱敏，与 engram_save 同一防线。
       const content = redactSecrets(sanitizeProtocolText(input.content))
-      if (content.trim() === '') throw new Error('engram_update: 清洗后内容为空（原文只含协议标签或密钥）')
+      if (content.trim() === '') throw new Error(message('tool.updateContentEmptyAfterSanitize'))
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
       const old = await store.get(input.id as never)
-      if (old === undefined) throw new Error(`engram_update: 条目 ${input.id} 不存在于 ${scope} 库（用 engram_search 确认 id 与 scope）`)
+      if (old === undefined) throw new Error(message('tool.updateNotFound', { id: input.id, scope }))
       const embedder = await deps.embedder
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
       const imagery = placardOf(input.placard)
@@ -1093,17 +1172,17 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const forget = defineTool({
     name: 'engram_forget',
-    description: '闭馆仪式（软删，可恢复）：遗忘前必须留下「为什么关 / 影响谁 / 还有用吗」三问答案作为墓志铭，便于日后考古。id 与 scope 来自 engram_search 结果。',
+    description: message('tool.forgetDescription'),
     parameters: {
-      id: { type: 'string', required: true, description: '条目 id' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
-      reason: { type: 'string', required: true, description: '闭馆原因：被取代 / 过期 / 与现实不符 / 隐私 等' },
-      affects: { type: 'string', required: true, description: '影响哪些条目/人/项目，空串表示不适用' },
-      stillUseful: { type: 'string', required: true, description: '遗留价值：可考古 / 可复习 / 回滚时如何理解' },
+      id: { type: 'string', required: true, description: message('tool.idDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.entryScopeDescription') },
+      reason: { type: 'string', required: true, description: message('tool.forgetReasonDescription') },
+      affects: { type: 'string', required: true, description: message('tool.forgetAffectsDescription') },
+      stillUseful: { type: 'string', required: true, description: message('tool.forgetStillUsefulDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: `记忆 ${value.id} 已闭馆（软删，可恢复），墓志铭已刻入操作日志。` }],
+      render: (_args, value) => [{ type: 'text', text: message('tool.forgetRendered', { id: value.id }) }],
     },
     async execute(args) {
       const input = args as { id: string; scope?: unknown; reason: unknown; affects: unknown; stillUseful: unknown }
@@ -1112,7 +1191,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const affects = typeof input.affects === 'string' ? input.affects.trim() : ''
       const stillUseful = typeof input.stillUseful === 'string' ? input.stillUseful.trim() : ''
       if (reason === '' || affects === '' || stillUseful === '') {
-        throw new Error('engram_forget: 闭馆三问（reason / affects / stillUseful）都必须填写，方便日后考古')
+        throw new Error(message('tool.forgetTombstoneRequired'))
       }
       const store = await deps.openStore(scope)
       const record = await store.forgetWithTombstone(input.id as never, { reason, affects, stillUseful })
@@ -1126,15 +1205,15 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const ingestHistory = defineTool({
     name: 'engram_ingest_history',
-    description: '历史会话回填：把 dsh 的历史会话逐轮提炼进记忆宫殿（写进各会话自己 cwd 对应的项目库；此前已摄取的轮次自动跳过，中断后可重跑续做）。dryRun 缺省 true，只返回估算（候选会话数 / 规则内轮数 / 待处理轮数）而不调 LLM、不写库；确认后再传 dryRun=false 执行。大批量回填建议用设置页「历史回填」tab（有规则选择、进度与暂停）；本工具适合先估算或小批量执行。',
+    description: message('tool.ingestHistoryDescription'),
     parameters: {
-      dryRun: { type: 'boolean', description: '只估算不执行（默认 true；显式 false 才真正回填）' },
-      days: { type: 'number', description: '时间窗天数，0 = 不限；缺省用部署配置值' },
-      maxTurnsPerSession: { type: 'number', description: '单个会话最多摄取轮数；缺省用部署配置值' },
-      maxTotalTurns: { type: 'number', description: '本次最多处理的总轮数（只能调低配置硬上限）' },
-      includeSubagents: { type: 'boolean', description: '是否包含子代理会话（默认 false）' },
-      includeSeeded: { type: 'boolean', description: '是否包含种子会话（默认 false）' },
-      includeNoCwd: { type: 'boolean', description: '是否包含无 cwd 会话（默认 false；这类会话只能写进 user 库）' },
+      dryRun: { type: 'boolean', description: message('tool.ingestDryRunDescription') },
+      days: { type: 'number', description: message('tool.ingestDaysDescription') },
+      maxTurnsPerSession: { type: 'number', description: message('tool.ingestMaxTurnsDescription') },
+      maxTotalTurns: { type: 'number', description: message('tool.ingestMaxTotalTurnsDescription') },
+      includeSubagents: { type: 'boolean', description: message('tool.ingestIncludeSubagentsDescription') },
+      includeSeeded: { type: 'boolean', description: message('tool.ingestIncludeSeededDescription') },
+      includeNoCwd: { type: 'boolean', description: message('tool.ingestIncludeNoCwdDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1152,7 +1231,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       }
       const history = deps.historyBackfill
       if (history === undefined) {
-        return { text: '历史回填不可用：当前组合未挂载会话持久化服务（会话日志不可读，例如 headless profile）。' }
+        return { text: message('tool.ingestUnavailable') }
       }
       const rules: HistoryBackfillRules = {
         ...(typeof input.days === 'number' ? { days: input.days } : {}),
@@ -1174,10 +1253,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   /** P0-3 闭馆考古：返回最近 N 条 forgotten 条目 + 墓志铭。 */
   const auditForgotten = defineTool({
     name: 'engram_audit_forgotten',
-    description: '闭馆考古：列出最近 N 条已闭馆条目 + 墓志铭（为什么关 / 影响谁 / 还有用吗），便于复核过去的遗忘是否得当。',
+    description: message('tool.auditForgottenDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      limit: { type: 'integer', description: '返回条数上限，默认 20' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      limit: { type: 'integer', description: message('tool.limitDescription20') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1192,15 +1271,29 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       ))).flat()
       all.sort((a, b) => b.forgottenAt - a.forgottenAt)
       const sliced = all.slice(0, limit)
-      if (sliced.length === 0) return { text: '尚无闭馆条目。' }
+      if (sliced.length === 0) return { text: message('tool.auditForgottenEmpty') }
       const lines = sliced.map((row, index) => {
         const stamp = new Date(row.forgottenAt).toISOString()
         const tomb = row.tombstone === null
-          ? '（墓志铭缺失：旧版无三问数据）'
-          : `\n   - 为什么关：${row.tombstone.reason}\n   - 影响谁：${row.tombstone.affects}\n   - 还有用吗：${row.tombstone.stillUseful}`
-        return `${index + 1}. [${row.scope}/${row.kind}] ${row.content.slice(0, 80)}${row.content.length > 80 ? '…' : ''}\n   id=${row.id} · importance=${row.importance.toFixed(2)} · 闭馆于 ${stamp}${tomb}`
+          ? message('tool.auditForgottenTombstoneMissing')
+          : message('tool.auditForgottenTombstone', {
+              reason: row.tombstone.reason,
+              affects: row.tombstone.affects,
+              stillUseful: row.tombstone.stillUseful,
+            })
+        return message('tool.auditForgottenLine', {
+          index: index + 1,
+          scope: row.scope,
+          kind: row.kind,
+          content: row.content.slice(0, 80),
+          ellipsis: row.content.length > 80 ? message('tool.ellipsis') : '',
+          id: row.id,
+          importance: row.importance.toFixed(2),
+          forgottenAt: stamp,
+          tombstone: tomb,
+        })
       })
-      return { text: `闭馆考古（共 ${sliced.length} 条）：\n${lines.join('\n')}` }
+      return { text: message('tool.auditForgottenHeader', { count: sliced.length, lines: lines.join('\n') }) }
     },
   })
 
@@ -1208,10 +1301,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   // 再用 engram_review 揭示核对、engram_report grade 自评。主动回忆的强化效果远强于被动重看。
   const reviewQueue = defineTool({
     name: 'engram_review_queue',
-    description: '今日待回忆队列：列出已到期间隔重复的记忆，每条只给宫殿坐标与门牌线索（不给正文）。用法：对每条先尝试回忆内容，然后 engram_review 揭示核对，再 engram_report 传 grade（0-5）自评——主动回忆比重复阅读的记忆强化效果强得多。会话开始注入会提示今日是否有待回忆。',
+    description: message('tool.reviewQueueDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      limit: { type: 'integer', description: '返回条数上限，默认 10（最逾期在前）' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      limit: { type: 'integer', description: message('tool.reviewQueueLimitDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1227,17 +1320,19 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         due: await (await deps.openStore(scope)).dueReviews(now, limit),
       })))
       const total = groups.reduce((sum, group) => sum + group.due.length, 0)
-      if (total === 0) return { text: '今日无待回忆条目（队列空）。新记忆保存后次日首次到期。' }
-      const lines: string[] = [`今日待回忆 ${total} 段（最逾期在前）。对每段：先回忆 → engram_review 核对 → engram_report 传 grade 自评。`]
+      if (total === 0) return { text: message('tool.reviewQueueEmpty') }
+      const lines: string[] = [message('tool.reviewQueueHeader', { count: total })]
       for (const { scope, due } of groups) {
         for (const [index, record] of due.entries()) {
-          const slot = record.slot === undefined ? '（未排桩）' : `${record.slot.room} #${record.slot.index}`
-          const placard = record.imagery?.caption ?? '（无门牌）'
+          const slot = record.slot === undefined
+            ? message('tool.reviewQueueNoSlot')
+            : `${roomLabel(record.slot.room, deps.language)} #${record.slot.index}`
+          const placard = record.imagery?.caption ?? message('tool.reviewQueueNoPlacard')
           const overdueDays = record.review?.nextReviewAt === null || record.review?.nextReviewAt === undefined
             ? 0
             : Math.max(0, Math.floor((now - record.review.nextReviewAt) / 86_400_000))
-          const overdue = overdueDays === 0 ? '今日到期' : `逾期 ${overdueDays} 天`
-          lines.push(`${index + 1}. [${scope}] ${slot} · 门牌「${placard}」 · ${overdue} · id=${record.id}`)
+          const overdue = overdueDays === 0 ? message('tool.reviewQueueDueToday') : message('tool.reviewQueueOverdue', { days: overdueDays })
+          lines.push(message('tool.reviewQueueLine', { index: index + 1, scope, slot, placard, overdue, id: record.id }))
         }
       }
       return { text: lines.join('\n') }
@@ -1248,12 +1343,12 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   // 同时衔接间隔重复：success=grade 5 / failure=grade 1 推进 SM-2 调度；显式 grade 自评优先。
   const report = defineTool({
     name: 'engram_report',
-    description: '回报一条记忆（尤其 skill 类）使用后的实际效果：success（有效，提权）或 failure（无效，降权）。id 与 scope 来自 engram_search 结果。也可作为复习自评入口：传 grade（0 完全遗忘 … 5 完美回忆）显式报告回忆质量。效果影响后续召回排序与复习排期，长期无效的记忆会被衰减归档。',
+    description: message('tool.reportDescription'),
     parameters: {
-      id: { type: 'string', required: true, description: '条目 id' },
-      outcome: { type: 'string', enum: ['success', 'failure'], description: '使用效果（与 grade 二选一；同传时 grade 优先）' },
-      grade: { type: 'integer', description: '回忆质量自评 0-5（复习答题用；0/1 完全遗忘，3 勉强，5 完美）' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
+      id: { type: 'string', required: true, description: message('tool.idDescription') },
+      outcome: { type: 'string', enum: ['success', 'failure'], description: message('tool.reportOutcomeDescription') },
+      grade: { type: 'integer', description: message('tool.reportGradeDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.entryScopeDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
@@ -1265,21 +1360,21 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       render: (_args, value) => [{
         type: 'text',
         text: (value.outcome === 'success'
-          ? `已记录：记忆 ${value.id} 使用有效（confidence=${value.confidence}）。该记忆后续召回排序将提升。`
-          : `已记录：记忆 ${value.id} 标记为无效/遗忘（confidence=${value.confidence}）。排序将下降，持续无效会被衰减归档。`)
+          ? message('tool.reportSuccess', { id: value.id, confidence: value.confidence })
+          : message('tool.reportFailure', { id: value.id, confidence: value.confidence }))
           + (value.nextReviewAt === undefined
             ? ''
-            : ` 下次复习：${new Date(value.nextReviewAt).toISOString().slice(0, 10)}。`),
+            : message('tool.reportNextReview', { date: new Date(value.nextReviewAt).toISOString().slice(0, 10) })),
       }],
     },
     async execute(args) {
       const input = args as { id: string; outcome?: unknown; grade?: unknown; scope?: unknown }
       const hasGrade = Number.isInteger(input.grade) && (input.grade as number) >= 0 && (input.grade as number) <= 5
       if (input.grade !== undefined && !hasGrade) {
-        throw new Error('engram_report: grade 必须是 0-5 的整数')
+        throw new Error(message('tool.reportGradeInvalid'))
       }
       if (input.outcome !== 'success' && input.outcome !== 'failure' && !hasGrade) {
-        throw new Error('engram_report: 需要 outcome（success/failure）或 grade（0-5）参数')
+        throw new Error(message('tool.reportParamsRequired'))
       }
       // grade 显式自评优先；否则 outcome 映射为 SM-2 grade（success=5 完美，failure=1 遗忘）。
       const outcome = input.outcome === 'success' || input.outcome === 'failure'
@@ -1289,7 +1384,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const scope = scopeOf(input.scope, 'project')
       const store = await deps.openStore(scope)
       const record = await store.reportOutcome(input.id as never, outcome)
-      if (record === undefined) throw new Error(`engram_report: 条目 ${input.id} 不存在（scope=${scope}）`)
+      if (record === undefined) throw new Error(message('tool.reportNotFound', { id: input.id, scope }))
       const scheduled = await store.scheduleReview(input.id as never, grade)
       return {
         id: record.id,
@@ -1304,10 +1399,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const review = defineTool({
     name: 'engram_review',
-    description: '审计一条记忆：查看内容、来源（会话/轮次/事件）、取代链、矛盾与关联，以及最近操作日志。',
+    description: message('tool.reviewDescription'),
     parameters: {
-      id: { type: 'string', required: true, description: '条目 id' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '条目作用域，默认 project' },
+      id: { type: 'string', required: true, description: message('tool.idDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.entryScopeDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1317,38 +1412,49 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const input = args as { id: string; scope?: unknown }
       const store = await deps.openStore(scopeOf(input.scope, 'project'))
       const view = await store.review(input.id as never)
-      if (view === undefined) return { text: `未找到条目 ${input.id}（用 engram_search 确认 id 与 scope）` }
+      if (view === undefined) return { text: message('tool.reviewNotFound', { id: input.id }) }
       const record = view.record
       const source = record.sourceSessionId === null
-        ? '显式保存（无会话来源）'
-        : `会话 ${record.sourceSessionId}`
-          + (record.sourceRound === null ? '' : ` 第 ${record.sourceRound} 轮`)
-          + (record.sourceSeq === null ? '' : `，事件 seq ${record.sourceSeq}`)
+        ? message('tool.reviewSourceExplicit')
+        : message('tool.reviewSourceSession', { sessionId: record.sourceSessionId })
+          + (record.sourceRound === null ? '' : message('tool.reviewSourceRound', { round: record.sourceRound }))
+          + (record.sourceSeq === null ? '' : message('tool.reviewSourceSeq', { seq: record.sourceSeq }))
       const section = (title: string, ids: readonly string[]): string =>
         ids.length === 0 ? '' : `\n${title}: ${ids.join(', ')}`
       // 输出包协议标签：记忆正文与来源链是不可信历史上下文。
       return {
         text: renderMemoryPacket([
-          `内容: ${record.content}`,
-          `属性: kind=${record.kind}, scope=${record.scope}, status=${record.status}, importance=${record.importance}, confidence=${record.confidence}, 访问 ${record.accessCount} 次`,
-          `来源: ${source}`,
-          section('被谁取代', view.supersededBy.map(String)),
-          section('取代了谁', view.supersedes.map(String)),
-          section('矛盾候选', view.contradicts.map(String)),
-          section('关联', view.related.map(String)),
-          view.revisions.length === 0 ? '' : `\n修订历史:\n${view.revisions.map(rev =>
-            `- ${new Date(rev.supersededAt).toISOString()} [${rev.kind}] ${truncateItem(rev.content)}`).join('\n')}`,
-          view.operations.length === 0 ? '' : `\n最近操作:\n${view.operations.map(op => `- ${new Date(op.at).toISOString()} ${op.op}${op.detail === null ? '' : ` ${op.detail}`}`).join('\n')}`,
-        ].filter(part => part !== '').join('\n'), 'tool_review', '（对话继续）'),
+          message('tool.reviewContent', { content: record.content }),
+          message('tool.reviewAttributes', {
+            kind: record.kind,
+            scope: record.scope,
+            status: record.status,
+            importance: record.importance,
+            confidence: record.confidence,
+            accessCount: record.accessCount,
+          }),
+          message('tool.reviewSource', { source }),
+          section(message('tool.reviewSectionSupersededBy'), view.supersededBy.map(String)),
+          section(message('tool.reviewSectionSupersedes'), view.supersedes.map(String)),
+          section(message('tool.reviewSectionContradicts'), view.contradicts.map(String)),
+          section(message('tool.reviewSectionRelated'), view.related.map(String)),
+          view.revisions.length === 0 ? '' : message('tool.reviewRevisions', { entries: view.revisions.map(rev =>
+            `- ${new Date(rev.supersededAt).toISOString()} [${rev.kind}] ${truncateItem(rev.content)}`).join('\n') }),
+          view.operations.length === 0
+            ? ''
+            : message('tool.reviewOperations', {
+                entries: view.operations.map(op => `- ${new Date(op.at).toISOString()} ${op.op}${op.detail === null ? '' : ` ${op.detail}`}`).join('\n'),
+              }),
+        ].filter(part => part !== '').join('\n'), 'tool_review', message('store.conversationContinues')),
       }
     },
   })
 
   const stats = defineTool({
     name: 'engram_stats',
-    description: '记忆库统计：各状态与种类数量、关系边数、信噪比、操作日志量，以及房间目录（房名/桩位数/最新门牌——检索前先看目录决定进哪个房间，配 engram_search 的 room 参数）。scope=all 时合并两库。',
+    description: message('tool.statsDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1373,16 +1479,26 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           if (row.room !== null) latestPlacardByRoom.set(row.room, row.caption)
         }
         const roomLines = Object.entries(rooms)
-          .sort(([a], [b]) => a.localeCompare(b, 'zh-Hans-CN'))
+          .sort(([a], [b]) => a.localeCompare(b))
           .map(([room, state]) => {
             const placard = latestPlacardByRoom.get(room)
-            return `  ${room}: ${state.count}/${state.maxIndex} 桩${placard === undefined ? '' : ` · 最新门牌「${placard}」`}`
+            // Идентификатор — то, что принимает параметр room; имя — для чтения.
+            const placardLine = placard === undefined ? '' : message('tool.statsRoomPlacard', { placard })
+            return message('tool.statsRoomLine', {
+              room,
+              label: roomLabel(room, deps.language),
+              count: state.count,
+              maxIndex: state.maxIndex,
+              placard: placardLine,
+            })
           })
         return [
-          `[${scope}] 总数 ${stats.total}（active ${stats.active} / archived ${stats.archived} / forgotten ${stats.forgotten}）`,
-          `种类分布: ${Object.entries(stats.byKind).map(([kind, count]) => `${kind}=${count}`).join(', ') || '空'}`,
-          `关系边 ${stats.edges} 条 · 信噪比 ${(stats.signalRatio * 100).toFixed(1)}% · 操作日志 ${stats.opLogCount} 条`,
-          roomLines.length === 0 ? '房间目录: （尚未排桩）' : `房间目录（engram_search 用 room 参数直进）:\n${roomLines.join('\n')}`,
+          message('tool.statsTotal', { scope, total: stats.total, active: stats.active, archived: stats.archived, forgotten: stats.forgotten }),
+          message('tool.statsByKind', { distribution: Object.entries(stats.byKind).map(([kind, count]) => `${kind}=${count}`).join(', ') || message('tool.statsByKindEmpty') }),
+          message('tool.statsEdges', { edges: stats.edges, ratio: (stats.signalRatio * 100).toFixed(1), logs: stats.opLogCount }),
+          roomLines.length === 0
+            ? message('tool.statsNoRooms')
+            : message('tool.statsRoomsHeader', { rooms: roomLines.join('\n') }),
         ].join('\n')
       }).join('\n\n')
       return { text }
@@ -1391,11 +1507,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
 
   const exportTool = defineTool({
     name: 'engram_export',
-    description: '把记忆库导出为文件（Markdown / JSON / 镜像目录），返回文件路径。redactedView=true 时输出脱敏视图（内容二次清洗并截断为 40 字预览，可安全分享）。format=markdown-mirror 时按房间（kind）分目录、每条记忆一个 .md + frontmatter，附房间清单 _meta.json 与全宫殿入口 _index.md，可直接用 Obsidian / git 漫游。',
+    description: message('tool.exportDescription'),
     parameters: {
-      format: { type: 'string', enum: ['markdown', 'json', 'markdown-mirror'], description: '导出格式：markdown 单文件、json 单文件、markdown-mirror 每条记忆一文件（按房间分目录，默认 markdown）' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      redactedView: { type: 'boolean', description: '脱敏视图：内容二次脱敏并截断为预览（默认 false 完整导出；镜像模式忽略此参数）' },
+      format: { type: 'string', enum: ['markdown', 'json', 'markdown-mirror'], description: message('tool.exportFormatDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      redactedView: { type: 'boolean', description: message('tool.exportRedactedDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1419,8 +1535,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           // 镜像模式：完整导出，忽略脱敏（用户用 Obsidian 看完整内容更符合预期；脱敏请走 markdown/json + redactedView）。
           const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
           const mirrorRoot = join(deps.exportDir, `mirror-${scope}-${stamp}`)
-          const report = await writeMirror(mirrorRoot, data)
-          written.push(`${mirrorRoot}（${report.fileCount} 个文件，${data.records.length} 条记忆，${report.rooms.length} 个房间）`)
+          const report = await writeMirror(mirrorRoot, data, deps.language)
+          written.push(message('tool.exportMirrorWritten', {
+            path: mirrorRoot,
+            files: report.fileCount,
+            records: data.records.length,
+            rooms: report.rooms.length,
+          }))
           continue
         }
         const payload = redactedView
@@ -1432,27 +1553,38 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         const body = format === 'json'
           ? JSON.stringify(payload, null, 2)
           : [
-              `# dsh-engram 导出（${scope}${redactedView ? '，脱敏视图' : ''}）`,
+              message('tool.exportMarkdownTitle', { scope, redacted: redactedView ? message('tool.exportRedactedMark') : '' }),
               '',
               ...payload.records.map(record =>
-                `- [${record.status}/${record.kind}] ${record.content}（id=${record.id}，importance ${record.importance}）`),
+                message('tool.exportMarkdownRecord', {
+                  status: record.status,
+                  kind: record.kind,
+                  content: record.content,
+                  id: record.id,
+                  importance: record.importance,
+                })),
               '',
-              '## 关系边',
+              message('tool.exportMarkdownEdges'),
               ...payload.edges.map(edge => `- ${edge.from} --${edge.type}--> ${edge.to}`),
               '',
             ].join('\n')
         await writeFile(path, body, { mode: 0o600 })
-        written.push(`${path}（${payload.records.length} 条记忆，${payload.edges.length} 条边${redactedView ? '，脱敏视图' : ''}）`)
+        written.push(message('tool.exportWritten', {
+          path,
+          records: payload.records.length,
+          edges: payload.edges.length,
+          redacted: redactedView ? message('tool.exportRedactedMark') : '',
+        }))
       }
-      return { text: `已导出${redactedView ? '（脱敏视图）' : ''}:\n${written.join('\n')}` }
+      return { text: message('tool.exportDone', { redacted: redactedView ? message('tool.exportRedactedView') : '', paths: written.join('\n') }) }
     },
   })
 
   const distill = defineTool({
     name: 'engram_distill',
-    description: '蒸馏整理：把同主题的记忆簇合并提炼为更高层的规律（旧条目归档、supersedes 链保留）。建议记忆较多时周期性执行。',
+    description: message('tool.distillDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.scopeDescriptionUser') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1461,11 +1593,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     async execute(args, exec) {
       const input = args as { scope?: unknown }
       const scope = scopeOf(input.scope, 'user')
-      if (deps.call === undefined) throw new Error('engram_distill: 辅助 LLM 不可用（宿主未提供 llm 服务），无法蒸馏')
+      if (deps.call === undefined) throw new Error(message('tool.distillNoLlm'))
       const call = deps.call
       const events = (exec.agent?.session?.snapshotEvents() ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
       const route = deps.routeOverride ?? routeFromEvents(events)
-      if (route === undefined) throw new Error('engram_distill: 无法确定模型路由（会话尚无模型请求），请在 cordis.yml 配置 provider/model')
+      if (route === undefined) throw new Error(message('tool.distillNoRoute'))
       const embedder = await deps.embedder
       const outcome = await distillMemories({
         store: await deps.openStore(scope),
@@ -1481,7 +1613,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         route,
         signal: exec.signal,
       })
-      return { text: `蒸馏完成：取材 ${outcome.input} 条，产出 ${outcome.distilled} 条高层规律，归档 ${outcome.superseded} 条旧记忆（supersedes 链已建立，可 engram_review 审计）。` }
+      return { text: message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded }) }
     },
   })
 
@@ -1492,9 +1624,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const reflect = defineTool({
     name: 'engram_reflect',
-    description: '信念巩固：把多条原始记忆经辅助 LLM 巩固为带证据数的高层信念（form 新建/refine 细化/still 维持/refute 否定），同主题自动归并；原始记忆保留不归档。反复出现的模式或新增一批记忆后调用。',
+    description: message('tool.reflectDescription'),
     parameters: {
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.scopeDescriptionUser') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1503,11 +1635,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     async execute(args, exec) {
       const input = args as { scope?: unknown }
       const scope = scopeOf(input.scope, 'user')
-      if (deps.call === undefined) throw new Error('engram_reflect: 辅助 LLM 不可用（宿主未提供 llm 服务），无法巩固')
+      if (deps.call === undefined) throw new Error(message('tool.reflectNoLlm'))
       const call = deps.call
       const events = (exec.agent?.session?.snapshotEvents() ?? []) as unknown as Parameters<typeof routeFromEvents>[0]
       const route = deps.routeOverride ?? routeFromEvents(events)
-      if (route === undefined) throw new Error('engram_reflect: 无法确定模型路由（会话尚无模型请求），请在 cordis.yml 配置 provider/model')
+      if (route === undefined) throw new Error(message('tool.reflectNoRoute'))
       const store = await deps.openStore(scope)
       const embedder = await deps.embedder
       const outcome = await reflectObservations({
@@ -1536,10 +1668,19 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         }
       }
       const lines = [
-        `信念巩固完成：取材池 ${String(outcome.pool)} 条，新证据 ${String(outcome.candidates)} 条、待复核信念 ${String(outcome.staleReviewed)} 条；新建 ${String(outcome.formed)}，细化 ${String(outcome.refined)}，维持 ${String(outcome.confirmed)}，否定 ${String(outcome.refuted)}，跳过 ${String(outcome.skipped)}。`,
-        '信念是叠加在原始记忆之上的抽象层（证据 id 与证据数已留存，原始记忆未归档）。',
+        message('tool.reflectDone', {
+          pool: outcome.pool,
+          candidates: outcome.candidates,
+          staleReviewed: outcome.staleReviewed,
+          formed: outcome.formed,
+          refined: outcome.refined,
+          confirmed: outcome.confirmed,
+          refuted: outcome.refuted,
+          skipped: outcome.skipped,
+        }),
+        message('tool.reflectNote'),
       ]
-      if (consumed > 0) lines.push(`同时消费了 ${String(consumed)} 条会话结束时登记的待巩固任务。`)
+      if (consumed > 0) lines.push(message('tool.reflectConsumed', { count: consumed }))
       return { text: lines.join('\n') }
     },
   })
@@ -1550,9 +1691,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const examine = defineTool({
     name: 'engram_examine',
-    description: '渐进式披露：按 id 批量拉取记忆完整铭牌（content + 房间 + 状态 + 边关系）。仅在已通过 engram_search/timeline/neighbors 拿到候选 id 后调用，避免一次性吞全文。建议 ≤16 个 id，超出会按入参顺序保留前 N 条。',
+    description: message('tool.examineDescription'),
     parameters: {
-      ids: { type: 'array', items: { type: 'string' }, description: '记忆 id 列表' },
+      ids: { type: 'array', items: { type: 'string' }, description: message('tool.examineIdsDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1561,17 +1702,21 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     async execute(args) {
       const input = args as { ids?: unknown }
       const rawIds = Array.isArray(input.ids) ? input.ids.filter((x): x is string => typeof x === 'string') : []
-      if (rawIds.length === 0) throw new Error('engram_examine: ids 必填且至少含 1 条')
+      if (rawIds.length === 0) throw new Error(message('tool.examineIdsRequired'))
       const ids = rawIds.slice(0, 16).map(id => asMemoryId(id))
       const store = await deps.openStore('user')
       const projectStore = await deps.openStore('project')
       const [fromUser, fromProject] = await Promise.all([store.getMany(ids), projectStore.getMany(ids)])
       const records = [...fromUser, ...fromProject]
-      if (records.length === 0) throw new Error(`engram_examine: 全部 ${ids.length} 个 id 都找不到`)
+      if (records.length === 0) throw new Error(message('tool.examineAllNotFound', { count: ids.length }))
       const text = records.map((record, index) => [
         `### ${index + 1}. [${record.scope}/${record.kind}/${record.status}] id=${record.id}`,
-        `铭牌: ${record.content}`,
-        `地标亮度=${record.importance.toFixed(2)} · 考据可靠度=${record.confidence.toFixed(2)} · 参观=${record.accessCount}人次`,
+        message('tool.examineNameplate', { content: record.content }),
+        message('tool.examineAttributes', {
+          brightness: record.importance.toFixed(2),
+          reliability: record.confidence.toFixed(2),
+          visits: record.accessCount,
+        }),
       ].join('\n')).join('\n\n')
       return { text }
     },
@@ -1583,10 +1728,10 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const neighborsTool = defineTool({
     name: 'engram_neighbors',
-    description: '走廊漫步：从某条记忆出发走 1-3 跳内的 related/supersedes/contradicts 边，返回邻居记忆简表（仅 id + scope + kind + status + content），便于判断下一站。',
+    description: message('tool.neighborsDescription'),
     parameters: {
-      id: { type: 'string', description: '起点记忆 id' },
-      depth: { type: 'integer', description: '跳数（默认 1，最多 3，由执行器夹逼）' },
+      id: { type: 'string', description: message('tool.neighborsIdDescription') },
+      depth: { type: 'integer', description: message('tool.neighborsDepthDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1594,19 +1739,27 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
     async execute(args) {
       const input = args as { id?: unknown; depth?: unknown }
-      if (typeof input.id !== 'string' || input.id === '') throw new Error('engram_neighbors: id 必填')
+      if (typeof input.id !== 'string' || input.id === '') throw new Error(message('tool.neighborsIdRequired'))
       const depth = Number.isInteger(input.depth) ? Math.min(Math.max(1, input.depth as number), 3) : 1
       const seed = asMemoryId(input.id)
       const userStore = await deps.openStore('user')
       const projectStore = await deps.openStore('project')
       const seedRow = await userStore.get(seed) ?? await projectStore.get(seed)
-      if (seedRow === undefined) throw new Error(`engram_neighbors: 起点 ${seed} 不存在`)
+      if (seedRow === undefined) throw new Error(message('tool.neighborsSeedNotFound', { id: String(seed) }))
       const seedScope = seedRow.scope
       const scopeStore = seedScope === 'user' ? userStore : projectStore
       const neighbors = await scopeStore.neighbors(seed, depth)
-      if (neighbors.length === 0) return { text: `从 ${seed}（${seedScope}）出发，${depth} 跳内无邻居记忆。` }
-      const lines = neighbors.map((record, index) => `${index + 1}. [${record.scope}/${record.kind}/${record.status}] ${record.content.slice(0, 80)}${record.content.length > 80 ? '…' : ''}（id=${record.id}）`)
-      return { text: `起点 ${seed}（${seedScope}）→ ${depth} 跳走廊共访 ${neighbors.length} 条：\n${lines.join('\n')}` }
+      if (neighbors.length === 0) return { text: message('tool.neighborsNone', { id: String(seed), scope: seedScope, depth }) }
+      const lines = neighbors.map((record, index) => message('tool.neighborsLine', {
+        index: index + 1,
+        scope: record.scope,
+        kind: record.kind,
+        status: record.status,
+        content: record.content.slice(0, 80),
+        ellipsis: record.content.length > 80 ? message('tool.ellipsis') : '',
+        idSuffix: message('tool.idSuffix', { id: record.id }),
+      }))
+      return { text: message('tool.neighborsHeader', { id: String(seed), scope: seedScope, depth, count: neighbors.length, lines: lines.join('\n') }) }
     },
   })
 
@@ -1616,12 +1769,12 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const tour = defineTool({
     name: 'engram_tour',
-    description: '巡游路由。mode=fixed：按固定巡游路线走全宫（桩位顺序恒定，骨架长期复用——宫殿的路线永远不变，靠顺序提取）；mode=thematic（默认）：按主题动态规划 3-7 站（同类巩固 → 走廊相邻 → 反差补位），适合用户问起某主题时给出一条可走的导览路线。',
+    description: message('tool.tourDescription'),
     parameters: {
-      query: { type: 'string', description: '巡游主题（thematic 模式必填，与 engram_search 同义）' },
-      mode: { type: 'string', enum: ['fixed', 'thematic'], description: 'fixed 固定路线全宫巡游 / thematic 主题动态路线（默认 thematic）' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: '作用域，默认 all' },
-      maxStops: { type: 'integer', description: '最多站数（默认 6，3-7 之间；fixed 模式默认 20）' },
+      query: { type: 'string', description: message('tool.tourQueryDescription') },
+      mode: { type: 'string', enum: ['fixed', 'thematic'], description: message('tool.tourModeDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared', 'all'], description: message('tool.scopeDescriptionAll') },
+      maxStops: { type: 'integer', description: message('tool.tourMaxStopsDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1649,18 +1802,25 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
             const record = byId.get(String(stop.id))
             if (record === undefined || record.status !== 'active') { skipped += 1; continue }
             shown += 1
-            const slot = record.slot === undefined ? '' : `${record.slot.room} #${record.slot.index} · `
+            const slot = record.slot === undefined ? '' : `${roomLabel(record.slot.room, deps.language)} #${record.slot.index} · `
             const placard = record.imagery?.caption
-            lines.push(`第 ${stop.position + 1} 站 · ${slot}[${record.kind}] ${truncateItem(record.content)}（id=${record.id}）${placard === null || placard === undefined ? '' : ` · 门牌「${placard}」`}`)
+            lines.push(message('tool.tourStopLine', {
+              index: stop.position + 1,
+              slot,
+              kind: record.kind,
+              content: truncateItem(record.content),
+              idSuffix: message('tool.idSuffix', { id: record.id }),
+              placard: placard === null || placard === undefined ? '' : message('tool.tourStopPlacard', { placard }),
+            }))
           }
-          if (lines.length > 0) sections.push(`【${scope} 宫殿 · 固定巡游】\n${lines.join('\n')}`)
+          if (lines.length > 0) sections.push(message('tool.tourFixedSection', { scope, lines: lines.join('\n') }))
         }
-        if (shown === 0) return { text: '巡游路线为空：尚无排桩记忆（保存记忆后自动登记路线）。' }
-        const tail = skipped > 0 ? `\n（另有 ${skipped} 个空桩：原记忆已闭馆或归档，桩位保留不回收）` : ''
+        if (shown === 0) return { text: message('tool.tourFixedEmpty') }
+        const tail = skipped > 0 ? message('tool.tourFixedSkipped', { count: skipped }) : ''
         return { text: `${sections.join('\n\n')}${tail}` }
       }
       if (typeof input.query !== 'string' || input.query.trim() === '') {
-        throw new Error('engram_tour: thematic 模式需要 query 参数（巡游主题）')
+        throw new Error(message('tool.tourQueryRequired'))
       }
       const tourQuery = input.query
       const limit = 12
@@ -1690,7 +1850,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const poolLookup = async (id: string): Promise<MemoryRecord | undefined> =>
         await userStore.get(id as never) ?? await projectStore.get(id as never)
       const route = await planTour(merged, poolLookup, tourQuery, maxStops)
-      const prefix = degraded ? '（语义嵌入不可用，仅关键词检索）\n' : ''
+      const prefix = degraded ? message('tool.searchDegradedPrefix') : ''
       return { text: `${prefix}${route.narrative}` }
     },
   })
@@ -1702,13 +1862,13 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
    */
   const profileEdit = defineTool({
     name: 'engram_profile_edit',
-    description: '编辑会话开始注入的用户画像 curated block（注入时位于自动派生画像之前，是画像的最高优先层）。action=view 查看当前内容与版本历史；action=edit 编辑（乐观锁：须带当前 expectedVersion，版本冲突会报错，重读最新版本后再改；首次创建省略 expectedVersion）；action=rollback 回滚（把 toVersion 版本的内容作为新版本写入，历史不改写）。内容入库前做协议剥离与密钥脱敏。',
+    description: message('tool.profileEditDescription'),
     parameters: {
-      action: { type: 'string', enum: ['view', 'edit', 'rollback'], required: true, description: 'view 查看 / edit 编辑 / rollback 回滚' },
-      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: '作用域，默认 user' },
-      content: { type: 'string', description: 'edit 必填：新的画像内容（多行文本，会话开始按原文注入）' },
-      expectedVersion: { type: 'integer', description: 'edit 带上=并发保护（乐观锁）；省略=仅当尚无 block 时创建 v1' },
-      toVersion: { type: 'integer', description: 'rollback 必填：要回滚到的历史版本号（用 view 查得）' },
+      action: { type: 'string', enum: ['view', 'edit', 'rollback'], required: true, description: message('tool.profileEditActionDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.scopeDescriptionUser') },
+      content: { type: 'string', description: message('tool.profileEditContentDescription') },
+      expectedVersion: { type: 'integer', description: message('tool.profileEditExpectedVersionDescription') },
+      toVersion: { type: 'integer', description: message('tool.profileEditToVersionDescription') },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
@@ -1717,36 +1877,41 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     async execute(args) {
       const input = args as { action?: unknown; scope?: unknown; content?: unknown; expectedVersion?: unknown; toVersion?: unknown }
       const action = input.action === 'edit' || input.action === 'rollback' || input.action === 'view' ? input.action : undefined
-      if (action === undefined) throw new Error('engram_profile_edit: action 必须是 view / edit / rollback 之一')
+      if (action === undefined) throw new Error(message('tool.profileEditActionInvalid'))
       const scope = scopeOf(input.scope, 'user')
       const store = await deps.openStore(scope)
       if (action === 'view') {
         const block = await store.getProfileBlock(scope)
         if (block === undefined) {
-          return { text: `${scope} 库暂无 curated 画像 block。用 action=edit（省略 expectedVersion）即可创建 v1；创建后会话开始时优先于自动派生画像注入。` }
+          return { text: message('tool.profileEditNoBlock', { scope }) }
         }
         const versions = await store.listProfileBlockVersions(scope, 10)
         return {
           text: [
-            `当前 curated 画像（${scope}，v${block.version}）：`,
+            message('tool.profileEditCurrent', { scope, version: block.version }),
             block.content,
             '',
-            `版本历史（最近 ${versions.length} 条，新→旧；rollback 用 toVersion 指定）：`,
+            message('tool.profileEditVersions', { count: versions.length }),
             ...versions.map(version =>
-              `- v${version.version} · ${version.source === 'rollback' ? '回滚' : '编辑'} · ${new Date(version.at).toISOString().slice(0, 16).replace('T', ' ')} · ${version.content.length} 字`),
+              message('tool.profileEditVersionLine', {
+                version: version.version,
+                source: version.source === 'rollback' ? message('tool.profileEditSourceRollback') : message('tool.profileEditSourceEdit'),
+                at: new Date(version.at).toISOString().slice(0, 16).replace('T', ' '),
+                chars: version.content.length,
+              })),
           ].join('\n'),
         }
       }
       if (action === 'edit') {
-        if (typeof input.content !== 'string' || input.content.trim() === '') throw new Error('engram_profile_edit: edit 需要 content 参数')
+        if (typeof input.content !== 'string' || input.content.trim() === '') throw new Error(message('tool.profileEditContentRequired'))
         let expectedVersion: number | undefined
         if (input.expectedVersion !== undefined) {
-          if (!Number.isInteger(input.expectedVersion)) throw new Error('engram_profile_edit: expectedVersion 必须是整数（用 action=view 查得）')
+          if (!Number.isInteger(input.expectedVersion)) throw new Error(message('tool.profileEditExpectedVersionInvalid'))
           expectedVersion = input.expectedVersion as number
         }
         // 入库前协议剥离 + 密钥脱敏，与 engram_save/update 同一防线。
         const content = redactSecrets(sanitizeProtocolText(input.content))
-        if (content.trim() === '') throw new Error('engram_profile_edit: 清洗后内容为空（原文只含协议标签或密钥）')
+        if (content.trim() === '') throw new Error(message('tool.profileEditContentEmptyAfterSanitize'))
         const block = await store.saveProfileBlock(scope, expectedVersion, content, 'edit')
         // 编辑记录入 op_log（面板管家日志可见；target_id 用 scope）。
         await store.audit('profile-edit', scope, JSON.stringify({
@@ -1755,14 +1920,14 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           toVersion: block.version,
           chars: content.length,
         }))
-        return { text: `curated 画像已写入（${scope}，v${block.version}）。下一轮会话开始时将优先于自动派生画像注入。` }
+        return { text: message('tool.profileEditSaved', { scope, version: block.version }) }
       }
       // rollback：取历史版本内容，作为新版本写入（乐观锁同样适用）。
-      if (!Number.isInteger(input.toVersion)) throw new Error('engram_profile_edit: rollback 需要 toVersion（目标历史版本号，用 action=view 查得）')
+      if (!Number.isInteger(input.toVersion)) throw new Error(message('tool.profileEditToVersionRequired'))
       const target = await store.getProfileBlockVersion(scope, input.toVersion as number)
-      if (target === undefined) throw new Error(`engram_profile_edit: ${scope} 库不存在版本 v${input.toVersion}（用 action=view 查看版本历史）`)
+      if (target === undefined) throw new Error(message('tool.profileEditVersionNotFound', { scope, version: String(input.toVersion) }))
       const current = await store.getProfileBlock(scope)
-      if (current === undefined) throw new Error(`engram_profile_edit: ${scope} 库尚无 curated 画像 block，无从回滚`)
+      if (current === undefined) throw new Error(message('tool.profileEditNoBlockToRollback', { scope }))
       const updated = await store.saveProfileBlock(scope, current.version, target.content, 'rollback')
       await store.audit('profile-edit', scope, JSON.stringify({
         action: 'rollback',
@@ -1771,7 +1936,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         restoredFrom: target.version,
         chars: target.content.length,
       }))
-      return { text: `已把 v${target.version} 的内容作为 v${updated.version} 写入（${scope}；版本链只增不改，可继续回滚）。` }
+      return { text: message('tool.profileEditRolledBack', { from: target.version, to: updated.version, scope }) }
     },
   })
 
@@ -1818,7 +1983,7 @@ export async function planTour(
   query: string,
   maxStops = 6,
 ): Promise<TourRoute> {
-  if (hits.length === 0) return { stops: [], narrative: '无命中，无巡游路径可规划。', query }
+  if (hits.length === 0) return { stops: [], narrative: message('tool.tourNoHits'), query }
 
   const used = new Set<string>()
   const stops: TourStop[] = []
@@ -1873,23 +2038,37 @@ export async function planTour(
 
 /** 把巡游路径渲染为一段含回声触发器的可读文本（供 engram_tour 的 text 字段）。 */
 function renderTourNarrative(stops: readonly TourStop[], query: string): string {
-  if (stops.length === 0) return '无巡游路径。'
+  if (stops.length === 0) return message('tool.tourNoPath')
   const reasonLabel = (reason: TourStop['reason']): string => {
     switch (reason) {
-      case 'same-kind': return '同类巩固'
-      case 'neighbor': return '走廊相邻'
-      case 'contrast': return '反差补位'
-      case 'emotional-peak': return '情绪强反差'
+      case 'same-kind': return message('tool.tourReasonSameKind')
+      case 'neighbor': return message('tool.tourReasonNeighbor')
+      case 'contrast': return message('tool.tourReasonContrast')
+      case 'emotional-peak': return message('tool.tourReasonEmotionalPeak')
     }
   }
-  const lines: string[] = [`巡游路径（查询：${query}）：按「同类巩固 → 走廊相邻 → 反差补位」顺序组织，共 ${stops.length} 站。`]
+  const lines: string[] = [message('tool.tourNarrativeHeader', { query, count: stops.length })]
   stops.forEach((stop, index) => {
     const caption = stop.record.imagery?.caption
     const sensory = stop.record.imagery?.sensoryTags ?? []
     const echo = caption === null || caption === undefined
-      ? '（未铭刻意象，请先调用 engram_examine 读铭牌）'
-      : `回声：似曾「${caption}」${sensory.length > 0 ? `（${sensory.slice(0, 3).join('、')}）` : ''}`
-    lines.push(`${index + 1}. [${stop.record.scope}/${stop.record.kind}] ${stop.record.content.slice(0, 60)}${stop.record.content.length > 60 ? '…' : ''}（id=${stop.record.id}，理由：${reasonLabel(stop.reason)}）— ${echo}`)
+      ? message('tool.tourNoImagery')
+      : message('tool.tourEcho', {
+          caption,
+          sensory: sensory.length > 0
+            ? message('tool.tourEchoSensory', { tags: sensory.slice(0, 3).join(message('tool.separatorIdea')) })
+            : '',
+        })
+    lines.push(message('tool.tourNarrativeStop', {
+      index: index + 1,
+      scope: stop.record.scope,
+      kind: stop.record.kind,
+      content: stop.record.content.slice(0, 60),
+      ellipsis: stop.record.content.length > 60 ? message('tool.ellipsis') : '',
+      id: stop.record.id,
+      reason: reasonLabel(stop.reason),
+      echo,
+    }))
   })
   return lines.join('\n')
 }

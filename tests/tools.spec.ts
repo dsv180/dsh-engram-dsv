@@ -19,6 +19,7 @@ beforeEach(async () => {
   store = await openEngramStore(join(dir, 'user.db'))
   tools = new Map<string, ExecutableTool>(
     createEngramTools({
+    language: 'zh',
       openStore: async () => store,
       resolveProjectStore: async () => store,
       embedder: Promise.resolve(undefined),
@@ -202,6 +203,7 @@ describe('engram tools', () => {
 
   it('engram_save render 汇总批量结果文本', () => {
     const saveDefinition = createEngramTools({
+    language: 'zh',
       openStore: async () => store,
       resolveProjectStore: async () => store,
       embedder: Promise.resolve(undefined),
@@ -276,6 +278,7 @@ describe('engram tools', () => {
     await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
     const rewrittenTools = new Map<string, ExecutableTool>(
       createEngramTools({
+    language: 'zh',
         openStore: async () => store,
       resolveProjectStore: async () => store,
         embedder: Promise.resolve(undefined),
@@ -295,6 +298,7 @@ describe('engram tools', () => {
     await store.write({ scope: 'user', kind: 'fact', content: '部署在 4000 端口' })
     const fallbackTools = new Map<string, ExecutableTool>(
       createEngramTools({
+    language: 'zh',
         openStore: async () => store,
       resolveProjectStore: async () => store,
         embedder: Promise.resolve(undefined),
@@ -439,6 +443,7 @@ describe('engram tools', () => {
     try {
       const tourTools = new Map<string, ExecutableTool>(
         createEngramTools({
+    language: 'zh',
           openStore: async () => tourStore,
           resolveProjectStore: async () => tourStore,
           embedder: Promise.resolve(undefined),
@@ -477,6 +482,7 @@ describe('engram tools', () => {
     }
     const withEmbedder = new Map<string, ExecutableTool>(
       createEngramTools({
+    language: 'zh',
         openStore: async () => store,
       resolveProjectStore: async () => store,
         embedder: Promise.resolve(pseudo),
@@ -546,6 +552,7 @@ describe('project scope 按会话 cwd 归属', () => {
     try {
       const sessionTools = new Map<string, ExecutableTool>(
         createEngramTools({
+    language: 'zh',
           openStore: async () => store,
           resolveProjectStore: async (cwd) => { seen.push(cwd); return projectStore },
           embedder: Promise.resolve(undefined),
@@ -613,6 +620,7 @@ describe('engram_save 写入四态回报', () => {
   const dispositionTools = (embedder: { model: string; embed: (texts: readonly string[]) => Promise<Float32Array[]>; close: () => Promise<void> }) =>
     new Map<string, ExecutableTool>(
       createEngramTools({
+    language: 'zh',
         openStore: async () => store,
         resolveProjectStore: async () => store,
         embedder: Promise.resolve(embedder),

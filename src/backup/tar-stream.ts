@@ -6,6 +6,7 @@
  */
 
 import { join } from 'node:path'
+import { message } from '../i18n/messages.ts'
 import type { Writable } from 'node:stream'
 
 /** UStar 头字段宽度（POSIX.1-1988）。 */
@@ -29,8 +30,8 @@ function computeChecksum(header: Buffer): number {
 
 /** 写一个文件条目到 tar 流（UStar 头 + 数据 + 填充到 512 边界）。 */
 export function createTarPack(out: Writable, name: string, data: Buffer): void {
-  if (name.length >= NAME_LEN) throw new Error(`tar 文件名过长（${String(name.length)} / ${String(NAME_LEN - 1)}）：${name}`)
-  if (data.length >= 2 ** (8 * (SIZE_LEN - 1)) - 1) throw new Error(`tar 文件过大：${name}（${String(data.length)} bytes）`)
+  if (name.length >= NAME_LEN) throw new Error(message('store.tarNameTooLong', { actual: name.length, max: NAME_LEN - 1, name }))
+  if (data.length >= 2 ** (8 * (SIZE_LEN - 1)) - 1) throw new Error(message('store.tarFileTooLarge', { name, bytes: data.length }))
   const header = Buffer.alloc(BLOCK_SIZE)
   header.write(name, 0, NAME_LEN, 'ascii')
   // mode: 0o600

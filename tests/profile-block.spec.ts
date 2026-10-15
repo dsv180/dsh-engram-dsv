@@ -20,6 +20,7 @@ beforeEach(async () => {
   store = await openEngramStore(join(dir, 'user.db'))
   tools = new Map<string, ExecutableTool>(
     createEngramTools({
+    language: 'zh',
       openStore: async () => store,
       resolveProjectStore: async () => store,
       embedder: Promise.resolve(undefined),
