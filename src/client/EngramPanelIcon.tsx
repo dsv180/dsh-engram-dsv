@@ -1,12 +1,13 @@
 /**
- * 顶层侧栏「记忆宫殿」入口图标：宫殿正视图 + 中心门洞。
+ * 顶层侧栏「记忆宫殿」入口图标。
  *
- * Phosphor 风：24px viewBox、stroke 1.75、round cap/join、currentColor 跟随宿主主题。
- * 颜色由 sidebar 按钮的 `color` 接管（`SidebarPanelIconOwnerProps.active` 时不变色，
- * 由 sidebar 自身的 row 选中态负责着色 — 跟随现有的「Hyreal FDE 工作台」入口行为）。
+ * v0.8.10:侧栏邻居「Hyreal FDE 工作台」是彩色 app tile,裸线条图标在旁边
+ * 又黑又弱。改为品牌渐变圆角 tile(amber→orange→rose,与面板水印
+ * --brand-1/--brand-3/--brand-2 同源)+ 白色宫殿剪影(屋顶/墙身/门洞),
+ * 宿主主题只影响不了它——插件品牌色恒定,与 FDE tile 同一视觉量级。
  *
- * 设计取舍：宫殿剪影能在 16px 下保持识别度（屋顶三角 + 中部门洞 + 两侧窗格），
- * 比抽象的「脑/节点」图标更贴合「记忆宫殿」叙事。
+ * 宿主只传 size(塌缩 16 / 展开 18);tile 全尺寸出血,无需 active 差分
+ * (选中态由 sidebar 行底色承担)。
  * @module @kenz1117/dsh-engram/client/EngramPanelIcon
  */
 
@@ -14,20 +15,24 @@ import type { ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 
-/** Sidebar 传入的 owner-share：size 为正方形边长（rail 16/wide 18），active 标识选中态。 */
 export function EngramPanelIcon({ size }: PropsRuntime<'sidebar.panellist'>): ReactElement {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      {/* 屋顶三角 */}
-      <path d="M3 10 L12 4 L21 10" />
-      {/* 宫殿主体（屋顶三角下方的方形） */}
-      <path d="M5 10 V20 H19 V10" />
-      {/* 中心门洞（拱形） */}
-      <path d="M10 20 V14 Q10 12 12 12 Q14 12 14 14 V20" />
-      {/* 左侧窗 */}
-      <rect x="6.5" y="12" width="2" height="2.5" rx="0.4" />
-      {/* 右侧窗 */}
-      <rect x="15.5" y="12" width="2" height="2.5" rx="0.4" />
+      <defs>
+        <linearGradient id="engram-tile-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#F59E0B" />
+          <stop offset="55%" stopColor="#FB923C" />
+          <stop offset="100%" stopColor="#F43F5E" />
+        </linearGradient>
+      </defs>
+      {/* 品牌 tile */}
+      <rect x="1" y="1" width="22" height="22" rx="6" fill="url(#engram-tile-grad)" />
+      {/* 白宫殿剪影:屋顶 / 墙身 / 门洞 */}
+      <g fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6.5 10.4 L12 6.4 L17.5 10.4" />
+        <path d="M7.8 10.4 V17 H16.2 V10.4" />
+        <path d="M10.6 17 V13.6 Q10.6 12.5 12 12.5 Q13.4 12.5 13.4 13.6 V17" />
+      </g>
     </svg>
   )
 }
