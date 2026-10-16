@@ -229,7 +229,7 @@ export const Config: z<EngramConfig> = z.object({
     deferAcceptBelow: z.number().min(0).max(0.5),
     contradictMinProbability: z.number().min(0.5).max(1),
   }) as unknown as z<JevConfig>,
-  language: z.string(),
+  language: z.string() as unknown as z<LanguageSetting>,
   redactWords: z.array(z.string()),
 })
 

@@ -29,8 +29,9 @@ import type {
 } from '../types.ts'
 import type { EngramStore, RoomState } from './interface.ts'
 
-/** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 12
+/** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。
+ *  v12→v13 是纯数据迁移（历史房名归一化），但同样借版本号作为「只跑一次」的开关。 */
+const SCHEMA_VERSION = 13
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
@@ -54,7 +55,11 @@ const SCHEMA_VERSION = 12
  *  v11 → v12：observations 巩固信念表——辅助 LLM 从多条原始记忆巩固出的一句话信念，
  *   sources_json 证据 id 列表 + proof_count 证据数（去重并集持续累积），status 三态
  *   active/stale/refuted 支持新鲜度复核；embedding 支持近邻归并（同主题并入同一条而非
- *   重复新增）。与 nodes 无外键（源记忆可被归档/遗忘，证据链只保留 id 引用）。 */
+ *   重复新增）。与 nodes 无外键（源记忆可被归档/遗忘，证据链只保留 id 引用）。
+ *  v12 → v13：历史房名归一化——0.8.12 及更早把**显示名**写进 slot_room（「事实厅」），
+ *   语言中立 id 启用后同一逻辑房会裂成两间（容量 9 变 18、tour_routes 按 room 断开）。
+ *   升级时一次性改写为 id，含扩建房（「事实厅-2」→「fact-2」）；已经是 id 的库零行改动，
+ *   SQL 自身幂等。手动脚本 scripts/migrate-room-ids.mjs 保留为兜底。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -101,6 +106,13 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
     sources_json TEXT NOT NULL, proof_count INTEGER NOT NULL, embedding BLOB,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_validated_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);`,
+  // 数据迁移而非结构迁移：只改已有行，列与索引早在 v6 就位。前缀替换即可——
+  // 房名只会出现在 slot_room 开头，扩建后缀是「-<n>」，不会在串内二次命中。
+  '12': `UPDATE nodes SET slot_room = replace(slot_room, '事实厅', 'fact') WHERE slot_room LIKE '事实厅%';
+    UPDATE nodes SET slot_room = replace(slot_room, '偏好阁', 'preference') WHERE slot_room LIKE '偏好阁%';
+    UPDATE nodes SET slot_room = replace(slot_room, '决策堂', 'decision') WHERE slot_room LIKE '决策堂%';
+    UPDATE nodes SET slot_room = replace(slot_room, '往事廊', 'episode') WHERE slot_room LIKE '往事廊%';
+    UPDATE nodes SET slot_room = replace(slot_room, '技法坊', 'skill') WHERE slot_room LIKE '技法坊%';`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
