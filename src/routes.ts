@@ -29,6 +29,7 @@ import { runConsolidation } from './consolidation/run.ts'
 import { aggregateTelemetry } from './telemetry/aggregate.ts'
 import { buildTourProposal } from './tour-proposal.ts'
 import { gatherRefurbSuggestions, DEFAULT_REFURB_OPTIONS } from './refurb.ts'
+import { collectUpdateCheck } from './update-check.ts'
 
 /** 回环 peer：IPv4 127/8、IPv6 ::1、IPv4-mapped IPv6。 */
 function isLoopbackPeer(req: IncomingMessage): boolean {
@@ -637,6 +638,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             }))
             const overall = Math.round(parts.reduce((sum, part) => sum + part.score, 0) / parts.length)
             json(res, 200, { overall, parts, evaluatedAt: Date.now() })
+            return
+          }
+          if (req.method === 'GET' && route === 'update-check') {
+            // 构建身份与更新检查：本机构建从文件读，上游（npm/标签）与我们的分支联网查。
+            // 默认走 6 小时缓存（面板挂载与轮询用），`refresh=1` 强制联网（按钮用）。
+            // 不碰任何分库：这一路由与存储无关，因此不需要 storeFor。
+            json(res, 200, await collectUpdateCheck({ refresh: url.searchParams.get('refresh') === '1' }))
             return
           }
           if (req.method === 'GET' && route === 'corridor') {

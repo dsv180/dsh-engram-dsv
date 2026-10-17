@@ -7,7 +7,7 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
@@ -321,6 +321,118 @@ async function api<T>(path: string, init?: RequestInit, forceProject = false): P
   }
   return parsed
 }
+
+/** 分支最新提交（GET /api/engram/update-check 的 fork.refs 行）。 */
+interface UpdateRefView {
+  readonly ref: string
+  readonly sha: string
+  readonly date: number
+  readonly subject: string
+}
+
+/** 外链键（host 给值，面板只渲染；缺值为空串，渲染时跳过）。 */
+type UpdateLinkKey = 'forkRepo' | 'forkCommits' | 'forkReleases' | 'forkIssues' | 'upstreamRepo' | 'upstreamReleases' | 'upstreamNpm'
+
+/** 一条外链：[标签, 地址]。 */
+type UpdateLinkRow = readonly [label: string, href: string]
+
+/** 更新检查视图：host 形状的安全投影（字段缺失、空对象、非 JSON 都不炸面板）。 */
+interface UpdateView {
+  readonly checkedAt: number
+  readonly fromCache: boolean
+  readonly error: string | null
+  readonly build: {
+    readonly version: string
+    readonly upstreamBase: string
+    readonly builtAt: number | null
+    readonly installPath: string
+    readonly profile: string | null
+  }
+  readonly upstream: { readonly npmLatest: string | null; readonly latestTag: string | null; readonly ahead: boolean }
+  readonly fork: { readonly refs: readonly UpdateRefView[]; readonly newerThanBuild: readonly string[] }
+  readonly links: Readonly<Record<UpdateLinkKey, string>>
+  readonly install: { readonly command: string; readonly profile: string | null }
+}
+
+/** 取字符串字段：缺失或类型不对给空串（渲染层统一用「—」兜底）。 */
+function field(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/** 取可空字符串字段：空串视同缺失（host 用 null 表示「没有」）。 */
+function optionalField(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/** 取数字字段：非有限数给 0（checkedAt=0 表示「还没成功检查过」，判定行据此保持沉默）。 */
+function numberField(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/** 取布尔字段：只有显式 true 才算真。 */
+function boolField(value: unknown): boolean {
+  return value === true
+}
+
+/** 取对象字段：数组、null、标量一律当空对象。 */
+function objectField(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+/**
+ * 把 host 的响应投影成面板视图。
+ * 宿主是本仓库自己的代码，但面板不能因为「响应不是预期形状」而变白板
+ * （非 JSON 已在 api() 里变成异常，这里只管字段级兜底）。
+ */
+function normalizeUpdateCheck(raw: unknown): UpdateView {
+  const root = objectField(raw)
+  const build = objectField(root['build'])
+  const upstream = objectField(root['upstream'])
+  const fork = objectField(root['fork'])
+  const links = objectField(root['links'])
+  const install = objectField(root['install'])
+  const refs = Array.isArray(fork['refs'])
+    ? fork['refs']
+      .map((item: unknown) => objectField(item))
+      .map(item => ({ ref: field(item['ref']), sha: field(item['sha']), date: numberField(item['date']), subject: field(item['subject']) }))
+      .filter(item => item.ref !== '')
+    : []
+  const newerThanBuild = Array.isArray(fork['newerThanBuild'])
+    ? fork['newerThanBuild'].filter((item): item is string => typeof item === 'string')
+    : []
+  const builtAt = build['builtAt']
+  return {
+    checkedAt: numberField(root['checkedAt']),
+    fromCache: boolField(root['fromCache']),
+    error: optionalField(root['error']),
+    build: {
+      version: field(build['version']),
+      upstreamBase: field(build['upstreamBase']),
+      builtAt: typeof builtAt === 'number' && Number.isFinite(builtAt) ? builtAt : null,
+      installPath: field(build['installPath']),
+      profile: optionalField(build['profile']),
+    },
+    upstream: {
+      npmLatest: optionalField(upstream['npmLatest']),
+      latestTag: optionalField(upstream['latestTag']),
+      ahead: boolField(upstream['ahead']),
+    },
+    fork: { refs, newerThanBuild },
+    links: {
+      forkRepo: field(links['forkRepo']),
+      forkCommits: field(links['forkCommits']),
+      forkReleases: field(links['forkReleases']),
+      forkIssues: field(links['forkIssues']),
+      upstreamRepo: field(links['upstreamRepo']),
+      upstreamReleases: field(links['upstreamReleases']),
+      upstreamNpm: field(links['upstreamNpm']),
+    },
+    install: { command: field(install['command']), profile: optionalField(install['profile']) },
+  }
+}
+
+/** 更新轮询间隔：与 host 侧 6 小时缓存一致，不额外压 GitHub 限额。 */
+const UPDATE_POLL_MS = 6 * 60 * 60 * 1000
 
 /** host 项目宫殿清单的行（GET /api/engram/workspaces）。 */
 interface EngramProjectItem {
@@ -2683,6 +2795,124 @@ function JevObservationsCard({ t, toast }: { t: T; toast: ToastController }): Re
   )
 }
 
+/**
+ * 运维页「构建与更新」小块：构建身份（本地文件读出）+ 判定行 + 两组外链 + 手动安装命令。
+ * 面板只能**看**不能装：安装是宿主侧的事（`dsh plugin add`），所以这里最多给一条可复制的命令。
+ */
+function BuildUpdateCard({ t, view, transportError, checking, onCheck }: {
+  t: T
+  /** null = 还没有过成功响应（首次请求在途或从未成功）——此时只显示占位与提示，不做判定。 */
+  view: UpdateView | null
+  /** 面板侧的网络/解析失败；host 自报的 error 字段在 view.error 里。 */
+  transportError: string | null
+  checking: boolean
+  onCheck: () => void
+}): React.ReactElement {
+  const build = view?.build
+  const links: Readonly<Record<UpdateLinkKey, string>> = view?.links ?? {
+    forkRepo: '', forkCommits: '', forkReleases: '', forkIssues: '',
+    upstreamRepo: '', upstreamReleases: '', upstreamNpm: '',
+  }
+  // 检查成功过（checkedAt>0）才算「有结论」：空对象/坏响应一律退回「尚未检查」，不假装「无需更新」。
+  const checked = view !== null && view.checkedAt > 0
+  const error = view?.error ?? transportError
+  const upstream = view?.upstream
+  const newer = view?.fork.newerThanBuild ?? []
+  const stamp = checked && view !== null
+    ? `${t('updateCheckedAt', { ago: relTime(t, view.checkedAt) })}${view.fromCache ? ` · ${t('updateFromCache')}` : ''}`
+    : t('updateNeverChecked')
+
+  const rows: ReadonlyArray<{ readonly label: string; readonly value: string; readonly mono?: boolean }> = [
+    { label: t('updateVersion'), value: build === undefined || build.version === '' ? '—' : build.version, mono: true },
+    { label: t('updateUpstreamBase'), value: build === undefined || build.upstreamBase === '' ? '—' : build.upstreamBase, mono: true },
+    {
+      label: t('updateBuiltAt'),
+      value: build === undefined || build.builtAt === null ? '—' : fmtTime(build.builtAt),
+    },
+    { label: t('updateInstallPath'), value: build === undefined || build.installPath === '' ? '—' : build.installPath, mono: true },
+    { label: t('updateProfile'), value: build?.profile ?? t('updateProfileUnknown') },
+  ]
+
+  const groups: ReadonlyArray<{ readonly title: string; readonly items: readonly UpdateLinkRow[] }> = [
+    {
+      title: t('updateForkGroup'),
+      items: [
+        [t('updateLinkRepo'), links.forkRepo],
+        [t('updateLinkCommits'), links.forkCommits],
+        [t('updateLinkReleases'), links.forkReleases],
+        [t('updateLinkIssues'), links.forkIssues],
+      ],
+    },
+    {
+      title: t('updateUpstreamGroup'),
+      items: [
+        [t('updateLinkRepo'), links.upstreamRepo],
+        [t('updateLinkReleases'), links.upstreamReleases],
+        [t('updateLinkNpm'), links.upstreamNpm],
+      ],
+    },
+  ]
+  // host 没给地址的链接不渲染；整组都空时连组标题一起收起。
+  const visibleGroups = groups
+    .map(group => ({ title: group.title, items: group.items.filter(item => item[1] !== '') }))
+    .filter(group => group.items.length > 0)
+  const command = view?.install.command ?? ''
+
+  return (
+    <div>
+      <dl className={styles.updateGrid}>
+        {rows.map(row => (
+          <Fragment key={row.label}>
+            <dt className={styles.updateLabel}>{row.label}</dt>
+            <dd className={row.mono === true ? `${styles.updateValue} ${styles.updateMono}` : styles.updateValue}>{row.value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+
+      {error !== null && <p className={`${styles.updateNote} ${styles.updateNoteWarn}`}>{error}</p>}
+      {upstream !== undefined && upstream.ahead && (
+        <p className={`${styles.updateNote} ${styles.updateNoteWarn}`}>
+          {t('updateUpstreamAhead', { latest: upstream.npmLatest ?? upstream.latestTag ?? '—', base: build?.upstreamBase ?? '—' })}
+        </p>
+      )}
+      {newer.length > 0 && (
+        <p className={`${styles.updateNote} ${styles.updateNoteWarn}`}>{t('updateForkAhead', { refs: newer.join(', ') })}</p>
+      )}
+      {checked && error === null && upstream !== undefined && !upstream.ahead && newer.length === 0 && (
+        <p className={`${styles.updateNote} ${styles.updateNoteOk}`}>{t('updateUpToDate')}</p>
+      )}
+
+      <div className={styles.updateBar}>
+        <button type="button" className={styles.button} disabled={checking} onClick={onCheck}>
+          <Icon name="refresh" className={checking ? `${styles.brandIcon} ${styles.updateSpin}` : styles.brandIcon} />
+          {checking ? t('updateChecking') : t('updateCheck')}
+        </button>
+        <span className={styles.updateStamp}>{stamp}</span>
+      </div>
+
+      {visibleGroups.length > 0 && (
+        <div className={styles.updateLinks}>
+          {visibleGroups.map(group => (
+            <div key={group.title} className={styles.updateLinkGroup}>
+              <span className={styles.updateLinkGroupTitle}>{group.title}</span>
+              {group.items.map(item => (
+                <a key={item[1]} className={styles.updateLink} href={item[1]} target="_blank" rel="noreferrer">{item[0]}</a>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {command !== '' && (
+        <div className={styles.updateInstall}>
+          <span className={styles.updateLabel}>{t('updateInstallCommand')}</span>
+          <code className={styles.updateCommand}>{command}</code>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。
  *  链接是浏览器直连的 GET（不走 api()），故这里显式拼接项目宫殿选择器。 */
 function ExportMenu({ t, scope, project }: {
@@ -2839,6 +3069,45 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     setActiveTab('library')
     setDueOnly(true)
   }
+
+  /** 构建身份与更新检查（运维页小块 + 顶栏版本 chip + 运维 tab 上的小点共用这份状态）。 */
+  const [update, setUpdate] = useState<UpdateView | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
+
+  /**
+   * 取一次更新数据。refresh=true 强制联网（按钮），false 允许 host 走 6 小时缓存
+   * （挂载与轮询）。失败只记在 updateError 上，保留上一次的视图——降级但不留白板。
+   */
+  const loadUpdate = useCallback((refresh: boolean, alive?: () => boolean): void => {
+    const live = (): boolean => alive === undefined || alive()
+    if (refresh) setUpdateChecking(true)
+    api<unknown>(refresh ? 'update-check?refresh=1' : 'update-check')
+      .then((raw) => {
+        if (!live()) return
+        setUpdate(normalizeUpdateCheck(raw))
+        setUpdateError(null)
+      })
+      .catch((error: Error) => {
+        if (live()) setUpdateError(t('updateLoadFailed', { error: error.message }))
+      })
+      .finally(() => {
+        if (live() && refresh) setUpdateChecking(false)
+      })
+  }, [t])
+
+  // 挂载即取一次（命中 host 缓存，几乎不花时间），此后每 6 小时一次；卸载即清定时器。
+  useEffect(() => {
+    let cancelled = false
+    const alive = (): boolean => !cancelled
+    loadUpdate(false, alive)
+    const timer = window.setInterval(() => { loadUpdate(false, alive) }, UPDATE_POLL_MS)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [loadUpdate])
+
+  /** 有新版本：上游超前，或我们的分支有比本次构建更新的提交。证据不足（没成功检查过）时不点灯。 */
+  const updateNewer = update !== null && update.checkedAt > 0
+    && (update.upstream.ahead || update.fork.newerThanBuild.length > 0)
 
   /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
   const openReview = useCallback((id: string): void => {
@@ -3047,6 +3316,16 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             <option value="en">English</option>
             <option value="ru">Русский</option>
           </select>
+          {/* 版本 chip：当前安装版本，有新版本时点亮强调色（不弹窗、不打扰，只是把「该看一眼」标出来）。 */}
+          {update !== null && update.build.version !== '' && (
+            <span className={updateNewer ? `${styles.updateChip} ${styles.updateChipNew}` : styles.updateChip}
+              title={updateNewer
+                ? `${t('updateChipTitle', { version: update.build.version })} · ${t('updateNewAvailable')}`
+                : t('updateChipTitle', { version: update.build.version })}>
+              {update.build.version}
+              {updateNewer && <span className={styles.updateChipDot} aria-hidden="true" />}
+            </span>
+          )}
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
       </div>
@@ -3109,6 +3388,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           onClick={() => { setActiveTab('ops') }}>
           <Icon name="jev" className={styles.tabIcon} />
           {t('tabOps')}
+          {/* 有新版本：tab 标签上一个小点（克制到不弹窗、不 toast 的程度）。 */}
+          {updateNewer && <span className={styles.tabDot} aria-hidden="true" />}
         </button>
       </div>
 
@@ -3403,6 +3684,17 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           <section className={styles.section}>
             <div className={styles.panelCard}>
               <JevObservationsCard t={t} toast={toast} />
+            </div>
+          </section>
+          {/* 构建与更新：面板只能看、不能装（安装要宿主侧 dsh plugin add）；检查走 host 缓存。 */}
+          <section className={styles.section}>
+            <div className={styles.sectionHead}>
+              <h4 className={styles.sectionTitle}>{t('updateTitle')}</h4>
+              <span className={styles.sectionHint}>{t('updateHint')}</span>
+            </div>
+            <div className={styles.panelCard}>
+              <BuildUpdateCard t={t} view={update} transportError={updateError} checking={updateChecking}
+                onCheck={() => { loadUpdate(true) }} />
             </div>
           </section>
         </div>

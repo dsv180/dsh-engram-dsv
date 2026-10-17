@@ -710,6 +710,33 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .beliefDot, .beliefDotOn { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-border-l2); }
 .beliefDotOn { background: var(--dsw-alias-brand-primary); }
 
+/* ---------- 运维页「构建与更新」：构建身份行 + 判定行 + 链接组 + 手动安装命令 ---------- */
+.updateGrid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: var(--fs-body); align-items: baseline; }
+.updateLabel { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
+.updateValue { margin: 0; color: var(--dsw-alias-label-primary); min-width: 0; overflow-wrap: anywhere; }
+.updateMono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); }
+.updateNote { margin: var(--space-3) 0 0; font-size: var(--fs-micro); line-height: 1.5; color: var(--dsw-alias-label-secondary); }
+.updateNoteWarn { color: var(--dsw-alias-state-warn-primary); }
+.updateNoteOk { color: var(--dsw-alias-state-success-primary, #2da44e); }
+.updateNoteMuted { color: var(--dsw-alias-label-tertiary); }
+.updateBar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3); }
+.updateStamp { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+.updateSpin { animation: updateSpin 900ms linear infinite; }
+@keyframes updateSpin { to { transform: rotate(360deg); } }
+.updateLinks { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
+.updateLinkGroup { display: flex; flex-direction: column; gap: 3px; min-width: 132px; }
+.updateLinkGroupTitle { font-size: var(--fs-micro); font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.updateLink { font-size: var(--fs-micro); color: var(--dsw-alias-brand-primary); text-decoration: none; }
+.updateLink:hover { text-decoration: underline; }
+.updateInstall { display: flex; flex-direction: column; gap: 3px; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
+.updateCommand { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 8%, var(--dsw-alias-bg-base)); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; user-select: all; }
+/* 顶栏版本 chip（语言下拉旁）：有新版本时点亮强调色 */
+.updateChip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; flex: none; }
+.updateChipNew { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-brand-primary); }
+.updateChipDot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+/* 运维 tab 标签上的「有新版本」小点 */
+.tabDot { width: 5px; height: 5px; border-radius: 50%; background: var(--dsw-alias-brand-primary); flex: none; }
+
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; }
   .heroMetrics { gap: var(--space-5); }

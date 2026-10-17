@@ -60,6 +60,11 @@ export const zh = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint 必须是 http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
+  // update-check.ts
+  'misc.updateSourceNpm': 'npm 注册表',
+  'misc.updateSourceTags': 'GitHub 标签',
+  'misc.updateSourceFork': 'GitHub 分支',
+  'misc.updateCheckSourceFailed': '检查「{source}」失败：{message}',
 } as const
 
 /** Английский набор — образец полноты. */
@@ -110,6 +115,11 @@ export const en = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint must be an http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model must not be empty',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
+  // update-check.ts
+  'misc.updateSourceNpm': 'npm registry',
+  'misc.updateSourceTags': 'GitHub tags',
+  'misc.updateSourceFork': 'GitHub branches',
+  'misc.updateCheckSourceFailed': 'check of {source} failed: {message}',
 } as const
 
 /** Русский набор. */
@@ -160,4 +170,9 @@ export const ru = {
   'misc.jevEndpointMustBeHttp': 'invalid: jev.endpoint должно быть URL со схемой http(s)',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model не может быть пустым',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs должно быть целым числом миллисекунд от 1000 до 60000',
+  // update-check.ts
+  'misc.updateSourceNpm': 'реестр npm',
+  'misc.updateSourceTags': 'теги GitHub',
+  'misc.updateSourceFork': 'ветки GitHub',
+  'misc.updateCheckSourceFailed': 'проверка «{source}» не удалась: {message}',
 } as const
