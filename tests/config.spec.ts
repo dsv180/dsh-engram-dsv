@@ -173,3 +173,19 @@ describe('legacyMigration config', () => {
     expect(() => resolveConfig({ legacyMigration: value as never })).toThrow(/legacyMigration/)
   })
 })
+
+describe('embedder config', () => {
+  // 现网画像里的真实取值：384 维多语言模型 + mean 池化。旧分支上没有 embedder 这个键，
+  // 解析会直接抛 unknown config key——这条断言就是那次故障的防回归线。
+  it('现网 profile 配置解析到多语言模型，kind 非法 loud 失败', () => {
+    const resolved = resolveConfig({
+      embedder: { kind: 'local', localModel: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', localPooling: 'mean' },
+    }).embedder
+    expect(resolved.kind).toBe('local')
+    expect(resolved.localModel).toBe('Xenova/paraphrase-multilingual-MiniLM-L12-v2')
+    expect(resolved.localPooling).toBe('mean')
+    expect(resolved.remote).toBeUndefined()
+
+    expect(() => resolveConfig({ embedder: { kind: 'nope' } as never })).toThrow(/embedder\.kind/)
+  })
+})
