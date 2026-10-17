@@ -11,18 +11,20 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramScope, MemoryId } from '../types.ts'
 import { asMemoryId } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 蒸馏输入条数上限（协议内常量：单次辅助调用的可控上下文）。 */
 const DISTILL_MAX_INPUT = 30
 /** 蒸馏输出 token 上限。 */
 const DISTILL_MAX_TOKENS = 900
 
-const DISTILL_SYSTEM = [
-  '下面是一组用户的长期记忆条目。把表达同一主题或可归纳为一条规律的若干条，合并提炼为更高层的一条。',
-  '只输出一个 JSON 数组，每项形如 {"content": "提炼后的一句话规律", "kind": "skill或fact", "importance": 0到1, "supersedes": ["被合并条目的id", ...]}。',
-  'supersedes 必须从输入给出的 id 中选取且每组至少 1 个；无法归并的条目不要输出。没有可归并的就输出 []。',
-  '不要输出 JSON 以外的任何内容。',
-].join('\n')
+/**
+ * Системная инструкция дистилляции: текст живёт в словаре (`llm.distillSystem`),
+ * берётся в момент вызова — язык становится известен только при сборке плагина.
+ */
+function distillSystemPrompt(): string {
+  return message('llm.distillSystem')
+}
 
 /** 蒸馏辅助调用的日志事件负载。 */
 export interface DistillRequestEventData {
@@ -63,11 +65,11 @@ export async function distillMemories(deps: DistillDeps): Promise<DistillOutcome
   if (rows.length < 2) return { input: rows.length, distilled: 0, superseded: 0 }
 
   const lines = rows.map(record => `[${record.id}] (${record.kind}, importance ${record.importance.toFixed(2)}) ${record.content}`)
-  const userText = `记忆条目：\n${lines.join('\n')}`
+  const userText = `${message('llm.distillUserPrompt')}\n${lines.join('\n')}`
   deps.logRequest({ route: deps.route, scope: deps.scope, userText, maxTokens: DISTILL_MAX_TOKENS })
   const raw = await deps.call({
     route: deps.route,
-    system: DISTILL_SYSTEM,
+    system: distillSystemPrompt(),
     userText,
     maxTokens: DISTILL_MAX_TOKENS,
     purpose: 'engram-distill',

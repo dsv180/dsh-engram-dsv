@@ -8,6 +8,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { EngramError } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 一次辅助调用的模型路由。 */
 export interface LlmRoute {
@@ -63,11 +64,11 @@ function finishError(finish: FinishReason): Error | undefined {
       return error
     }
     case 'max-tokens':
-      return new Error('dsh-engram: 辅助调用输出达到 maxTokens 上限')
+      return new Error(message('llm.finishMaxTokens'))
     case 'tool-calls':
-      return new Error('dsh-engram: 辅助调用意外请求工具')
+      return new Error(message('llm.finishUnexpectedToolCalls'))
     default:
-      return new Error(`dsh-engram: 不支持的终止原因 "${String((finish as { kind?: unknown }).kind)}"`)
+      return new Error(message('llm.finishUnsupported', { kind: String((finish as { kind?: unknown }).kind) }))
   }
 }
 
@@ -115,12 +116,20 @@ export async function streamText(
   for await (const chunk of ctx.llm.stream(options)) {
     assembler.push(chunk)
   }
-  const terminalError = finishError(assembler.finish)
-  if (terminalError !== undefined) throw terminalError
   const text = assembler.blocks()
     .filter(block => block.type === 'text')
     .map(block => block.text)
     .join('')
-  if (text.trim() === '') throw new EngramError('LLM_EMPTY_OUTPUT', '辅助调用返回空输出')
+  const terminalError = finishError(assembler.finish)
+  if (terminalError !== undefined) {
+    // Русская доработка (A-17): исход `max-tokens` — не приговор. У вызывающего есть шанс
+    // спасти целые записи из начала ответа, поэтому отдаём ему недосказанное вместе с
+    // ошибкой. Для остальных вызывающих ничего не меняется — ошибка по-прежнему бросается.
+    if (assembler.finish.kind === 'max-tokens') {
+      (terminalError as Error & { partialText?: string }).partialText = text
+    }
+    throw terminalError
+  }
+  if (text.trim() === '') throw new EngramError('LLM_EMPTY_OUTPUT', message('llm.emptyOutput'))
   return text
 }

@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { gunzip, createGzip } from 'node:zlib'
 import { promisify } from 'node:util'
 import { createTarPack, endTarPack, extractTar } from './tar-stream.ts'
+import { message } from '../i18n/messages.ts'
 import type { EngramScope } from '../types.ts'
 
 const gunzipAsync = promisify<Buffer, Buffer>(gunzip)
@@ -113,10 +114,10 @@ export async function restoreBackup(archivePath: string, dbDir: string, options:
     const metaRaw = await readFileBuffer(join(tempDir, '_meta.json')).then(buf => buf.toString('utf8'))
     const meta = JSON.parse(metaRaw) as BackupMeta
     if (meta.schemaVersion !== BACKUP_SCHEMA_VERSION) {
-      throw new Error(`备份 schema 版本 ${meta.schemaVersion} 与当前 ${BACKUP_SCHEMA_VERSION} 不兼容（请升级插件或使用旧版恢复）`)
+      throw new Error(message('store.backupSchemaMismatch', { found: meta.schemaVersion, expected: BACKUP_SCHEMA_VERSION }))
     }
     if (typeof meta.pluginVersion !== 'string' || meta.pluginVersion === '') {
-      throw new Error('备份 _meta.json 缺少 pluginVersion 字段，可能已损坏')
+      throw new Error(message('store.backupMetaMissingPluginVersion'))
     }
     const restored: string[] = []
     if (options.keepCurrent !== false) {

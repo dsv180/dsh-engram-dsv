@@ -4,6 +4,8 @@
  * @module @kenz1117/dsh-engram/retrieve/budget
  */
 
+import { message } from '../i18n/messages.ts'
+
 /** 单条召回行最大字符数（超长截断加省略号）。 */
 export const RECALL_PER_ITEM_CHARS = 1200
 
@@ -55,6 +57,6 @@ export function fitWithinBudget<T>(
  */
 export function enforceBudget(lines: readonly string[], totalBudget: number = RECALL_TOTAL_CHARS): string[] {
   const { kept, dropped } = fitWithinBudget(lines, line => line.length, totalBudget)
-  if (dropped > 0) kept.push(`（另有 ${dropped} 条未展示：缩小查询范围或降低 limit 后重试）`)
+  if (dropped > 0) kept.push(message('store.budgetDropped', { count: dropped }))
   return kept
 }

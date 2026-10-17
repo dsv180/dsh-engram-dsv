@@ -10,6 +10,7 @@
 import type { EngramKind, MemoryRecord } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { recordJevObservation } from './jev/observe.ts'
+import { message } from './i18n/messages.ts'
 
 /** 写入处置四态。 */
 export type WriteDisposition = 'accept' | 'merge' | 'drop' | 'defer'
@@ -211,6 +212,6 @@ export async function applyMerge(
 ): Promise<MemoryRecord> {
   const note = JSON.stringify({ content: content.slice(0, 40), similarity: Number(decision.similarity.toFixed(4)) })
   const record = await store.reinforce(decision.into.id, note)
-  if (record === undefined) throw new Error(`write-disposition: 并入目标 ${decision.into.id} 不存在`)
+  if (record === undefined) throw new Error(message('store.mergeTargetMissing', { id: decision.into.id }))
   return record
 }

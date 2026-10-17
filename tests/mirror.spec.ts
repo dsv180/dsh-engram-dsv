@@ -26,7 +26,7 @@ describe('Markdown 镜像导出', () => {
     const b = await store.write({ scope: 'user', kind: 'preference', content: '偏好简体中文界面', importance: 0.6, confidence: 0.7 })
     await store.linkEdge(a.id, b.id, 'related')
     const data = await store.exportAll()
-    const report = await writeMirror(mirrorRoot, data)
+    const report = await writeMirror(mirrorRoot, data, 'zh')
     expect(report.fileCount).toBe(2 + 2) // 2 memories + _index.md + _meta.json
     expect(report.rooms).toHaveLength(2)
 
@@ -56,7 +56,7 @@ describe('Markdown 镜像导出', () => {
     await store.write({ scope: 'user', kind: 'fact', content: '事实一', importance: 0.9 })
     await store.write({ scope: 'user', kind: 'fact', content: '事实二', importance: 0.4 })
     await store.write({ scope: 'user', kind: 'episode', content: '事件一', importance: 0.6 })
-    const report = await writeMirror(mirrorRoot, await store.exportAll())
+    const report = await writeMirror(mirrorRoot, await store.exportAll(), 'zh')
     const index = await readFile(join(mirrorRoot, '_index.md'), 'utf8')
     expect(index).toContain('# 记忆宫殿 · 私人宫殿')
     expect(index).toContain('## 房间导览')
@@ -71,7 +71,7 @@ describe('Markdown 镜像导出', () => {
     await store.write({ scope: 'user', kind: 'fact', content: '活跃', importance: 0.5 })
     const forgotten = await store.write({ scope: 'user', kind: 'fact', content: '已闭馆', importance: 0.5 })
     await store.forget(forgotten.id)
-    await writeMirror(mirrorRoot, await store.exportAll())
+    await writeMirror(mirrorRoot, await store.exportAll(), 'zh')
     const meta = JSON.parse(await readFile(join(mirrorRoot, '_meta.json'), 'utf8')) as {
       scope: string
       total: number
@@ -86,7 +86,7 @@ describe('Markdown 镜像导出', () => {
   })
 
   it('空宫殿也能正常写镜像（_index.md + _meta.json + 0 房间）', async () => {
-    const report = await writeMirror(mirrorRoot, await store.exportAll())
+    const report = await writeMirror(mirrorRoot, await store.exportAll(), 'zh')
     expect(report.fileCount).toBe(2)
     expect(report.rooms).toEqual([])
     const meta = JSON.parse(await readFile(join(mirrorRoot, '_meta.json'), 'utf8')) as { total: number }
@@ -95,7 +95,7 @@ describe('Markdown 镜像导出', () => {
 
   it('镜像文件名为 `<id8>-<slug>-<idx>.md`，id 前 8 位稳定前缀', async () => {
     const r = await store.write({ scope: 'user', kind: 'skill', content: 'Rust 所有权：所有权 + 借用检查器', importance: 0.8 })
-    await writeMirror(mirrorRoot, await store.exportAll())
+    await writeMirror(mirrorRoot, await store.exportAll(), 'zh')
     const skillDir = join(mirrorRoot, 'skill')
     const files = await readdir(skillDir)
     expect(files).toHaveLength(1)

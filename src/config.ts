@@ -7,6 +7,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
+import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
+
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
 export type LegacyMigrationPolicy = 'eager' | 'conservative'
 
@@ -96,6 +98,18 @@ export interface EngramConfig {
   historyBackfillIncludeNoCwd?: boolean
   /** Jev System One 裁决子配置；默认关闭（纯规则四态判定，行为与旧版一致）。 */
   jev?: JevConfig
+  /**
+   * Язык текстов, которые плагин формирует сам: имена комнат, сообщения инструментов.
+   * «auto» (по умолчанию) — язык системы. Интерфейс панели настраивается отдельно,
+   * средствами DSH: плагин отдаёт хосту словари, а выбор делает хост.
+   */
+  language?: LanguageSetting
+  /**
+   * Слова-метки секретов, добавленные пользователем. Дополняют наборы языкового пакета
+   * и действуют **всегда**, независимо от языка: пользователь добавляет их как раз потому,
+   * что пакета не хватило. Пробельные строки отбрасываются.
+   */
+  redactWords?: string[]
 }
 
 /** 历史回填规则（面板/工具可在默认值之上按次调整；总轮数受硬上限约束）。 */
@@ -154,6 +168,10 @@ export interface ResolvedEngramConfig {
   readonly historyBackfill: ResolvedHistoryRules
   /** Jev System One 裁决子配置（默认关闭）。 */
   readonly jev: ResolvedJevConfig
+  /** Язык вывода серверной половины (после разворачивания «auto» в язык системы). */
+  readonly language: EngramLanguage
+  /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
+  readonly redactWords: readonly string[]
 }
 
 /** 合法配置键集合（未知键 loud 失败）。 */
@@ -165,7 +183,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'autoSlot', 'reviewScheduling', 'assessReminder',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
-  'jev',
+  'jev', 'language', 'redactWords',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -211,6 +229,8 @@ export const Config: z<EngramConfig> = z.object({
     deferAcceptBelow: z.number().min(0).max(0.5),
     contradictMinProbability: z.number().min(0.5).max(1),
   }) as unknown as z<JevConfig>,
+  language: z.string() as unknown as z<LanguageSetting>,
+  redactWords: z.array(z.string()),
 })
 
 /**
@@ -231,6 +251,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
+  }
+  if (config.language !== undefined && config.language !== 'auto' && !isEngramLanguage(config.language)) {
+    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(config.language)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')
@@ -318,6 +341,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
     reflect: config.reflect ?? 'off',
+    language: resolveLanguage(config.language ?? 'auto'),
+    redactWords: config.redactWords ?? [],
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
     decayImportanceBelow: config.decayImportanceBelow ?? 0.3,

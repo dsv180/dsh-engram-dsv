@@ -139,6 +139,9 @@ async function loadComposition(extraConfig: readonly string[] = [], pending?: Pe
     "- name: '@kenz1117/dsh-engram'",
     '  config:',
     `    dbDir: '${join(root, 'engram')}'`,
+    // 语言显式固定：插件里 'auto' 会落到**系统**语言，断言却写的是中文——不固定就成了
+    // 「开发机是什么地区就测什么」，同一个提交在俄语/英语机器上会红。
+    "    language: 'zh'",
     ...extraConfig,
     '',
   ].join('\n'))
@@ -227,7 +230,7 @@ describe('dsh-engram real Loader composition', () => {
     expect((tourList.json as { records: { content: string, slot?: { room: string, index: number } }[] }).records
       .map(record => record.content)).toEqual(['种子偏好：回复用简体中文', '种子事实：将被遗忘'])
     // 列表行带桩位坐标（宫殿位置感）。
-    expect((tourList.json as { records: { slot?: { room: string } }[] }).records[0]?.slot).toEqual({ room: '偏好阁', index: 1 })
+    expect((tourList.json as { records: { slot?: { room: string } }[] }).records[0]?.slot).toEqual({ room: 'preference', index: 1 })
 
     // 今日待回忆：只给线索不给正文（检索练习的刻意设计）。
     const due = await call(port, 'GET', '/api/engram/review-due?scope=user')
@@ -235,7 +238,7 @@ describe('dsh-engram real Loader composition', () => {
     const dueItems = (due.json as { items: { id: string, overdueDays: number, slot?: { room: string } }[] }).items
     expect(dueItems).toHaveLength(1)
     expect(dueItems[0]?.overdueDays).toBeGreaterThanOrEqual(1)
-    expect(dueItems[0]?.slot).toEqual({ room: '偏好阁', index: 1 })
+    expect(dueItems[0]?.slot).toEqual({ room: 'preference', index: 1 })
     expect(due.text).not.toContain('简体中文')
 
     // 自评推进 SM-2：首次通过间隔 1 天；非法 grade 拒绝。

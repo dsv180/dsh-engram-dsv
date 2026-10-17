@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
-import { KIND_KEY, NS, en, zh, type EngramKey } from './locales.ts'
+import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
 import { CorridorMap, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
@@ -109,9 +109,14 @@ interface ReviewView {
 type T = (key: EngramKey, params?: Record<string, unknown>) => string
 
 /** 中英词典（面板级语言覆盖用），与 locales.ts 注册给宿主的两份词典同源。 */
-const DICTS: Record<'zh' | 'en', Record<EngramKey, string>> = { zh, en }
+/**
+ * Языки панельного переключателя. Хост DSH поставляет zh и en; русский плагин
+ * объявляет сам (см. src/client/index.ts), поэтому его можно выбрать и здесь.
+ */
+type PanelLang = 'zh' | 'en' | 'ru'
+const DICTS: Record<PanelLang, Record<EngramKey, string>> = { zh, en, ru }
 /** 合成面板级 t：与宿主词典同款 {param} 插值，未知键回退键名本身。 */
-function makeT(lang: 'zh' | 'en'): T {
+function makeT(lang: PanelLang): T {
   const dict = DICTS[lang]
   return (key, params) => (dict[key] ?? String(key)).replace(/\{(\w+)\}/g, (raw: string, name: string) => {
     const value = params?.[name]
@@ -2681,7 +2686,9 @@ export type EngramSectionProps = PropsLocale<typeof NS> & {
 export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
   /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN」段控强制覆盖。 */
-  const [lang, setLang] = usePersistedState<'zh' | 'en'>('library.lang', hostT('scopeUser') === zh.scopeUser ? 'zh' : 'en', ['zh', 'en'])
+  /** Язык панели по умолчанию — тот, чей словарь совпал с выводом хоста (ru — внешний язык). */
+  const hostLang: PanelLang = hostT('scopeUser') === zh.scopeUser ? 'zh' : hostT('scopeUser') === ru.scopeUser ? 'ru' : 'en'
+  const [lang, setLang] = usePersistedState<PanelLang>('library.lang', hostLang, ['zh', 'en', 'ru'])
   const t = useMemo<T>(() => makeT(lang), [lang])
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
@@ -2973,13 +2980,17 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             onClick={() => { reload(); refreshDue() }}>
             <Icon name="refresh" className={styles.brandIcon} />
           </button>
-          {/* 语言段控：面板级中英覆盖，与宿主语言设置相互独立；选择持久化在本机 */}
-          <div className={styles.langSeg} role="group" aria-label="Language">
-            <button type="button" className={lang === 'zh' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('zh') }}>中</button>
-            <button type="button" className={lang === 'en' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('en') }}>EN</button>
-          </div>
+          {/* 语言下拉：面板级中英俄覆盖，与宿主语言设置相互独立；选择持久化在本机。
+              用列表而不是三个并排按钮：误点只会展开列表、不会当场换掉语言，且将来
+              语言变多时不会把顶栏撑开、挤坏排版。选项写各自语言的本名，任何语言下
+              都能认出自己那一条。 */}
+          <select className={`${styles.input} ${styles.langSelect}`} value={lang}
+            aria-label={t('language')}
+            onChange={(event) => { setLang(event.target.value as PanelLang) }}>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+          </select>
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
       </div>

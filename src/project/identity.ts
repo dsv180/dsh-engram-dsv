@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { message } from '../i18n/messages.ts'
 import type { LegacyMigrationPolicy } from '../config.ts'
 
 /** 项目标识解析结果。 */
@@ -207,19 +208,19 @@ export function migrateProjectDb(
 
 /** Shared guidance for plugin boot and session-cwd migration checks. */
 export function migrationWarning(dbDir: string, identity: ProjectIdentity, outcome: MigrationOutcome): string | undefined {
-  const names = `旧库 ${identity.legacyDbName}；新库 ${identity.dbName}`
-  const manual = '人工处理前请停止相关宿主并备份所有数据库及 sidecar；新库可能已写入记忆，请勿直接覆盖，先用 engram_review / engram_export 审核并人工重新归属'
+  const names = message('store.migrationDbNames', { legacy: identity.legacyDbName, next: identity.dbName })
+  const manual = message('store.migrationManualGuidance')
   switch (outcome) {
     case 'none': return undefined
     case 'renamed':
-      return `[dsh-engram] 项目记忆库已迁移（${names}），已记录 .migrated-to；旧库可能包含同前缀目录的记忆。${manual}`
+      return message('store.migrationRenamed', { names, manual })
     case 'kept-both':
-      return `[dsh-engram] 新旧项目记忆库并存，未合并或移动（${names}）。${manual}`
+      return message('store.migrationKeptBoth', { names, manual })
     case 'deferred':
-      return `[dsh-engram] conservative 模式暂缓旧库迁移（${names}）；旧库保持不变，将打开新的空库。${manual}`
+      return message('store.migrationDeferred', { names, manual })
     case 'already-migrated': {
       const pointer = readMigrationPointer(dbDir, identity)
-      return `[dsh-engram] 旧库已有迁移记录（${names}）：${JSON.stringify(pointer)}；先前迁移的库可能含有当前目录的记忆。${manual}`
+      return message('store.migrationAlreadyMigrated', { names, pointer: JSON.stringify(pointer), manual })
     }
   }
 }

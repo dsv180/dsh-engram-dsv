@@ -158,12 +158,12 @@ describe('EngramStore list (management view)', () => {
 describe('EngramStore 宫殿与复习调度（schema v6）', () => {
   it('写入期自动排桩：按 kind 分房、序号递增、登记巡游路线、1 天后到期', async () => {
     const fact = await store.write({ scope: 'user', kind: 'fact', content: '自动排桩的事实' })
-    expect(fact.slot).toEqual({ room: '事实厅', index: 1 })
+    expect(fact.slot).toEqual({ room: 'fact', index: 1 })
     const preference = await store.write({ scope: 'user', kind: 'preference', content: '自动排桩的偏好' })
-    expect(preference.slot).toEqual({ room: '偏好阁', index: 1 })
+    expect(preference.slot).toEqual({ room: 'preference', index: 1 })
     const secondFact = await store.write({ scope: 'user', kind: 'fact', content: '第二条事实' })
-    expect(secondFact.slot).toEqual({ room: '事实厅', index: 2 })
-    // 路线按登记先后 append：事实厅#1、偏好阁#1、事实厅#2。
+    expect(secondFact.slot).toEqual({ room: 'fact', index: 2 })
+    // 路线按登记先后 append：fact#1、preference#1、fact#2。
     const route = await store.routeList()
     expect(route.map(stop => stop.id)).toEqual([fact.id, preference.id, secondFact.id])
     expect(await store.routeHas(fact.id)).toBe(true)
@@ -234,7 +234,7 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     const patched = await reopened.backfillSlots(room => { opened.push(room) })
     expect(patched).toBe(1)
     const after = await reopened.get(old.id)
-    expect(after?.slot).toEqual({ room: '决策堂', index: 1 })
+    expect(after?.slot).toEqual({ room: 'decision', index: 1 })
     expect((await reopened.routeList()).map(stop => stop.id)).toEqual([old.id])
     // 幂等：重跑无待处理条目。
     expect(await reopened.backfillSlots(room => { opened.push(room) })).toBe(0)
@@ -275,13 +275,13 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     expect(record?.slot).toBeUndefined()
     // 迁移后新写入可正常排桩：列与索引都已就位。
     const fresh = await migrated.write({ scope: 'user', kind: 'fact', content: '迁移后写入' })
-    expect(fresh.slot).toEqual({ room: '事实厅', index: 1 })
+    expect(fresh.slot).toEqual({ room: 'fact', index: 1 })
     // 存量条目由 backfillSlots 补齐桩位（首开时由插件层触发，此处直接验证其幂等可跑）。
     expect(await migrated.backfillSlots(() => { /* 测试不关心开新房提示 */ })).toBe(1)
-    expect((await migrated.get(asMemoryId('legacy-1')))?.slot).toEqual({ room: '事实厅', index: 2 })
+    expect((await migrated.get(asMemoryId('legacy-1')))?.slot).toEqual({ room: 'fact', index: 2 })
     await migrated.close()
     const check = new DatabaseSync(path)
-    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('12')
+    expect((check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value).toBe('13')
     const indexes = (check.prepare('PRAGMA index_list(nodes)').all() as unknown as { name: string }[]).map(row => row.name)
     expect(indexes).toContain('nodes_slot')
     expect(indexes).toContain('nodes_review_due')
@@ -306,6 +306,6 @@ describe('EngramStore 宫殿与复习调度（schema v6）', () => {
     const check = new DatabaseSync(path)
     const version = (check.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string }).value
     check.close()
-    expect(version).toBe('12')
+    expect(version).toBe('13')
   })
 })

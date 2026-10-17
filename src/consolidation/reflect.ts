@@ -20,6 +20,7 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import type { EngramStore } from '../store/interface.ts'
 import type { EngramScope, MemoryId, ObservationId } from '../types.ts'
 import { asMemoryId, asObservationId } from '../types.ts'
+import { message } from '../i18n/messages.ts'
 
 /** 取材池大小：从 active 记忆按 importance/confidence 倒序扫描的上限。 */
 const REFLECT_POOL = 300
@@ -38,15 +39,17 @@ const REFLECT_MERGE_THRESHOLD = 0.9
 /** 新鲜度阈值：新证据与既有信念余弦达到该值（低于归并阈值，语义更宽）则把信念标 stale 待复核。 */
 const REFLECT_STALE_THRESHOLD = 0.86
 
-const REFLECT_SYSTEM = [
-  '下面给出两部分材料：【待巩固记忆】是新近写入的原始记忆；【待复核信念】是此前巩固出、但可能受新证据影响的信念（附原始证据）。',
-  '请对材料做巩固与复核，只输出一个 JSON 数组，每项为以下四种动作之一：',
-  '1. {"action":"form","belief":"巩固出的一句话信念（结论/规律/稳定偏好）","sourceIds":["证据记忆id"]} —— sourceIds 至少 1 个且必须全部来自【待巩固记忆】的 id；多条记忆支撑同一信念时合并成一条，不要为单条琐碎记忆立信念。',
-  '2. {"action":"refine","observationId":"待复核信念id","belief":"结合新证据后的新表述","sourceIds":["新增证据记忆id"]} —— 新证据补充或限定了该信念时使用；sourceIds 必须来自【待巩固记忆】，可为空数组（仅表述更准确）。',
-  '3. {"action":"still","observationId":"待复核信念id"} —— 新证据不影响该信念，原表述仍成立。',
-  '4. {"action":"refute","observationId":"待复核信念id","reason":"被否定的原因（引用证据）"} —— 新证据与信念矛盾且原信念不再成立。',
-  'observationId 必须取自【待复核信念】给出的 id。材料中没有值得巩固或复核的内容时输出 []。不要输出 JSON 以外的任何内容。',
-].join('\n')
+/**
+ * Системная инструкция закрепления: текст живёт в словаре (`llm.reflectSystem`),
+ * берётся в момент вызова. Маркеры секций подставляются теми же ключами, что и
+ * сборка материала ниже, — инструкция и материал обязаны называть их одинаково.
+ */
+function reflectSystemPrompt(): string {
+  return message('llm.reflectSystem', {
+    newMark: message('llm.reflectMarkerNewMemories'),
+    reviewMark: message('llm.reflectMarkerBeliefs'),
+  })
+}
 
 /** 巩固辅助调用的日志事件负载。 */
 export interface ReflectRequestEventData {
@@ -145,7 +148,7 @@ export async function reflectObservations(deps: ReflectDeps): Promise<ReflectOut
   const sections: string[] = []
   if (candidates.length > 0) {
     const lines = candidates.map(record => `[${String(record.id)}] (${record.kind}, importance ${record.importance.toFixed(2)}) ${record.content}`)
-    sections.push(`【待巩固记忆】\n${lines.join('\n')}`)
+    sections.push(`${message('llm.reflectMarkerNewMemories')}\n${lines.join('\n')}`)
   }
   if (stale.length > 0) {
     const blocks: string[] = []
@@ -154,9 +157,13 @@ export async function reflectObservations(deps: ReflectDeps): Promise<ReflectOut
       const evidence = evidenceRecords
         .map(record => `  - ${record.content.slice(0, REFLECT_EVIDENCE_SLICE)}`)
         .join('\n')
-      blocks.push(`[${String(observation.id)}] 证据 ${String(observation.proofCount)} 条：${observation.belief}\n${evidence}`)
+      blocks.push(`${message('llm.reflectStaleLine', {
+        id: String(observation.id),
+        count: String(observation.proofCount),
+        belief: observation.belief,
+      })}\n${evidence}`)
     }
-    sections.push(`【待复核信念】\n${blocks.join('\n')}`)
+    sections.push(`${message('llm.reflectMarkerBeliefs')}\n${blocks.join('\n')}`)
   }
   const userText = sections.join('\n\n')
   deps.logRequest({
@@ -168,7 +175,7 @@ export async function reflectObservations(deps: ReflectDeps): Promise<ReflectOut
   })
   const raw = await deps.call({
     route: deps.route,
-    system: REFLECT_SYSTEM,
+    system: reflectSystemPrompt(),
     userText,
     maxTokens: REFLECT_MAX_TOKENS,
     purpose: 'engram-reflect',
@@ -237,9 +244,9 @@ async function applyForm(
   action: { belief?: unknown; sourceIds?: unknown },
   candidateIds: ReadonlySet<string>,
 ): Promise<'formed' | 'refined'> {
-  if (typeof action.belief !== 'string' || action.belief.trim() === '') throw new Error('form: belief 缺失')
+  if (typeof action.belief !== 'string' || action.belief.trim() === '') throw new Error(message('llm.reflectFormBeliefMissing'))
   const sourceIds = requireCandidateIds(action.sourceIds, candidateIds)
-  if (sourceIds === undefined || sourceIds.length === 0) throw new Error('form: sourceIds 越界或为空')
+  if (sourceIds === undefined || sourceIds.length === 0) throw new Error(message('llm.reflectFormSourceIdsInvalid'))
   const belief = action.belief.trim()
   // 嵌入可用：为信念算向量，与既有 active/stale 信念近邻归并（同主题持续细化同一条）。
   if (deps.embedder !== undefined) {

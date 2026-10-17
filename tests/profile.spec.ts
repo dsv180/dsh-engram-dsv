@@ -14,7 +14,7 @@ describe('renderProfile 预算装填', () => {
     const text = renderProfile([
       record('id-1', 'preference', '偏好简体中文'),
       record('id-2', 'fact', '在开发记忆插件'),
-    ], 1024)
+    ], 1024, 'en')
     const lines = text.split('\n')
     expect(lines[0]).toBe(HEADER)
     expect(lines.at(-1)).toBe(FOOTER)
@@ -31,7 +31,7 @@ describe('renderProfile 预算装填', () => {
     const indexLine = `- [fact] #id-long ${'长'.repeat(40)}…`
     // 预算 = 固定行 + 短行 + 一条索引行 + 末尾计数行（计数行也占预算）。
     const budget = OVERHEAD + est(shortLine) + est(indexLine) + est('+1 more; use engram_search')
-    const text = renderProfile([long, short], budget)
+    const text = renderProfile([long, short], budget, 'en')
     expect(text).toContain(shortLine)
     expect(text).toContain(indexLine)
     expect(text).not.toContain('长'.repeat(41))
@@ -42,7 +42,7 @@ describe('renderProfile 预算装填', () => {
     const text = renderProfile([
       record('id-1', 'fact', '这是一条比较长的中文记忆条目内容'),
       record('id-2', 'fact', '这是另一条比较长的中文记忆条目内容'),
-    ], OVERHEAD + 8)
+    ], OVERHEAD + 8, 'en')
     expect(text).toContain('+2 more; use engram_search')
     expect(text).not.toContain('这是一条比较长的中文记忆条目内容')
     expect(text).not.toContain('#id-1')
@@ -54,15 +54,15 @@ describe('renderProfile 预算装填', () => {
     expect(est(line)).toBeGreaterThan(Math.ceil(line.length / 4))
     // 恰好够整行时装入；少 1 个 token 就整行跳过（索引行更长也装不下，折成计数行）。
     const cost = est(line)
-    expect(renderProfile([mixed], OVERHEAD + cost)).toContain(line)
-    const degraded = renderProfile([mixed], OVERHEAD + cost - 1)
+    expect(renderProfile([mixed], OVERHEAD + cost, 'en')).toContain(line)
+    const degraded = renderProfile([mixed], OVERHEAD + cost - 1, 'en')
     expect(degraded).not.toContain(line)
     expect(degraded).toContain('+1 more; use engram_search')
   })
 
   it('中文条目按 CJK 口径受预算约束（长度/4 口径会超支数倍）', () => {
     const records = Array.from({ length: 5 }, (_, index) => record(`id-${index}`, 'fact', '中'.repeat(200)))
-    const text = renderProfile(records, 1024)
+    const text = renderProfile(records, 1024, 'en')
     expect(estimateTokens(text)).toBeLessThanOrEqual(1024)
     // 分级递减：5 条全部截断装入（首条 160 字），不再需要索引行/计数行。
     expect(text.match(/^- \[fact\]/gm)).toHaveLength(5)
@@ -74,7 +74,7 @@ describe('renderProfile 预算装填', () => {
 describe('分级递减正文预算', () => {
   it('第 i 条预算 = max(floor, start×decay^i)：长条目按位次截断', () => {
     const records = [record('a', 'fact', '甲'.repeat(200)), record('b', 'fact', '乙'.repeat(200))]
-    const detailed = renderProfileDetailed(records, 8192, { start: 160, decay: 0.9, floor: 24 })
+    const detailed = renderProfileDetailed(records, 8192, 'en', { start: 160, decay: 0.9, floor: 24 })
     const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
     expect(lines[0]).toContain('甲'.repeat(160) + '…')
     expect(lines[1]).toContain('乙'.repeat(144) + '…')
@@ -86,7 +86,7 @@ describe('分级递减正文预算', () => {
       record('a', 'fact', '甲'.repeat(200)),
       ...Array.from({ length: 25 }, (_, index) => record(`r-${index}`, 'fact', '丙'.repeat(200))),
     ]
-    const detailed = renderProfileDetailed(records, 8192, { start: 160, decay: 0.9, floor: 24 })
+    const detailed = renderProfileDetailed(records, 8192, 'en', { start: 160, decay: 0.9, floor: 24 })
     const lines = detailed.text.split('\n').filter(line => line.startsWith('- ['))
     expect(lines[0]).toContain('甲'.repeat(160) + '…')
     const floorLine = lines.at(-1)!
@@ -95,7 +95,7 @@ describe('分级递减正文预算', () => {
   })
 
   it('短条目不截断', () => {
-    const detailed = renderProfileDetailed([record('s', 'fact', '很短')], 1024, { start: 160, decay: 0.9, floor: 24 })
+    const detailed = renderProfileDetailed([record('s', 'fact', '很短')], 1024, 'en', { start: 160, decay: 0.9, floor: 24 })
     expect(detailed.text).toContain('- [fact] 很短')
     expect(detailed.text).not.toContain('…')
   })
@@ -105,7 +105,7 @@ describe('renderProfileDetailed 溢出明细', () => {
   it('溢出条目在 overflow 中按序返回，文本含计数行', () => {
     const overflowRecord = record('id-overflow', 'fact', '较长的一条中文记忆内容')
     // 余量 8 token：整行装不下，扣掉计数行后仍不足索引行，故只剩计数行。
-    const detailed = renderProfileDetailed([overflowRecord], OVERHEAD + 8)
+    const detailed = renderProfileDetailed([overflowRecord], OVERHEAD + 8, 'en')
     expect(detailed.overflow.map(item => item.id)).toEqual(['id-overflow'])
     expect(detailed.overflow[0]!.kind).toBe('fact')
     expect(detailed.overflow[0]!.content).toBe('较长的一条中文记忆内容')
@@ -113,7 +113,7 @@ describe('renderProfileDetailed 溢出明细', () => {
   })
 
   it('全部装下时 overflow 为空', () => {
-    const detailed = renderProfileDetailed([record('id-1', 'fact', '条目一')], 1024)
+    const detailed = renderProfileDetailed([record('id-1', 'fact', '条目一')], 1024, 'en')
     expect(detailed.overflow).toEqual([])
     expect(detailed.text).toContain('- [fact] 条目一')
     expect(detailed.text).not.toContain('more; use engram_search')
@@ -123,11 +123,11 @@ describe('renderProfileDetailed 溢出明细', () => {
     const compressed = '压缩后的短句'
     // 预算恰好容纳压缩后的整行（CJK 口径：6 个汉字 9 token + 15 个窄字符 3.75 token）。
     const budget = OVERHEAD + est(`- [preference] ${compressed}`)
-    const first = renderProfileDetailed([record('id-1', 'preference', '很长的原始条目'.repeat(10))], budget)
+    const first = renderProfileDetailed([record('id-1', 'preference', '很长的原始条目'.repeat(10))], budget, 'en')
     expect(first.overflow).toHaveLength(1)
     // 模拟辅助 LLM 压缩后的重渲染。
     const recomposed = first.overflow.map(item => ({ ...item, content: compressed }))
-    const second = renderProfileDetailed(recomposed, budget)
+    const second = renderProfileDetailed(recomposed, budget, 'en')
     expect(second.overflow).toEqual([])
     expect(second.text).toContain(`- [preference] ${compressed}`)
   })
@@ -140,14 +140,15 @@ describe('renderProfileWithCurated（curated 优先）', () => {
       { content: curatedText },
       [record('id-1', 'fact', '在开发记忆插件')],
       1024,
+      'en',
     )
     // curated 标题行在最前，正文次之，派生画像的 Grand Hall header 在后。
     expect(withCurated.text.startsWith(CURATED_HEADER)).toBe(true)
     expect(withCurated.text.indexOf(curatedText)).toBeLessThan(withCurated.text.indexOf(HEADER))
     expect(withCurated.text).toContain('- [fact] 在开发记忆插件')
     // block 缺省时与 renderProfileDetailed 完全一致。
-    const plain = renderProfileDetailed([record('id-1', 'fact', '在开发记忆插件')], 1024)
-    expect(renderProfileWithCurated(undefined, [record('id-1', 'fact', '在开发记忆插件')], 1024)).toEqual(plain)
+    const plain = renderProfileDetailed([record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')
+    expect(renderProfileWithCurated(undefined, [record('id-1', 'fact', '在开发记忆插件')], 1024, 'en')).toEqual(plain)
   })
 
   it('curated 先占预算：剩余预算给派生条目，装不下的照常溢出', () => {
@@ -156,18 +157,18 @@ describe('renderProfileWithCurated（curated 优先）', () => {
     const itemLine = '- [fact] 条目一'
     // 总预算 = curated 段 + 派生段固定行 + 恰好一条整行：应全部装下。
     const budget = curatedCost + OVERHEAD + est(itemLine)
-    const fits = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget)
+    const fits = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget, 'en')
     expect(fits.overflow).toEqual([])
     expect(fits.text).toContain(itemLine)
     // 再扣 1 token：派生条目整行装不下 → 进 overflow（curated 段仍完整注入）。
-    const tight = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget - 1)
+    const tight = renderProfileWithCurated({ content: curatedText }, [record('id-1', 'fact', '条目一')], budget - 1, 'en')
     expect(tight.text).toContain(curatedText)
     expect(tight.overflow.map(item => item.id)).toEqual(['id-1'])
   })
 
   it('curated 超长时仍完整注入，派生段只余固定行', () => {
     const huge = '长'.repeat(2000)
-    const result = renderProfileWithCurated({ content: huge }, [record('id-1', 'fact', '条目一')], 300)
+    const result = renderProfileWithCurated({ content: huge }, [record('id-1', 'fact', '条目一')], 300, 'en')
     expect(result.text).toContain(huge)
     expect(result.overflow.map(item => item.id)).toEqual(['id-1'])
   })

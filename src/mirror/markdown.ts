@@ -9,6 +9,9 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { EngramScope } from '../types.ts'
 import type { ExportData, MemoryEdge, MemoryRecord } from '../types.ts'
+import type { EngramLanguage } from '../i18n/language.ts'
+import { roomLabel } from '../i18n/rooms.ts'
+import { message, messageIn } from '../i18n/messages.ts'
 
 /** 记忆铭牌 URL/路径安全的 slug（仅 ASCII、连字符分隔）。 */
 function slugify(input: string): string {
@@ -33,16 +36,6 @@ function yaml(value: unknown): string {
 /** ISO 时间戳（秒级，frontmatter 与 _meta 通用）。 */
 function iso(ms: number): string {
   return new Date(ms).toISOString()
-}
-
-/** 房间展示名（kind → 中文房间名；与 client 词典的 kindFact… 对应，host 侧不引 client 模块）。
- *  仅用于 _index.md 的可读标签，目录名仍用 kind 原值以保持路径稳定。 */
-const ROOM_LABEL: Record<string, string> = {
-  fact: '事实厅',
-  preference: '偏好阁',
-  decision: '决策堂',
-  episode: '往事廊',
-  skill: '技法坊',
 }
 
 /** 单条记忆的 frontmatter 视图（暴露给 _meta.json 用，便于面板无须再读文件即可显示）。 */
@@ -95,29 +88,37 @@ export interface ShareManifest {
 }
 
 /** 顶层 _index.md 的纯文本模板（房间导览 + 记忆清单链接）。 */
-function renderIndex(scope: EngramScope, data: ExportData, rooms: readonly MirrorRoomSummary[]): string {
+function renderIndex(scope: EngramScope, data: ExportData, rooms: readonly MirrorRoomSummary[], language: EngramLanguage): string {
   const total = data.records.length
   const active = data.records.filter(r => r.status === 'active').length
   const edges = data.edges.length
-  const heading = `# 记忆宫殿 · ${scope === 'user' ? '私人宫殿' : '项目宫殿'}\n`
+  const heading = `${messageIn(language, 'misc.mirrorTitle', {
+    palace: messageIn(language, scope === 'user' ? 'misc.mirrorPalacePersonal' : 'misc.mirrorPalaceProject'),
+  })}\n`
   const summary = [
     '',
-    `> 导出时间 ${iso(data.exportedAt)} · 共 **${total}** 条记忆（对外开放 ${active}） · 走廊 ${edges} 条`,
+    messageIn(language, 'misc.mirrorSummary', { at: iso(data.exportedAt), total, active, edges }),
     '',
-    '## 房间导览',
+    messageIn(language, 'misc.mirrorRoomsHeading'),
     '',
-    ...rooms.map(room => `- **${ROOM_LABEL[room.kind] ?? room.kind}** · ${room.memoryCount} 条记忆（开放 ${room.active} · 展厅 ${room.archived} · 闭馆 ${room.forgotten}）`),
+    ...rooms.map(room => messageIn(language, 'misc.mirrorRoomLine', {
+      room: roomLabel(room.kind, language),
+      count: room.memoryCount,
+      active: room.active,
+      archived: room.archived,
+      forgotten: room.forgotten,
+    })),
     '',
-    '## 记忆清单',
+    messageIn(language, 'misc.mirrorRecordsHeading'),
     '',
     ...data.records
       .slice()
       .sort((a, b) => b.importance - a.importance)
-      .map(record => `- [${record.status === 'active' ? '●' : record.status === 'archived' ? '◇' : '×'}][${ROOM_LABEL[record.kind] ?? record.kind}] ${record.content.slice(0, 60)}${record.content.length > 60 ? '…' : ''} — [[${record.id.slice(0, 8)}]]`),
+      .map(record => `- [${record.status === 'active' ? '●' : record.status === 'archived' ? '◇' : '×'}][${roomLabel(record.kind, language)}] ${record.content.slice(0, 60)}${record.content.length > 60 ? '…' : ''} — [[${record.id.slice(0, 8)}]]`),
     '',
-    '## 走廊（关系边）',
+    messageIn(language, 'misc.mirrorCorridorsHeading'),
     '',
-    ...(edges === 0 ? ['（暂无走廊）'] : data.edges.map(edge => `- \`${edge.from.slice(0, 8)}\` --${edge.type}--> \`${edge.to.slice(0, 8)}\``)),
+    ...(edges === 0 ? [messageIn(language, 'misc.mirrorNoCorridors')] : data.edges.map(edge => `- \`${edge.from.slice(0, 8)}\` --${edge.type}--> \`${edge.to.slice(0, 8)}\``)),
     '',
   ].join('\n')
   return heading + summary
@@ -150,16 +151,16 @@ function renderMemory(record: MemoryRecord, edges: readonly MemoryEdge[]): strin
     '---',
   ].join('\n')
   const body = [
-    `# ${record.content.split('\n')[0]?.slice(0, 80) ?? '记忆铭牌'}`,
+    `# ${record.content.split('\n')[0]?.slice(0, 80) ?? message('misc.mirrorUntitled')}`,
     '',
     record.content,
     '',
-    '## 走廊',
+    message('misc.mirrorCorridorSection'),
     '',
-    ...(relEdges.length === 0 ? ['（此记忆暂未连接任何走廊）'] : relEdges.map(edge => {
+    ...(relEdges.length === 0 ? [message('misc.mirrorNoEdges')] : relEdges.map(edge => {
       const other = edge.from === record.id ? edge.to : edge.from
       const direction = edge.from === record.id ? '→' : '←'
-      return `- ${direction} \`${other.slice(0, 8)}\`（${edge.type}）`
+      return message('misc.mirrorEdgeLine', { direction, id: other.slice(0, 8), type: edge.type })
     })),
     '',
   ].join('\n')
@@ -197,9 +198,10 @@ function summarizeRooms(records: readonly MemoryRecord[]): MirrorRoomSummary[] {
  * 把一份 exportAll 数据写入镜像目录。
  * @param rootDir - 镜像根目录（通常 `${exportDir}/mirror/<scope>/`，由调用方拼）。
  * @param data - exportAll 的产物（含 records + edges）。
+ * @param language - 房间名的显示语言（目录名仍用 kind 原值，保持路径跨语言稳定）。
  * @returns 写入摘要（rootDir / fileCount / rooms）。
  */
-export async function writeMirror(rootDir: string, data: ExportData): Promise<MirrorReport> {
+export async function writeMirror(rootDir: string, data: ExportData, language: EngramLanguage): Promise<MirrorReport> {
   const scope = (data.records[0]?.scope ?? 'user') as EngramScope
   await mkdir(rootDir, { recursive: true, mode: 0o700 })
   const rooms = summarizeRooms(data.records)
@@ -221,7 +223,7 @@ export async function writeMirror(rootDir: string, data: ExportData): Promise<Mi
     await writeFile(join(roomDir, fileName), renderMemory(record, data.edges), { mode: 0o600 })
     fileCount += 1
   }
-  await writeFile(join(rootDir, '_index.md'), renderIndex(scope, data, rooms), { mode: 0o600 })
+  await writeFile(join(rootDir, '_index.md'), renderIndex(scope, data, rooms, language), { mode: 0o600 })
   await writeFile(join(rootDir, '_meta.json'), renderMeta(scope, data, rooms), { mode: 0o600 })
   fileCount += 2
   // P1-4 借阅归还清单：scope=shared 时附 share-manifest.json。

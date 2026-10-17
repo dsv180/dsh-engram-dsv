@@ -13,6 +13,7 @@ import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAU
 import { assignSlot } from '../palace/slots.ts'
 import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
+import { message } from '../i18n/messages.ts'
 // 余弦相似度：store 检索与巩固聚类共享 src/vec.ts 的单一实现（维度不匹配告警一次）。
 import { cosine } from '../vec.ts'
 import type {
@@ -28,8 +29,9 @@ import type {
 } from '../types.ts'
 import type { EngramStore, RoomState } from './interface.ts'
 
-/** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。 */
-const SCHEMA_VERSION = 12
+/** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。
+ *  v12→v13 是纯数据迁移（历史房名归一化），但同样借版本号作为「只跑一次」的开关。 */
+const SCHEMA_VERSION = 13
 /** 增量迁移表：key 为起始版本，value 为升到下一版本的 SQL（可多语句）。
  *  v2 → v3：nodes 补可空列 outcome（使用效果回报）。
  *  v3 → v4：新增 nodes_revisions 修订表（update 归档旧条目时的内容快照）。
@@ -53,7 +55,11 @@ const SCHEMA_VERSION = 12
  *  v11 → v12：observations 巩固信念表——辅助 LLM 从多条原始记忆巩固出的一句话信念，
  *   sources_json 证据 id 列表 + proof_count 证据数（去重并集持续累积），status 三态
  *   active/stale/refuted 支持新鲜度复核；embedding 支持近邻归并（同主题并入同一条而非
- *   重复新增）。与 nodes 无外键（源记忆可被归档/遗忘，证据链只保留 id 引用）。 */
+ *   重复新增）。与 nodes 无外键（源记忆可被归档/遗忘，证据链只保留 id 引用）。
+ *  v12 → v13：历史房名归一化——0.8.12 及更早把**显示名**写进 slot_room（「事实厅」），
+ *   语言中立 id 启用后同一逻辑房会裂成两间（容量 9 变 18、tour_routes 按 room 断开）。
+ *   升级时一次性改写为 id，含扩建房（「事实厅-2」→「fact-2」）；已经是 id 的库零行改动，
+ *   SQL 自身幂等。手动脚本 scripts/migrate-room-ids.mjs 保留为兜底。 */
 const MIGRATIONS: Readonly<Record<string, string>> = {
   '2': 'ALTER TABLE nodes ADD COLUMN outcome TEXT',
   '3': `CREATE TABLE IF NOT EXISTS nodes_revisions (
@@ -100,6 +106,13 @@ const MIGRATIONS: Readonly<Record<string, string>> = {
     sources_json TEXT NOT NULL, proof_count INTEGER NOT NULL, embedding BLOB,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_validated_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS observations_status ON observations (status, proof_count, updated_at);`,
+  // 数据迁移而非结构迁移：只改已有行，列与索引早在 v6 就位。前缀替换即可——
+  // 房名只会出现在 slot_room 开头，扩建后缀是「-<n>」，不会在串内二次命中。
+  '12': `UPDATE nodes SET slot_room = replace(slot_room, '事实厅', 'fact') WHERE slot_room LIKE '事实厅%';
+    UPDATE nodes SET slot_room = replace(slot_room, '偏好阁', 'preference') WHERE slot_room LIKE '偏好阁%';
+    UPDATE nodes SET slot_room = replace(slot_room, '决策堂', 'decision') WHERE slot_room LIKE '决策堂%';
+    UPDATE nodes SET slot_room = replace(slot_room, '往事廊', 'episode') WHERE slot_room LIKE '往事廊%';
+    UPDATE nodes SET slot_room = replace(slot_room, '技法坊', 'skill') WHERE slot_room LIKE '技法坊%';`,
 }
 /** RRF 融合常数：score = Σ 1/(K + rank)。 */
 const RRF_K = 60
@@ -444,13 +457,13 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     let version = Number(versionRow.value)
     if (!Number.isInteger(version) || version > SCHEMA_VERSION) {
       db.close()
-      throw new EngramError('SCHEMA_INCOMPATIBLE', `engram 数据库 schema 版本 ${versionRow.value} 高于插件支持的 ${SCHEMA_VERSION}：请升级插件或备份后删除旧库文件（${path}）`)
+      throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaVersionTooNew', { found: versionRow.value, supported: SCHEMA_VERSION, path }))
     }
     while (version < SCHEMA_VERSION) {
       const migration = MIGRATIONS[String(version)]
       if (migration === undefined) {
         db.close()
-        throw new EngramError('SCHEMA_INCOMPATIBLE', `engram 数据库 schema 版本 ${version} 无法升到 ${SCHEMA_VERSION}（缺迁移步骤）：请备份并删除旧库文件（${path}）后重试`)
+        throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaMigrationMissing', { found: version, supported: SCHEMA_VERSION, path }))
       }
       withTransaction(() => {
         // ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS；逐条 ALTER 在执行前探测列存在性
@@ -716,7 +729,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   return {
     async write(input: WriteInput) {
       const content = input.content.trim()
-      if (content === '') throw new EngramError('EMPTY_CONTENT', 'content 不能为空')
+      if (content === '') throw new EngramError('EMPTY_CONTENT', message('store.contentEmpty'))
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
@@ -878,7 +891,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       // 窗口覆盖日期过滤（窗口语义下日期过滤只会截断扩展结果）。
       if (query.around !== undefined) {
         const anchorRow = getRow(query.around)
-        if (anchorRow === undefined) throw new EngramError('NOT_FOUND', `邻近扩展锚点 ${query.around} 不存在`)
+        if (anchorRow === undefined) throw new EngramError('NOT_FOUND', message('store.anchorNotFound', { id: query.around }))
         const window = Math.max(0, Math.floor(query.proximityMs ?? EPISODE_PROXIMITY_MS_DEFAULT))
         const rows = db.prepare(`SELECT * FROM nodes
             WHERE kind = 'episode' AND status = 'active' AND scope IN (${placeholders})
@@ -945,9 +958,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async update(input: UpdateInput) {
       const old = getRow(input.id)
-      if (old === undefined) throw new EngramError('NOT_FOUND', `条目 ${input.id} 不存在`)
+      if (old === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id: input.id }))
       const content = input.content.trim()
-      if (content === '') throw new EngramError('EMPTY_CONTENT', 'content 不能为空')
+      if (content === '') throw new EngramError('EMPTY_CONTENT', message('store.contentEmpty'))
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
@@ -978,7 +991,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async forget(id: MemoryId) {
       const row = getRow(id)
-      if (row === undefined) throw new EngramError('NOT_FOUND', `条目 ${id} 不存在`)
+      if (row === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id }))
       sqlSetStatus.run('forgotten', Date.now(), id)
       sqlLog.run(Date.now(), 'forget', id, null)
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
@@ -986,7 +999,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async forgetWithTombstone(id: MemoryId, tombstone: ForgettingTombstone) {
       const row = getRow(id)
-      if (row === undefined) throw new EngramError('NOT_FOUND', `条目 ${id} 不存在`)
+      if (row === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id }))
       const at = Date.now()
       // 墓志铭三问脱敏清洗（避免闭馆时把会话密钥一并封进 op_log）。
       const cleaned = {
@@ -1130,14 +1143,14 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     },
 
     async saveProfileBlock(scope: EngramScope, expectedVersion: number | undefined, content: string, source: ProfileBlockVersion['source']): Promise<ProfileBlock> {
-      if (content.trim() === '') throw new EngramError('EMPTY_CONTENT', '画像 block 内容不能为空')
+      if (content.trim() === '') throw new EngramError('EMPTY_CONTENT', message('store.profileContentEmpty'))
       const current = sqlProfileBlockGet.get(scope) as unknown as { version: number } | undefined
       // 乐观锁：未带版本仅允许首次创建；带版本必须与当前一致（并发编辑 loud 失败）。
       if (current === undefined && expectedVersion !== undefined) {
-        throw new EngramError('VERSION_CONFLICT', `画像 block 不存在（${scope}），不能带 expectedVersion=${String(expectedVersion)} 编辑；先传 undefined 创建`)
+        throw new EngramError('VERSION_CONFLICT', message('store.profileBlockMissing', { scope, expected: String(expectedVersion) }))
       }
       if (current !== undefined && expectedVersion !== current.version) {
-        throw new EngramError('VERSION_CONFLICT', `画像 block 版本冲突（${scope}）：当前 v${String(current.version)}，请求基于 v${String(expectedVersion)}；请重读最新版本后再改`)
+        throw new EngramError('VERSION_CONFLICT', message('store.profileVersionConflict', { scope, current: String(current.version), expected: String(expectedVersion) }))
       }
       const nextVersion = current === undefined ? 1 : current.version + 1
       const now = Date.now()
@@ -1176,7 +1189,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async restore(id: MemoryId) {
       const row = getRow(id)
-      if (row === undefined) throw new EngramError('NOT_FOUND', `条目 ${id} 不存在`)
+      if (row === undefined) throw new EngramError('NOT_FOUND', message('store.entryNotFound', { id }))
       sqlSetStatus.run('active', Date.now(), id)
       sqlLog.run(Date.now(), 'restore', id, null)
       return rowToRecord(sqlGet.get(id) as unknown as NodeRow)
@@ -1308,7 +1321,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     async supersedeMany(input: WriteInput, oldIds: readonly MemoryId[]) {
       // oldIds 为空时与 write 等价（insertRecord + 0 次归档循环），不走 this 引用。
       const content = input.content.trim()
-      if (content === '') throw new EngramError('EMPTY_CONTENT', 'content 不能为空')
+      if (content === '') throw new EngramError('EMPTY_CONTENT', message('store.contentEmpty'))
       const id = asMemoryId(randomUUID())
       const at = Date.now()
       withTransaction(() => {
@@ -1340,7 +1353,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         }
         for (const mention of mentions) {
           const name = mention.name.trim()
-          if (name === '') throw new EngramError('EMPTY_ENTITY_NAME', '实体名不能为空（清洗后的提及仍含空名）')
+          if (name === '') throw new EngramError('EMPTY_ENTITY_NAME', message('store.entityNameEmpty'))
           const key = normalizeEntityName(name)
           const hit = byKey.get(key)
           if (hit !== undefined) {
@@ -1471,7 +1484,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       const now = Date.now()
       // 证据 id 去重（保留首次出现顺序）；空证据不允许建信念（调用方也应拦截，此处兜底 loud）。
       const sourceIds = [...new Set(input.sourceIds.map(String))].map(asMemoryId)
-      if (sourceIds.length === 0) throw new EngramError('BAD_INPUT', 'createObservation 要求至少 1 条证据记忆')
+      if (sourceIds.length === 0) throw new EngramError('BAD_INPUT', message('store.observationEvidenceRequired'))
       const stored = input.embedding === undefined ? null : vecToBlob(input.embedding)
       withTransaction(() => {
         sqlObservationInsert.run(

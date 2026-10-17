@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   FIRST_INTERVAL_DAYS, INITIAL_EASE, MIN_EASE, SECOND_INTERVAL_DAYS, initialSchedule, isDue, nextSchedule,
 } from '../src/review/sm2.ts'
-import { KIND_ROOMS, ROOM_CAPACITY, assignSlot, type RoomOccupancy } from '../src/palace/slots.ts'
+import { KIND_ROOM_IDS, ROOM_CAPACITY, assignSlot, type RoomOccupancy } from '../src/palace/slots.ts'
 import { PLACARD_LOW_THRESHOLD, placardImprovementHint, scorePlacard } from '../src/imagery/score.ts'
 import type { ReviewSchedule } from '../src/types.ts'
 
@@ -66,37 +66,37 @@ describe('SM-2 间隔重复调度', () => {
 describe('排桩（地点法）', () => {
   it('kind 映射固定房间，序号从 1 起递增', () => {
     const first = assignSlot('fact', {})
-    expect(first).toEqual({ slot: { room: KIND_ROOMS.fact, index: 1 }, openedNewRoom: false })
-    const occupancy: Record<string, RoomOccupancy> = { [KIND_ROOMS.fact]: { count: 3, maxIndex: 3 } }
-    expect(assignSlot('fact', occupancy).slot).toEqual({ room: KIND_ROOMS.fact, index: 4 })
+    expect(first).toEqual({ slot: { room: KIND_ROOM_IDS.fact, index: 1 }, openedNewRoom: false })
+    const occupancy: Record<string, RoomOccupancy> = { [KIND_ROOM_IDS.fact]: { count: 3, maxIndex: 3 } }
+    expect(assignSlot('fact', occupancy).slot).toEqual({ room: KIND_ROOM_IDS.fact, index: 4 })
   })
 
   it('满员（9）开「房名-2」，新房从 1 起', () => {
-    const full: Record<string, RoomOccupancy> = { [KIND_ROOMS.decision]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY } }
+    const full: Record<string, RoomOccupancy> = { [KIND_ROOM_IDS.decision]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY } }
     const next = assignSlot('decision', full)
-    expect(next.slot).toEqual({ room: `${KIND_ROOMS.decision}-2`, index: 1 })
+    expect(next.slot).toEqual({ room: `${KIND_ROOM_IDS.decision}-2`, index: 1 })
     expect(next.openedNewRoom).toBe(true)
     // 二号房也满员：继续开三号房。
     const bothFull: Record<string, RoomOccupancy> = {
-      [KIND_ROOMS.decision]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY },
-      [`${KIND_ROOMS.decision}-2`]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY },
+      [KIND_ROOM_IDS.decision]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY },
+      [`${KIND_ROOM_IDS.decision}-2`]: { count: ROOM_CAPACITY, maxIndex: ROOM_CAPACITY },
     }
-    expect(assignSlot('decision', bothFull).slot).toEqual({ room: `${KIND_ROOMS.decision}-3`, index: 1 })
+    expect(assignSlot('decision', bothFull).slot).toEqual({ room: `${KIND_ROOM_IDS.decision}-3`, index: 1 })
   })
 
   it('空桩不回收：序号取 maxIndex+1 而非 count+1', () => {
     // 曾有 5 桩，其中 2 桩被遗忘腾出（count=3），下一个仍应落在 6 号位。
-    const occupancy: Record<string, RoomOccupancy> = { [KIND_ROOMS.episode]: { count: 3, maxIndex: 5 } }
-    expect(assignSlot('episode', occupancy).slot).toEqual({ room: KIND_ROOMS.episode, index: 6 })
+    const occupancy: Record<string, RoomOccupancy> = { [KIND_ROOM_IDS.episode]: { count: 3, maxIndex: 5 } }
+    expect(assignSlot('episode', occupancy).slot).toEqual({ room: KIND_ROOM_IDS.episode, index: 6 })
   })
 
   it('不同 kind 互不干扰，各自落在自己的房间', () => {
     const occupancy: Record<string, RoomOccupancy> = {
-      [KIND_ROOMS.fact]: { count: 9, maxIndex: 9 },
-      [KIND_ROOMS.skill]: { count: 2, maxIndex: 2 },
+      [KIND_ROOM_IDS.fact]: { count: 9, maxIndex: 9 },
+      [KIND_ROOM_IDS.skill]: { count: 2, maxIndex: 2 },
     }
-    expect(assignSlot('fact', occupancy).slot).toEqual({ room: `${KIND_ROOMS.fact}-2`, index: 1 })
-    expect(assignSlot('skill', occupancy).slot).toEqual({ room: KIND_ROOMS.skill, index: 3 })
+    expect(assignSlot('fact', occupancy).slot).toEqual({ room: `${KIND_ROOM_IDS.fact}-2`, index: 1 })
+    expect(assignSlot('skill', occupancy).slot).toEqual({ room: KIND_ROOM_IDS.skill, index: 3 })
   })
 })
 

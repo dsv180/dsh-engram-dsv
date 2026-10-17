@@ -5,6 +5,9 @@
  */
 
 import type { EngramScope, MemoryRecord } from './types.ts'
+import type { EngramLanguage } from './i18n/language.ts'
+import { roomLabel } from './i18n/rooms.ts'
+import { messageIn } from './i18n/messages.ts'
 
 /** 单条翻新建议的动议。 */
 export type RefurbAction = 'merge' | 'demote' | 'review' | 'split'
@@ -47,9 +50,13 @@ export const DEFAULT_REFURB_OPTIONS: RefurbOptions = {
  * 扫描一组 active 条目，按规则生成翻新建议。
  * 仅扫描同 scope 内的内容；跨 scope 的相似合并留给上层判定。
  * active 条目少于 `options.minActive` 时返回空列表：小库样本太少，逐条命中噪声大于价值。
+ * @param records - 候选条目。
+ * @param language - 房间名的显示语言（房间里存的是标识符，不是文本）。
+ * @param options - 阈值（缺省用 DEFAULT_REFURB_OPTIONS）。
  */
 export function gatherRefurbSuggestions(
   records: readonly MemoryRecord[],
+  language: EngramLanguage,
   options: RefurbOptions = DEFAULT_REFURB_OPTIONS,
 ): readonly RefurbSuggestion[] {
   const suggestions: RefurbSuggestion[] = []
@@ -72,7 +79,11 @@ export function gatherRefurbSuggestions(
         primaryId: record.id,
         candidates: [],
         scope: record.scope,
-        reason: `重要性 ${record.importance.toFixed(2)} < ${options.demoteBelow} 且 ${Math.floor(daysSinceAccess)} 天未访问，建议降级为 archived。`,
+        reason: messageIn(language, 'misc.refurbDemoteReason', {
+          importance: record.importance.toFixed(2),
+          threshold: options.demoteBelow,
+          days: Math.floor(daysSinceAccess),
+        }),
         confidence: 0.7,
       })
     }
@@ -99,7 +110,7 @@ export function gatherRefurbSuggestions(
             primaryId: record.id,
             candidates: dupes.map(d => d.id),
             scope,
-            reason: `与 ${dupes.length} 条记忆内容前 20 字重复，建议蒸馏合并。`,
+            reason: messageIn(language, 'misc.refurbMergeReason', { count: dupes.length }),
             confidence: 0.6,
           })
         }
@@ -114,7 +125,7 @@ export function gatherRefurbSuggestions(
         primaryId: record.id,
         candidates: [],
         scope: record.scope,
-        reason: `重要性 ${record.importance.toFixed(2)} 但从未被参观，可能埋没在走廊，建议复习。`,
+        reason: messageIn(language, 'misc.refurbReviewReason', { importance: record.importance.toFixed(2) }),
         confidence: 0.5,
       })
     }
@@ -127,7 +138,7 @@ export function gatherRefurbSuggestions(
         primaryId: record.id,
         candidates: [],
         scope: record.scope,
-        reason: `内容长度 ${record.content.length} > 400，建议拆为多条独立记忆。`,
+        reason: messageIn(language, 'misc.refurbSplitReason', { length: record.content.length }),
         confidence: 0.6,
       })
     }
@@ -136,15 +147,15 @@ export function gatherRefurbSuggestions(
   for (const record of active) {
     const score = record.imageryScore
     if (score !== undefined && score >= 0.5) continue
-    const slot = record.slot === undefined ? '' : `${record.slot.room}#${record.slot.index} `
+    const slot = record.slot === undefined ? '' : `${roomLabel(record.slot.room, language)}#${record.slot.index} `
     suggestions.push({
       action: 'review',
       primaryId: record.id,
       candidates: [],
       scope: record.scope,
       reason: score === undefined
-        ? `${slot}未挂门牌：宫殿纪律要求每个标记唯一、差异化、带日期，建议用 engram_update 的 placard 参数补挂。`
-        : `${slot}门牌得分 ${score.toFixed(2)} < 0.5（不合唯一/差异化/带日期纪律），建议重写铭牌。`,
+        ? messageIn(language, 'misc.refurbNoPlacardReason', { slot })
+        : messageIn(language, 'misc.refurbLowPlacardReason', { slot, score: score.toFixed(2) }),
       confidence: 0.4,
     })
   }

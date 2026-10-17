@@ -10,8 +10,9 @@ const batch = (...refs: string[]): EvidenceBatch => ({ batchId: 'batch-1', refs:
 
 describe('evidenceRefOf', () => {
   it('已排桩用「scope/房间#桩位」，未排桩用「scope/#id 前 8 位」', () => {
-    expect(evidenceRefOf('user', 'abcdefgh1234', { room: 'episode', index: 3 })).toBe('user/episode#3')
-    expect(evidenceRefOf('project', 'abcdefgh1234', undefined)).toBe('project/#abcdefgh')
+    // ref 展示房间名 по языку вывода: имя комнаты — подпись для показа, а не данные.
+    expect(evidenceRefOf('user', 'abcdefgh1234', { room: 'episode', index: 3 }, 'en')).toBe('user/Episode Gallery#3')
+    expect(evidenceRefOf('project', 'abcdefgh1234', undefined, 'en')).toBe('project/#abcdefgh')
   })
 })
 
