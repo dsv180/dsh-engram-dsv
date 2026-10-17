@@ -371,7 +371,11 @@ export interface WorkspacesLike {
 
 /** 宿主会话清单服务窄视图（可选注入；判定当前工作区只看当前会话 id）。 */
 export interface SessionsLike {
-  readonly list: ObservableLike<{ readonly current?: string | undefined }>
+  readonly list: ObservableLike<{
+    readonly current?: string | undefined
+    /** 宿主新版本暴露 byId 映射（会话 id → 行含 retainedBy 持有计数）；旧版缺席。 */
+    readonly byId?: Readonly<Record<string, { readonly id: string; readonly retainedBy?: { readonly mainView?: number } }>>
+  }>
 }
 
 /** 空清单常量：useSyncExternalStore 的 getSnapshot 必须返回稳定引用。 */
@@ -409,7 +413,17 @@ function useCurrentWorkspace(workspaces: WorkspacesLike | undefined, sessions: S
     (onChange: () => void): (() => void) => subscribeSnapshot(sessions?.list, onChange),
     [sessions],
   )
-  const currentSessionId = useSyncExternalStore(subscribeSessions, () => sessions?.list.getSnapshot().current ?? null)
+  const currentSessionId = useSyncExternalStore(subscribeSessions, () => {
+    const snapshot = sessions?.list.getSnapshot()
+    // #18：「current」在侧栏面板打开时会被宿主清空，follow 就掉回进程默认——改从
+    // `byId` 找主视图仍持有的会话（`retainedBy.mainView > 0`），current 只作兜底。
+    const byId = snapshot?.byId
+    if (byId !== undefined) {
+      const main = Object.values(byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)
+      if (main !== undefined) return main.id
+    }
+    return snapshot?.current ?? null
+  })
   const items = useSyncExternalStore(subscribeWorkspaces, () => workspaces?.list.getSnapshot().items ?? NO_WORKSPACES)
   const available = workspaces !== undefined && sessions !== undefined
   if (!available || currentSessionId === null) return { workspace: null, available }
