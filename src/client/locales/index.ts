@@ -20,6 +20,7 @@ export type EngramKey =
   | 'projectSwitch'
   | 'projectMemories'
   | 'refresh'
+  | 'language'
   | 'exportMd'
   | 'exportJson'
   | 'export'

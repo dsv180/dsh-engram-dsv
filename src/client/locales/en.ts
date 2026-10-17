@@ -18,6 +18,7 @@ export const en: Record<EngramKey, string> = {
   projectSwitch: 'Project palace source',
   projectMemories: '{n} memories',
   refresh: 'Revisit',
+  language: 'Language',
   exportMd: 'Export MD',
   exportJson: 'Export JSON',
   export: 'Export',

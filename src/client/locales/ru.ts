@@ -20,6 +20,7 @@ export const ru: Record<EngramKey, string> = {
   projectSwitch: 'Источник дворца проекта',
   projectMemories: '{n} воспоминаний',
   refresh: 'Обновить',
+  language: 'Язык',
   exportMd: 'Экспорт MD',
   exportJson: 'Экспорт JSON',
   export: 'Экспорт',

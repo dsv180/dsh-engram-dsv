@@ -3036,15 +3036,17 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             onClick={() => { reload(); refreshDue() }}>
             <Icon name="refresh" className={styles.brandIcon} />
           </button>
-          {/* 语言段控：面板级中英覆盖，与宿主语言设置相互独立；选择持久化在本机 */}
-          <div className={styles.langSeg} role="group" aria-label="Language">
-            <button type="button" className={lang === 'zh' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('zh') }}>中</button>
-            <button type="button" className={lang === 'en' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('en') }}>EN</button>
-            <button type="button" className={lang === 'ru' ? `${styles.langOpt} ${styles.langOn}` : styles.langOpt}
-              onClick={() => { setLang('ru') }}>RU</button>
-          </div>
+          {/* 语言下拉：面板级中英俄覆盖，与宿主语言设置相互独立；选择持久化在本机。
+              用列表而不是三个并排按钮：误点只会展开列表、不会当场换掉语言，且将来
+              语言变多时不会把顶栏撑开、挤坏排版。选项写各自语言的本名，任何语言下
+              都能认出自己那一条。 */}
+          <select className={`${styles.input} ${styles.langSelect}`} value={lang}
+            aria-label={t('language')}
+            onChange={(event) => { setLang(event.target.value as PanelLang) }}>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+          </select>
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
       </div>
