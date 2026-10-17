@@ -29,6 +29,9 @@ export const UPSTREAM_REPO = 'kenz1117/dsh-engram'
 const NPM_PACKAGE = '@kenz1117/dsh-engram'
 /** 缓存有效期：6 小时。 */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
+/** 失败结果的缓存有效期：5 分钟。Ошибка (особенно лимит GitHub) почти всегда временная —
+ *  держать её 6 часов значит показывать красную плашку по уже несуществующей причине. */
+const FAILURE_TTL_MS = 5 * 60 * 1000
 /** 分支上限：每次检查最多看 8 个分支（每个分支一次 commits 请求，保护 GitHub 限额）。 */
 const MAX_BRANCHES = 8
 /** 单次请求超时。GitHub/npm 正常都在 1 秒内，8 秒足够，也不会把面板拖死。 */
@@ -91,8 +94,11 @@ export interface UpdateCheckPayload {
   /** 产出 upstream/fork 那次联网的时刻；缓存命中时保持原值（不是本刻）。 */
   readonly checkedAt: number
   readonly fromCache: boolean
-  /** 已本地化、可直接显示的失败说明；全部成功时为 null。 */
+  /** 已本地化、可直接显示的失败说明：только когда **ни один** источник не ответил. */
   readonly error: string | null
+  /** 部分失败（源码级注释见 performCollection）：источники, которые не ответили, но данные есть.
+   *  Плашку не красят — она показывает статус обновления, а не качество связи с GitHub. */
+  readonly notes: readonly string[]
   readonly build: UpdateBuildInfo
   readonly upstream: UpdateUpstreamView
   readonly fork: UpdateForkView
@@ -246,10 +252,27 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Токен GitHub из окружения (необязательный). Без него api.github.com даёт 60 запросов в час
+ * на IP, и один неудачный заход закрывает проверку обновлений на весь час; с токеном — 5000.
+ * Токен никуда не пишется: читается из process.env в момент запроса.
+ */
+function githubToken(): string {
+  return (process.env['GITHUB_TOKEN'] ?? process.env['GH_TOKEN'] ?? '').trim()
+}
+
+/** Заголовки запроса: токен подставляется только для api.github.com, чтобы не утёк на npm. */
+function requestHeaders(url: string): Record<string, string> {
+  const headers: Record<string, string> = { accept: 'application/json', 'user-agent': 'dsh-engram-update-check' }
+  const token = githubToken()
+  if (token !== '' && url.startsWith('https://api.github.com/')) headers['authorization'] = `Bearer ${token}`
+  return headers
+}
+
 /** 带超时与 JSON 解析的 GET：非 2xx 抛错，由调用方降级成 error 文本。 */
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'dsh-engram-update-check' },
+    headers: requestHeaders(url),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   if (!response.ok) throw new Error(`HTTP ${String(response.status)} ${url}`)
@@ -375,10 +398,16 @@ async function performCollection(): Promise<UpdateCheckPayload> {
   const fork = await collectFork(build.builtAt)
   // 同一原因重复出现（8 个分支同时被限流）只留一行，避免面板刷屏。
   const failures = [...new Set([...upstream.failures, ...fork.failures])]
+  // Частичный сбой ≠ сбой проверки. npm отдаёт «есть ли новее» и без GitHub, поэтому
+  // краснеть из-за лимита api.github.com нельзя: иначе плашка врёт о состоянии обновлений.
+  const useful = upstream.view.npmLatest !== null
+    || upstream.view.latestTag !== null
+    || fork.view.refs.length > 0
   return {
     checkedAt: Date.now(),
     fromCache: false,
-    error: failures.length === 0 ? null : failures.join('; '),
+    error: useful || failures.length === 0 ? null : failures.join('; '),
+    notes: failures,
     build,
     upstream: upstream.view,
     fork: fork.view,
@@ -395,7 +424,9 @@ async function performCollection(): Promise<UpdateCheckPayload> {
  */
 export async function collectUpdateCheck(options: UpdateCheckOptions = {}): Promise<UpdateCheckPayload> {
   const refresh = options.refresh === true
-  if (!refresh && cache !== null && Date.now() - cache.checkedAt < CACHE_TTL_MS) {
+  // Неудачный результат живёт в кэше недолго: причина (лимит GitHub, обрыв) обычно проходит.
+  const ttl = cache !== null && cache.error !== null ? FAILURE_TTL_MS : CACHE_TTL_MS
+  if (!refresh && cache !== null && Date.now() - cache.checkedAt < ttl) {
     return { ...cache, fromCache: true }
   }
   const payload = await performCollection()

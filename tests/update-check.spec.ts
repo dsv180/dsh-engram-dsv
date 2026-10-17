@@ -204,6 +204,23 @@ describe('collectUpdateCheck', () => {
     expect(second.checkedAt).toBe(first.checkedAt)
   })
 
+  it('неудачный результат кэшируется короче успешного: 5 минут вместо 6 часов', async () => {
+    // Причина ошибки (лимит GitHub, обрыв) обычно проходит быстро; держать красную плашку
+    // шесть часов по уже несуществующей причине — это и был дефект.
+    let clock = Date.parse('2026-10-17T00:00:00Z')
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const fetchMock = vi.fn(async () => { throw new Error('network down') })
+    vi.stubGlobal('fetch', fetchMock)
+    const first = await collectUpdateCheck({ refresh: true })
+    expect(first.error).not.toBeNull()
+    const callsAfterFirst = fetchMock.mock.calls.length
+    clock += 6 * 60 * 1000
+    const retried = await collectUpdateCheck()
+    expect(retried.fromCache).toBe(false)
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst)
+    nowSpy.mockRestore()
+  })
+
   it('refresh 强制联网，绕过缓存', async () => {
     const fetchMock = stubNetwork()
     await collectUpdateCheck({ refresh: true })
@@ -237,10 +254,20 @@ describe('collectUpdateCheck', () => {
       throw new Error(`unexpected url: ${url}`)
     }))
     const payload = await collectUpdateCheck({ refresh: true })
-    expect(payload.error).toContain('npm 503')
+    // 部分 сбой: теги и ветки ответили, значит проверка состоялась — ошибки нет,
+    // а причина (npm 503) уходит в notes и на статус обновления не влияет.
+    expect(payload.error).toBeNull()
+    expect(payload.notes.join('; ')).toContain('npm 503')
     expect(payload.upstream.npmLatest).toBeNull()
     expect(payload.upstream.latestTag).toBe('v99.0.0')
     expect(payload.upstream.ahead).toBe(true)
     expect(payload.fork.refs.map(ref => ref.ref)).toEqual(['main'])
+  })
+
+  it('полный сбой: error содержит причину, notes тоже (частичный и полный сбой не путаются)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
+    const payload = await collectUpdateCheck({ refresh: true })
+    expect(payload.error).not.toBeNull()
+    expect(payload.notes.join('; ')).toContain('network down')
   })
 })

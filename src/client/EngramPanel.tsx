@@ -341,6 +341,8 @@ interface UpdateView {
   readonly checkedAt: number
   readonly fromCache: boolean
   readonly error: string | null
+  /** Частично недоступные источники (npm ответил, GitHub — нет): статус не меняют. */
+  readonly notes: readonly string[]
   readonly build: {
     readonly version: string
     readonly upstreamBase: string
@@ -405,6 +407,9 @@ function normalizeUpdateCheck(raw: unknown): UpdateView {
     checkedAt: numberField(root['checkedAt']),
     fromCache: boolField(root['fromCache']),
     error: optionalField(root['error']),
+    notes: Array.isArray(root['notes'])
+      ? root['notes'].filter((item): item is string => typeof item === 'string')
+      : [],
     build: {
       version: field(build['version']),
       upstreamBase: field(build['upstreamBase']),
@@ -2920,6 +2925,10 @@ function BuildUpdateCard({ t, view, transportError, checking, onCheck }: {
       </dl>
 
       {error !== null && <p className={`${styles.updateNote} ${styles.updateNoteWarn}`}>{error}</p>}
+      {/* Частичный сбой: данные есть, но часть источников не ответила — показываем списком. */}
+      {error === null && (view?.notes ?? []).map(note => (
+        <p key={note} className={styles.updateNote}>{note}</p>
+      ))}
       {upstream !== undefined && upstream.ahead && (
         <p className={`${styles.updateNote} ${styles.updateNoteWarn}`}>
           {t('updateUpstreamAhead', { latest: upstream.npmLatest ?? upstream.latestTag ?? '—', base: build?.upstreamBase ?? '—' })}
@@ -3159,8 +3168,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const updateNewer = update !== null && update.checkedAt > 0
     && (update.upstream.ahead || update.fork.newerThanBuild.length > 0)
 
+  /** Host自报的失败（`error` — строка при сбое, null при успехе). Плашка краснеет только по нему
+      либо по ошибке самого запроса; успешная проверка с null НЕ должна считаться ошибкой. */
+  const hostError = update !== null && typeof update.error === 'string' && update.error !== ''
   /** 检查失败（面板网络/解析或 host 自报）→ 红色，优先级最高。 */
-  const chipError = updateError !== null || (update !== null && update.error !== undefined)
+  const chipError = updateError !== null || hostError
   /** 成功检查过且 обновляться не надо → 绿色。 */
   const chipUpToDate = !chipError && !updateNewer && update !== null && update.checkedAt > 0
   /** 文本 статуса для тултипа плашки; цвет задаётся классом cls. */
@@ -3171,6 +3183,9 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       : chipUpToDate
         ? { text: t('updateUpToDate'), cls: styles.updateChipTipOk }
         : { text: t('updateNeverChecked'), cls: undefined }
+  /** Источники, которые не ответили, но на статус не влияют (например, лимит GitHub):
+      показываем их припиской в тултипе, чтобы «проверено» не выглядело враньём. */
+  const chipNotes = update !== null && update.notes.length > 0 ? ` · ${update.notes.join('; ')}` : ''
 
   /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
   const openReview = useCallback((id: string): void => {
@@ -3323,6 +3338,10 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           </div>
         </>
       )}
+      {/* Липкая шапка (см. .topBar в panel.module.css): заголовок и вкладки остаются
+          в поле зрения при прокрутке — .panelRoot сам владеет вертикальным скроллом,
+          поэтому sticky отсчитывается от него. */}
+      <div className={styles.topBar}>
       {/* Header：单行两端对齐，按设置弹窗 ~600px 内容区设计，无任何品牌装饰。
           左：scope 三宫格（当前 scope 在此高亮）；右：今日到期角标 + 重访 + 导出。 */}
       <div className={styles.header}>
@@ -3391,11 +3410,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                   : chipUpToDate
                     ? `${styles.updateChip} ${styles.updateChipOk}`
                     : styles.updateChip}
-                aria-label={chipTip.text} tabIndex={0}>
+                aria-label={chipTip.text + chipNotes} tabIndex={0}>
                 {update.build.version}
                 {updateNewer && <span className={styles.updateChipDot} aria-hidden="true" />}
                 <span className={`${styles.updateChipTip} ${chipTip.cls}`} role="tooltip">
-                  {t('updateChipTitle', { version: update.build.version })} · {chipTip.text}
+                  {t('updateChipTitle', { version: update.build.version })} · {chipTip.text}{chipNotes}
                 </span>
               </span>
             </span>
@@ -3465,6 +3484,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {/* 有新版本：tab 标签上一个小点（克制到不弹窗、不 toast 的程度）。 */}
           {updateNewer && <span className={styles.tabDot} aria-hidden="true" />}
         </button>
+      </div>
       </div>
 
       {activeTab === 'library' && (
