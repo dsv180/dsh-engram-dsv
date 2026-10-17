@@ -212,6 +212,17 @@ pnpm typecheck
 pnpm bundle
 ```
 
+### Checks before a PR
+
+```sh
+node scripts/check-messages.mjs   # every key the code asks for is declared, nothing is orphaned, zh/en/ru aligned
+node scripts/check-patterns.mjs   # secret redaction and chit-chat rejection behave on every declared language
+pnpm typecheck
+pnpm test
+```
+
+The first two run on a bare checkout, and CI (`.github/workflows/checks.yml`) runs exactly those two, plus `pnpm install --frozen-lockfile --ignore-scripts`. `typecheck`, `test` and `bundle` cannot run there: the `@deepseek-ai/*` peers are not on npm (see `.npmrc`), so they resolve only inside a `deepseek-harness` workspace. Run all four locally before opening a PR — a dictionary mistake fails loudly on your machine, but a locale-dependent assertion (one that asserts Chinese text while `language: 'auto'` resolves to the developer's own locale) fails only on someone else's.
+
 Two notes on install and build scripts:
 
 - **GitHub source quick-install** (`dsh plugin add github:kenz1117/dsh-engram`) fetches sources; `prepare` runs `pnpm bundle` on the spot when `lib/` is missing. If that build fails, read the bundle section of the prepare log — not the host's misleading "no entry point".
