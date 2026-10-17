@@ -3,28 +3,32 @@
  * @module @kenz1117/dsh-engram/vec
  */
 
-/** 维度不匹配告警只发一次（模块级标记）；上游单一嵌入模型下维度恒等，永不触发。 */
-let warnedDimensionMismatch = false
+import { message } from './i18n/messages.ts'
+import { EngramError } from './types.ts'
 
 /**
  * 余弦相似度；任一向量零范数时返回 0。
- * 嵌入器当前为单一硬编码模型，维度恒等；一旦嵌入器可配置且两向量维度不同，
- * 逐维截断比较会产出「看起来像相似度的数」——这里响亮告警一次（不抛错，
- * 检索照常降级），供换模型时第一时间发现存量向量与新模型维度不一致。
+ *
+ * 维度不同的两个向量不比较，而是抛错。逐维截断会得到一个「看起来像相似度」的数，
+ * 而嵌入器现在是可配置的部署属性：换模型之后存量向量与新向量维度不同是常规情形，
+ * 不是意外。与其静默降级、让人按错误的相似度做合并决定，不如在第一次比较时就说清
+ * 两边的维度——错误原样交给上层，人就有机会改回模型，或用新模型重建向量。
  * @param a - 向量 A。
  * @param b - 向量 B。
  * @returns 余弦相似度，范围约 [-1, 1]；零范数输入返回 0。
+ * @throws EngramError(code=EMBEDDER_DIMENSION_MISMATCH) 两向量维度不同。
  */
 export function cosine(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length && !warnedDimensionMismatch) {
-    warnedDimensionMismatch = true
-    console.warn(`[dsh-engram] cosine dimension mismatch (${String(a.length)} vs ${String(b.length)}): mixed embedder models? retrieval quality is degraded`)
+  if (a.length !== b.length) {
+    throw new EngramError(
+      'EMBEDDER_DIMENSION_MISMATCH',
+      message('store.embedderDimensionMismatch', { expected: b.length, found: a.length }),
+    )
   }
   let dot = 0
   let na = 0
   let nb = 0
-  const len = Math.min(a.length, b.length)
-  for (let i = 0; i < len; i++) {
+  for (let i = 0; i < a.length; i++) {
     dot += a[i]! * b[i]!
     na += a[i]! * a[i]!
     nb += b[i]! * b[i]!
