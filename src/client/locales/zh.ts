@@ -18,6 +18,7 @@ export const zh: Record<EngramKey, string> = {
   projectSwitch: '项目宫殿来源',
   projectMemories: '{n} 条记忆',
   refresh: '重访',
+  language: '语言',
   exportMd: '导出 MD',
   exportJson: '导出 JSON',
   export: '导出',

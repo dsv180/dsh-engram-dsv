@@ -499,13 +499,11 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .refurbConfidence { flex: none; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .refurbExec { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-micro); line-height: 1; flex: none; }
 
-/* ---------- 语言段控 ---------- */
-/* 「中 | EN」两键 ghost 段控：选中态用宿主品牌色淡底；极窄尺寸塞进 Header 按钮组尾端。 */
-.langSeg { display: inline-flex; align-items: center; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); overflow: hidden; flex: none; height: 26px; }
-.langOpt { height: 100%; padding: 0 8px; font-size: 11px; line-height: 1; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; font-family: inherit; }
-.langOpt + .langOpt { border-left: 1px solid var(--dsw-alias-border-l2); }
-.langOpt:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent); }
-.langOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-label-primary); font-weight: 600; }
+/* ---------- 语言下拉 ---------- */
+/* 三种语言用下拉，原因有二：并排段控一点即换（误触就改语言，且不留痕迹），
+   语言数量增加时段控会把按钮组一路拉长、挤坏顶栏排版；列表则只展开、只加一行。
+   外观沿用顶栏既有的 select.input（自绘箭头），这里只定宽。 */
+.langSelect { width: auto; min-width: 96px; flex: none; }
 
 /* ---------- 历史回填 tab ---------- */
 /* 卡内三段（规则 / 估算 / 执行）用分隔线切块，与其它视图的「区块 + 分隔」语言一致，
