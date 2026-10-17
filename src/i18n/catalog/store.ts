@@ -55,6 +55,13 @@ export const zh = {
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试',
 
+  // —— embedder/remote.ts ——
+  'store.embedderRemoteUnreachable': '嵌入端点不可达（{baseUrl}，超时 {timeoutMs} 毫秒）',
+  'store.embedderRemoteHttp': '嵌入端点返回 HTTP {status}{detail}',
+  'store.embedderRemoteCount': '嵌入端点返回 {received} 个向量，而本次请求为 {expected} 个',
+  'store.embedderRemoteCountNa': '非数组',
+  'store.embedderRemoteEmpty': '嵌入端点返回了空向量',
+
   // —— retrieve/budget.ts ——
   'store.budgetDropped': '（另有 {count} 条未展示：缩小查询范围或降低 limit 后重试）',
 } as const
@@ -105,6 +112,13 @@ export const en = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry',
+
+  // —— embedder/remote.ts ——
+  'store.embedderRemoteUnreachable': 'embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)',
+  'store.embedderRemoteHttp': 'embedding endpoint returned HTTP {status}{detail}',
+  'store.embedderRemoteCount': 'embedding endpoint returned {received} vectors instead of the requested {expected}',
+  'store.embedderRemoteCountNa': 'not an array',
+  'store.embedderRemoteEmpty': 'embedding endpoint returned an empty vector',
 
   // —— retrieve/budget.ts ——
   'store.budgetDropped': '({count} more not shown: narrow the query or lower the limit and retry)',

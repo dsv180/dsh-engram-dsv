@@ -150,6 +150,11 @@ before handling this manually, stop the affected hosts and back up every databas
 [dsh-engram] the legacy database already has a migration record ({names}): {pointer}; the database migrated earlier may hold memories of the current directory. {manual}	[dsh-engram] У старой базы уже есть запись о переносе ({names}): {pointer}; в базе, перенесённой ранее, могут быть воспоминания текущего каталога. {manual}
 write-disposition: merge target {id} does not exist	write-disposition: цель слияния {id} не существует
 embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry	Не удалось скачать/загрузить модель эмбеддингов; поиск переведён в режим только по ключевым словам — проверьте сеть и повторите
+embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)	эндпоинт эмбеддингов недоступен ({baseUrl}, таймаут {timeoutMs} мс)
+embedding endpoint returned HTTP {status}{detail}	эндпоинт эмбеддингов вернул HTTP {status}{detail}
+embedding endpoint returned {received} vectors instead of the requested {expected}	эндпоинт эмбеддингов вернул {received} векторов вместо запрошенных {expected}
+not an array	не массив
+embedding endpoint returned an empty vector	эндпоинт эмбеддингов вернул пустой вектор
 ({count} more not shown: narrow the query or lower the limit and retry)	(ещё {count} не показано: сузьте запрос или уменьшите limit и повторите)
 
 // ==== tool ====
