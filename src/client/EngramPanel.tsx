@@ -478,9 +478,17 @@ export interface WorkspacesLike {
   readonly list: ObservableLike<{ readonly items: readonly HostWorkspaceView[] }>
 }
 
-/** 宿主会话清单服务窄视图（可选注入；判定当前工作区只看当前会话 id）。 */
+/** 宿主会话清单服务窄视图（可选注入；判定当前工作区看当前会话 id）。 */
 export interface SessionsLike {
-  readonly list: ObservableLike<{ readonly current?: string | undefined }>
+  readonly list: ObservableLike<{
+    /** 宿主自报的「当前」会话 id（部分版本提供；主面板打开时可能被置空）。 */
+    readonly current?: string | undefined
+    /** 完整会话目录（id → 行）；行的 retainedBy.mainView 标识被主视图保留的会话。 */
+    readonly byId?: Readonly<Record<string, {
+      readonly id: string
+      readonly retainedBy?: Readonly<Record<string, number>> | undefined
+    }>>
+  }>
 }
 
 /** 空清单常量：useSyncExternalStore 的 getSnapshot 必须返回稳定引用。 */
@@ -518,7 +526,19 @@ function useCurrentWorkspace(workspaces: WorkspacesLike | undefined, sessions: S
     (onChange: () => void): (() => void) => subscribeSnapshot(sessions?.list, onChange),
     [sessions],
   )
-  const currentSessionId = useSyncExternalStore(subscribeSessions, () => sessions?.list.getSnapshot().current ?? null)
+  // 「当前」会话 у хоста — сессия, удерживаемая главным видом (retainedBy.mainView).
+  // Это удержание живёт и когда открыта сторонняя панель (дворец памяти поверх чата),
+  // поэтому «следовать активному рабочему пространству» не срывается при открытии панели.
+  // Часть версий хоста отдаёт готовое поле current — используем его как запасной источник.
+  const currentSessionId = useSyncExternalStore(subscribeSessions, () => {
+    const snapshot = sessions?.list.getSnapshot()
+    const byId = snapshot?.byId
+    if (byId !== undefined) {
+      const main = Object.values(byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)
+      if (main !== undefined) return main.id
+    }
+    return snapshot?.current ?? null
+  })
   const items = useSyncExternalStore(subscribeWorkspaces, () => workspaces?.list.getSnapshot().items ?? NO_WORKSPACES)
   const available = workspaces !== undefined && sessions !== undefined
   if (!available || currentSessionId === null) return { workspace: null, available }
@@ -1116,13 +1136,15 @@ interface ProfileBlockView {
  * 只读视图（编辑走 engram_profile_edit 工具，乐观锁在存储层）；scope/project 变化时重载。
  */
 function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 'shared'; project: string | null }): React.ReactElement {
+  const [viewScope, setViewScope] = useState<'user' | 'project' | 'shared'>(scope)
   const [data, setData] = useState<ProfileBlockView | null>(null)
   const [failed, setFailed] = useState(false)
   const [baseVersion, setBaseVersion] = useState<number | null>(null)
   const [targetVersion, setTargetVersion] = useState<number | null>(null)
   useEffect(() => {
     let cancelled = false
-    api<ProfileBlockView>(`profile-block?scope=${scope}`, undefined, true)
+    // forceProject=true инжектит селектор палаты только для project-профиля; user/shared — нет.
+    api<ProfileBlockView>(`profile-block?scope=${viewScope}`, undefined, viewScope === 'project')
       .then((view) => {
         if (cancelled) return
         setData(view)
@@ -1133,18 +1155,32 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
       })
       .catch(() => { if (!cancelled) setFailed(true) })
     return () => { cancelled = true }
-  }, [scope, project])
+  }, [viewScope, project])
+  // Переключатель scope: позволяет смотреть личный / проектный / общий профиль, не меняя общий scope панели.
+  const scopePicker = (
+    <label className={styles.profileScopeRow}>
+      <span className={styles.sectionHint}>{t('profileScopeLabel')}</span>
+      <select className={styles.profileSelect} value={viewScope}
+        onChange={event => setViewScope(event.target.value as 'user' | 'project' | 'shared')}>
+        <option value="user">{t('profileScopeUser')}</option>
+        <option value="project">{t('profileScopeProject')}</option>
+        <option value="shared">{t('profileScopeShared')}</option>
+      </select>
+    </label>
+  )
   if (failed) {
-    return <div className={styles.expandLoading}>{t('profileLoadFailed')}</div>
+    return (
+      <div className={styles.profileScopeWrap}>
+        {scopePicker}
+        <div className={styles.expandLoading}>{t('profileLoadFailed')}</div>
+      </div>
+    )
   }
   if (data === null) {
-    return <div className={styles.expandLoading}>{t('loading')}</div>
-  }
-  if (data.block === null) {
     return (
-      <div className={styles.expandLoading}>
-        <p>{t('profileEmpty')}</p>
-        <p className={styles.sectionHint}>{t('profileEmptyHint')}</p>
+      <div className={styles.profileScopeWrap}>
+        {scopePicker}
+        <div className={styles.expandLoading}>{t('loading')}</div>
       </div>
     )
   }
@@ -1155,48 +1191,58 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
   const diffRows = base !== undefined && target !== undefined ? lineDiff(base.content, target.content) : []
   const hasDiff = diffRows.some(row => row.kind !== 'same')
   return (
-    <div className={styles.profileCard}>
-      <h5 className={styles.profileHeading}>{t('profileCurrent', { n: data.block.version })}</h5>
-      <pre className={styles.profileContent}>{data.block.content}</pre>
-      {versions.length > 1 && (
-        <>
-          <h5 className={styles.profileHeading}>{t('profileHistory')}</h5>
-          <div className={styles.profilePickerRow}>
-            <label>
-              <span className={styles.sectionHint}>{t('profileDiffBase')}</span>
-              <select className={styles.profileSelect} value={baseVersion ?? undefined}
-                onChange={event => { setBaseVersion(Number(event.target.value)) }}>
-                {versions.map(version => (
-                  <option key={version.version} value={version.version}>
-                    v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span className={styles.sectionHint}>{t('profileDiffTarget')}</span>
-              <select className={styles.profileSelect} value={targetVersion ?? undefined}
-                onChange={event => { setTargetVersion(Number(event.target.value)) }}>
-                {versions.map(version => (
-                  <option key={version.version} value={version.version}>
-                    v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {base !== undefined && target !== undefined && (
-            <div className={styles.profileDiff}>
-              {hasDiff
-                ? diffRows.map((row, index) => (
-                  <div key={index} className={
-                    row.kind === 'add' ? styles.profileDiffAdd : row.kind === 'del' ? styles.profileDiffDel : styles.profileDiffSame
-                  }>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}</div>
-                ))
-                : <div className={styles.sectionHint}>{t('profileDiffNone')}</div>}
-            </div>
+    <div className={styles.profileScopeWrap}>
+      {scopePicker}
+      {data.block === null ? (
+        <div className={styles.expandLoading}>
+          <p>{t('profileEmpty')}</p>
+          <p className={styles.sectionHint}>{t('profileEmptyHint')}</p>
+        </div>
+      ) : (
+        <div className={styles.profileCard}>
+          <h5 className={styles.profileHeading}>{t('profileCurrent', { n: data.block.version })}</h5>
+          <pre className={styles.profileContent}>{data.block.content}</pre>
+          {versions.length > 1 && (
+            <>
+              <h5 className={styles.profileHeading}>{t('profileHistory')}</h5>
+              <div className={styles.profilePickerRow}>
+                <label>
+                  <span className={styles.sectionHint}>{t('profileDiffBase')}</span>
+                  <select className={styles.profileSelect} value={baseVersion ?? undefined}
+                    onChange={event => { setBaseVersion(Number(event.target.value)) }}>
+                    {versions.map(version => (
+                      <option key={version.version} value={version.version}>
+                        v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className={styles.sectionHint}>{t('profileDiffTarget')}</span>
+                  <select className={styles.profileSelect} value={targetVersion ?? undefined}
+                    onChange={event => { setTargetVersion(Number(event.target.value)) }}>
+                    {versions.map(version => (
+                      <option key={version.version} value={version.version}>
+                        v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {base !== undefined && target !== undefined && (
+                <div className={styles.profileDiff}>
+                  {hasDiff
+                    ? diffRows.map((row, index) => (
+                      <div key={index} className={
+                        row.kind === 'add' ? styles.profileDiffAdd : row.kind === 'del' ? styles.profileDiffDel : styles.profileDiffSame
+                      }>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}</div>
+                    ))
+                    : <div className={styles.sectionHint}>{t('profileDiffNone')}</div>}
+                </div>
+              )}
+            </>
           )}
-        </>
+        </div>
       )}
     </div>
   )
@@ -2654,10 +2700,13 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   if (view === null) return <span className={styles.jevMuted}>{t('loading')}</span>
 
   const selected = view.providers.find(item => item.id === provider)
-  // Suggestions: the provider's live list once loaded, otherwise the models from its DSH settings.
+  // Подсказки: живой список провайдера, когда загружен; иначе модели из настроек DSH.
+  // Оба источника сужаем до моделей со словом «jev» — модель без него протоколом
+  // System One не отвечает, и подсказка из неё была бы подсказкой сломать судью
+  // (см. readProviderModels на хосте). Если у провайдера jev-моделей нет — пусто.
   const suggestions: readonly string[] = liveModels.length > 0
     ? liveModels
-    : (selected?.models ?? []).map(item => item.id)
+    : (selected?.models ?? []).map(item => item.id).filter(id => /jev/i.test(id))
 
   return (
     <div className={styles.jev}>
@@ -2833,7 +2882,16 @@ function BuildUpdateCard({ t, view, transportError, checking, onCheck }: {
     { label: t('updateProfile'), value: build?.profile ?? t('updateProfileUnknown') },
   ]
 
+  // 顺序：先 «автор» (upstream)， затем «форк dsv» (наш форк) — по решению пользователя.
   const groups: ReadonlyArray<{ readonly title: string; readonly items: readonly UpdateLinkRow[] }> = [
+    {
+      title: t('updateUpstreamGroup'),
+      items: [
+        [t('updateLinkRepo'), links.upstreamRepo],
+        [t('updateLinkReleases'), links.upstreamReleases],
+        [t('updateLinkNpm'), links.upstreamNpm],
+      ],
+    },
     {
       title: t('updateForkGroup'),
       items: [
@@ -2841,14 +2899,6 @@ function BuildUpdateCard({ t, view, transportError, checking, onCheck }: {
         [t('updateLinkCommits'), links.forkCommits],
         [t('updateLinkReleases'), links.forkReleases],
         [t('updateLinkIssues'), links.forkIssues],
-      ],
-    },
-    {
-      title: t('updateUpstreamGroup'),
-      items: [
-        [t('updateLinkRepo'), links.upstreamRepo],
-        [t('updateLinkReleases'), links.upstreamReleases],
-        [t('updateLinkNpm'), links.upstreamNpm],
       ],
     },
   ]
@@ -3109,6 +3159,19 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const updateNewer = update !== null && update.checkedAt > 0
     && (update.upstream.ahead || update.fork.newerThanBuild.length > 0)
 
+  /** 检查失败（面板网络/解析或 host 自报）→ 红色，优先级最高。 */
+  const chipError = updateError !== null || (update !== null && update.error !== undefined)
+  /** 成功检查过且 обновляться не надо → 绿色。 */
+  const chipUpToDate = !chipError && !updateNewer && update !== null && update.checkedAt > 0
+  /** 文本 статуса для тултипа плашки; цвет задаётся классом cls. */
+  const chipTip: { text: string; cls: string | undefined } = chipError
+    ? { text: updateError ?? update?.error ?? t('updateLoadFailed', { error: '' }), cls: styles.updateChipTipError }
+    : updateNewer
+      ? { text: t('updateNewAvailable'), cls: styles.updateChipTipNew }
+      : chipUpToDate
+        ? { text: t('updateUpToDate'), cls: styles.updateChipTipOk }
+        : { text: t('updateNeverChecked'), cls: undefined }
+
   /** 打开详情抽屉：陈展列表已有该行时复用真实行，只有 id 的列表用最小占位行（抽屉自行拉 review）。 */
   const openReview = useCallback((id: string): void => {
     const record = list?.records.find(row => row.id === id)
@@ -3316,14 +3379,25 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             <option value="en">English</option>
             <option value="ru">Русский</option>
           </select>
-          {/* 版本 chip：当前安装版本，有新版本时点亮强调色（不弹窗、不打扰，只是把「该看一眼」标出来）。 */}
+          {/* 版本 chip：当前安装版本 + цветной статус. Красный = ошибка проверки,
+              жёлтый = доступно обновление, зелёный = обновляться не надо (проверено).
+              Нативный title не умеет цветной текст, поэтому статус — свой тултип. */}
           {update !== null && update.build.version !== '' && (
-            <span className={updateNewer ? `${styles.updateChip} ${styles.updateChipNew}` : styles.updateChip}
-              title={updateNewer
-                ? `${t('updateChipTitle', { version: update.build.version })} · ${t('updateNewAvailable')}`
-                : t('updateChipTitle', { version: update.build.version })}>
-              {update.build.version}
-              {updateNewer && <span className={styles.updateChipDot} aria-hidden="true" />}
+            <span className={styles.updateChipWrap}>
+              <span className={chipError
+                ? `${styles.updateChip} ${styles.updateChipError}`
+                : updateNewer
+                  ? `${styles.updateChip} ${styles.updateChipNew}`
+                  : chipUpToDate
+                    ? `${styles.updateChip} ${styles.updateChipOk}`
+                    : styles.updateChip}
+                aria-label={chipTip.text} tabIndex={0}>
+                {update.build.version}
+                {updateNewer && <span className={styles.updateChipDot} aria-hidden="true" />}
+                <span className={`${styles.updateChipTip} ${chipTip.cls}`} role="tooltip">
+                  {t('updateChipTitle', { version: update.build.version })} · {chipTip.text}
+                </span>
+              </span>
             </span>
           )}
           <ExportMenu t={t} scope={scope} project={projectSelector} />

@@ -667,6 +667,9 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 
 /* ---------- 画像 curated block（当前内容 + 版本历史 + 行级 diff，只读审计卡） ---------- */
 .profileCard { display: flex; flex-direction: column; gap: var(--space-3); }
+/* Переключатель scope профиля (личный / по проекту / общий) — всегда сверху карточки. */
+.profileScopeWrap { display: flex; flex-direction: column; gap: var(--space-3); }
+.profileScopeRow { display: inline-flex; align-items: center; gap: var(--space-2); }
 .profileHeading { margin: 0; font-size: var(--fs-micro); font-weight: 600; color: var(--dsw-alias-label-secondary); }
 .profileContent { margin: 0; padding: var(--space-3); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); font-family: inherit; font-size: var(--fs-body); line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 .profilePickerRow { display: flex; gap: var(--space-4); flex-wrap: wrap; }
@@ -723,17 +726,29 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 .updateStamp { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .updateSpin { animation: updateSpin 900ms linear infinite; }
 @keyframes updateSpin { to { transform: rotate(360deg); } }
-.updateLinks { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
-.updateLinkGroup { display: flex; flex-direction: column; gap: 3px; min-width: 132px; }
+.updateLinks { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
+/* Каждая группа ссылок — карточка-рамка (как показатели выше), чтобы блок читался как два набора ссылок. */
+.updateLinkGroup { display: flex; flex-direction: column; gap: 5px; min-width: 160px; padding: var(--space-3) var(--space-4); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); }
 .updateLinkGroupTitle { font-size: var(--fs-micro); font-weight: 600; color: var(--dsw-alias-label-secondary); }
-.updateLink { font-size: var(--fs-micro); color: var(--dsw-alias-brand-primary); text-decoration: none; }
-.updateLink:hover { text-decoration: underline; }
+/* Ссылки выделены как ссылки: цвет + постоянное подчёркивание, сразу читаются кликабельными. */
+.updateLink { font-size: var(--fs-micro); color: var(--dsw-alias-brand-primary); text-decoration: underline; text-underline-offset: 2px; }
+.updateLink:hover { text-decoration: underline; text-underline-offset: 2px; }
 .updateInstall { display: flex; flex-direction: column; gap: 3px; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--dsw-alias-border-l1); }
 .updateCommand { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 8%, var(--dsw-alias-bg-base)); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; user-select: all; }
-/* 顶栏版本 chip（语言下拉旁）：有新版本时点亮强调色 */
-.updateChip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; flex: none; }
-.updateChipNew { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-brand-primary); }
+/* 顶栏版本 chip（语言下拉旁）：цветной статус вместо простого «номер версии».
+   Красный = ошибка проверки · жёлтый = доступно обновление · зелёный = обновляться не надо. */
+.updateChipWrap { position: relative; display: inline-flex; }
+.updateChip { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border-radius: var(--radius-control); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; flex: none; cursor: default; }
+.updateChipNew { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 55%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-state-warn-primary); }
+.updateChipOk { border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2da44e) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-state-success-primary, #2da44e); }
+.updateChipError { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-state-error-primary); }
 .updateChipDot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+/* Кастомный тултип плашки: появляется снизу по hover/фокусу, статус цветной. */
+.updateChipTip { position: absolute; top: calc(100% + 6px); right: 0; min-width: 200px; max-width: 320px; padding: var(--space-2) var(--space-3); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--dsw-alias-label-primary) 24%, transparent); font-size: var(--fs-body); line-height: 1.5; color: var(--dsw-alias-label-primary); white-space: normal; pointer-events: none; opacity: 0; transform: translateY(2px); transition: opacity var(--dur-fast) var(--ease-spring), transform var(--dur-fast) var(--ease-spring); z-index: 5; text-align: left; }
+.updateChipTipOk { color: var(--dsw-alias-state-success-primary, #2da44e); }
+.updateChipTipNew { color: var(--dsw-alias-state-warn-primary); }
+.updateChipTipError { color: var(--dsw-alias-state-error-primary); }
+.updateChipWrap:hover .updateChipTip, .updateChipWrap:focus-within .updateChipTip { opacity: 1; transform: translateY(0); }
 /* 运维 tab 标签上的「有新版本」小点 */
 .tabDot { width: 5px; height: 5px; border-radius: 50%; background: var(--dsw-alias-brand-primary); flex: none; }
 
