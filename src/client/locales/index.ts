@@ -370,6 +370,22 @@ export type EngramKey =
   | 'corridorIndexStaying'
   | 'corridorIndexRooms'
   | 'skipEmptyAnswer'
+  // Memory Spiral tab (v0.9.x)
+  | 'tabSpiral'
+  | 'spiralAriaLabel'
+  | 'spiralCenterLabel'
+  | 'spiralSideTitle'
+  | 'spiralStatEarliest'
+  | 'spiralStatSpan'
+  | 'spiralStatCenter'
+  | 'spiralStatRadius'
+  | 'spiralStatCount'
+  | 'spiralRange30d'
+  | 'spiralRange180d'
+  | 'spiralRangeAll'
+  | 'spiralLoading'
+  | 'spiralFailed'
+  | 'spiralEmpty'
 
 /** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
 export const KIND_KEY: Readonly<Record<string, EngramKey>> = {

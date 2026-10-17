@@ -12,6 +12,8 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
 import { CorridorMap, FloorplanMap, KIND_PALETTE } from './CorridorMap.tsx'
+import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
+import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 
@@ -32,6 +34,7 @@ const ICONS = {
   log: <><line x1="5" y1="6" x2="19" y2="6" /><line x1="5" y1="12" x2="19" y2="12" /><line x1="5" y1="18" x2="13" y2="18" /></>,
   backfill: <><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><line x1="4" y1="20" x2="20" y2="20" /></>,
   jev: <><path d="M12 3 L4 8 V16 L12 21 L20 16 V8 Z" /><path d="M9 12l2 2 4-4" /></>,
+  spiral: <><path d="M12 12 m -3 0 a 3 3 0 1 0 6 0 a 3 3 0 1 0 -6 0" /><path d="M12 12 m -7 0 a 7 7 0 1 0 14 0 a 7 7 0 1 0 -14 0" fill="none" /><path d="M12 12 m -11 0 a 11 11 0 1 0 22 0 a 11 11 0 1 0 -22 0" fill="none" strokeDasharray="2 3" /></>,
   // Scope 三宫格
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 4-6 8-6s8 2 8 6" /></>,
   project: <><path d="M3 7 L9 7 L11 5 L21 5 L21 17 L3 17 Z" /><line x1="3" y1="7" x2="3" y2="17" /></>,
@@ -525,6 +528,29 @@ function Metric({ label, value, tail, spark, color, delta, deltaTone, tone }: {
 }
 
 /** 空态插画：宫殿剪影 + 标题 + 提示（v0.8.8 取代裸文案空态,往事/实体/信念/日志/陈展/走廊共用）。 */
+/** 统一的 <select> 包装：内联 SVG 箭头 + focus-within 时变品牌色。
+ * 取代 panel.module.css 里的 `select.input` 用 background-image 画箭头的 hack。
+ * selectClassName 通常传 `${styles.input}` 或 `${styles.input} ${styles.wsSelect}` 等组合。 */
+function SelectField({ selectClassName, value, onChange, children, ariaLabel, title }: {
+  readonly selectClassName: string | undefined
+  readonly value: string
+  readonly onChange: (event: React.ChangeEvent<HTMLSelectElement>) => void
+  readonly children: React.ReactNode
+  readonly ariaLabel?: string | undefined
+  readonly title?: string | undefined
+}): React.ReactElement {
+  return (
+    <span className={styles.selectWrap}>
+      <select className={selectClassName} value={value} onChange={onChange} aria-label={ariaLabel} title={title}>
+        {children}
+      </select>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M6 9 L12 15 L18 9" />
+      </svg>
+    </span>
+  )
+}
+
 function EmptyState({ title, hint }: { title: string; hint?: string | undefined }): React.ReactElement {
   return (
     <div className={styles.empty}>
@@ -774,9 +800,9 @@ function EditForm({ t, record, onClose, onSaved, toast }: {
       <div>
         <label className={styles.fieldLabel}>{t('labelKind')}</label>
         {/* option 的 value 保持数据层英文枚举，仅显示文本本地化。 */}
-        <select className={styles.input} value={kind} onChange={event => setKind(event.target.value)}>
+        <SelectField selectClassName={styles.input} value={kind} onChange={event => setKind(event.target.value)}>
           {KINDS.map(option => <option key={option} value={option}>{kindLabel(t, option)}</option>)}
-        </select>
+        </SelectField>
       </div>
       <div className={styles.fieldRow}>
         <div>
@@ -848,13 +874,13 @@ function RecallBench({ t, scope }: { t: T; scope: 'user' | 'project' | 'shared' 
         <input className={`${styles.input} ${styles.search}`} placeholder={t('benchPlaceholder')} value={query}
           onChange={event => setQuery(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter') run() }} />
-        <select className={styles.input} value={benchScope}
+        <SelectField selectClassName={styles.input} value={benchScope}
           onChange={event => setBenchScope(event.target.value)}>
           <option value="all">{t('benchScopeAll')}</option>
           <option value="user">{t('scopeUser')}</option>
           <option value="project">{t('scopeProject')}</option>
           <option value="shared">{t('scopeShared')}</option>
-        </select>
+        </SelectField>
         <button type="button" className={`${styles.button} ${styles.primary}`}
           disabled={busy || query.trim() === ''} onClick={run}>{t('benchRun')}</button>
       </div>
@@ -1399,7 +1425,7 @@ function CorridorPanel({ t, scope, project, onSelect, onOpenRoom }: {
   if (graph.nodes.length === 0) return <EmptyState title={t('corridorEmpty')} hint={t('emptyHint')} />
   return (
     <div>
-      <div className={styles.toolbarRow}>
+      <div className={styles.toolbarCard}>
         <div className={styles.segGroup}>
           <button type="button" role="tab" aria-selected={mode === 'floorplan'}
             className={mode === 'floorplan' ? `${styles.segItem} ${styles.on}` : styles.segItem}
@@ -1461,6 +1487,80 @@ interface EpisodeGroupsView {
     readonly endedAt: number
     readonly episodes: readonly EpisodeRowView[]
   }>
+}
+
+/** Memory Spiral 端点返回形状（与 routes.ts 的 GET /api/engram/timeline 对齐）。 */
+interface SpiralTimelineView {
+  readonly scope: 'user' | 'project' | 'shared'
+  readonly total: number
+  readonly records: readonly SpiralRecord[]
+}
+
+/** 回忆螺旋视图包装：拉数据 + 工具条（时间窗 segmented）+ 把 records 喂给 SpiralMap 渲染。
+ *  复用段控 .segGroup + .segItem 视觉语言，跟其他 tab 的过滤选择保持一致。 */
+function SpiralPanel({ t, scope, project, reloadTick }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  project: string | null
+  reloadTick: number
+}): React.ReactElement {
+  const [records, setRecords] = useState<readonly SpiralRecord[] | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  /** 时间窗：30 天 / 半年 / 全部（持久化——其他 segmented 控件也都持久化）。 */
+  const [windowKey, setWindowKey] = usePersistedState<'30d' | '180d' | 'all'>('spiral.window', 'all', ['30d', '180d', 'all'])
+
+  useEffect(() => {
+    let cancelled = false
+    setRecords(null)
+    setFailed(null)
+    api<SpiralTimelineView>('timeline?scope=' + scope + '&limit=500')
+      .then(data => { if (!cancelled) setRecords(data.records) })
+      .catch(err => { if (!cancelled) setFailed(err instanceof Error ? err.message : String(err)) })
+    return () => { cancelled = true }
+  }, [scope, project, reloadTick])
+
+  const windowMs = windowKey === '30d' ? 30 * 86_400_000 : windowKey === '180d' ? 180 * 86_400_000 : null
+  const filteredCount = records === null ? null : records.filter(rec => windowMs === null || (Date.now() - rec.createdAt) <= windowMs).length
+
+  return (
+    <div className={styles.tabPanel}>
+      <PageHeader title={t('tabSpiral')} subtitle={t('pageHeaderCorridorSubtitle')} />
+      <div className={spiralStyles.toolbar}>
+        <div className={styles.segGroup}>
+          <button type="button" role="tab" aria-selected={windowKey === '30d'}
+            className={windowKey === '30d' ? `${styles.segItem} ${styles.on}` : styles.segItem}
+            onClick={() => { setWindowKey('30d') }}>
+            {t('spiralRange30d')}
+          </button>
+          <button type="button" role="tab" aria-selected={windowKey === '180d'}
+            className={windowKey === '180d' ? `${styles.segItem} ${styles.on}` : styles.segItem}
+            onClick={() => { setWindowKey('180d') }}>
+            {t('spiralRange180d')}
+          </button>
+          <button type="button" role="tab" aria-selected={windowKey === 'all'}
+            className={windowKey === 'all' ? `${styles.segItem} ${styles.on}` : styles.segItem}
+            onClick={() => { setWindowKey('all') }}>
+            {t('spiralRangeAll')}
+          </button>
+        </div>
+        <span className={spiralStyles.meta}>
+          {filteredCount === null ? t('spiralLoading') : `${t('spiralStatCount')} · ${String(filteredCount)}`}
+        </span>
+      </div>
+      {failed !== null && (
+        <div className={styles.panelCard}><EmptyState title={t('spiralFailed')} hint={failed} /></div>
+      )}
+      {failed === null && records === null && (
+        <div className={styles.panelCard}><EmptyState title={t('spiralLoading')} /></div>
+      )}
+      {failed === null && records !== null && records.length === 0 && (
+        <div className={styles.panelCard}><EmptyState title={t('spiralEmpty')} hint={t('emptyHint')} /></div>
+      )}
+      {failed === null && records !== null && records.length > 0 && (
+        <SpiralMap t={t} records={records} windowMs={windowMs} />
+      )}
+    </div>
+  )
 }
 
 /** 邻近扩展（around 模式）返回：锚点条目 + 窗口内的情景邻居。 */
@@ -2259,12 +2359,12 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
       <div className={styles.backfillRules}>
         <label className={styles.backfillRule}>
           <span>{t('backfillDays')}</span>
-          <select className={styles.input} value={days} onChange={event => { setDays(event.target.value) }}>
+          <SelectField selectClassName={styles.input} value={days} onChange={event => { setDays(event.target.value) }}>
             <option value="7">{t('backfillDaysUnit', { n: 7 })}</option>
             <option value="30">{t('backfillDaysUnit', { n: 30 })}</option>
             <option value="90">{t('backfillDaysUnit', { n: 90 })}</option>
             <option value="0">{t('backfillDaysAll')}</option>
-          </select>
+          </SelectField>
         </label>
         <label className={styles.backfillRule}>
           <span>{t('backfillMaxTurns')}</span>
@@ -2279,17 +2379,17 @@ function HistoryBackfillCard({ t, toast }: { t: T; toast: ToastController }): Re
         {/* 辅助模型：默认「自动」= 回填时用你当前在用的模型（历史日志里的旧模型可能已不可用）。 */}
         <label className={styles.backfillRule}>
           <span>{t('backfillModel')}</span>
-          <select className={styles.input} value={modelChoice}
-            onChange={event => { setModelChoice(event.target.value) }}>
-            <option value="">{t('backfillModelAuto')}</option>
-            {(models?.providers ?? []).map(provider => (
-              <optgroup key={provider.id} label={provider.name}>
-                {provider.models.map(model => (
-                  <option key={`${provider.id}::${model.id}`} value={`${provider.id}::${model.id}`}>{model.name}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+            <SelectField selectClassName={styles.input} value={modelChoice}
+              onChange={event => { setModelChoice(event.target.value) }}>
+              <option value="">{t('backfillModelAuto')}</option>
+              {(models?.providers ?? []).map(provider => (
+                <optgroup key={provider.id} label={provider.name}>
+                  {provider.models.map(model => (
+                    <option key={`${provider.id}::${model.id}`} value={`${provider.id}::${model.id}`}>{model.name}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </SelectField>
         </label>
       </div>
       <div className={styles.backfillToggles}>
@@ -2716,7 +2816,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   /** 批量遗忘的两段式确认。 */
   const [confirmForget, setConfirmForget] = useState(false)
   /** Tab 视图：today 今日速览 / library 陈展列表 / corridor 走廊与检索 / episodes 往事时间线 / entities 实体词典 / log 管家日志 / backfill 历史回填 / jev Jev 裁决配置。 */
-  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
+  const [activeTab, setActiveTab] = useState<'today' | 'library' | 'corridor' | 'spiral' | 'episodes' | 'entities' | 'beliefs' | 'log' | 'ops'>('today')
   /** 项目宫殿来源（持久化）：'follow' = 跟随 GUI 当前工作区；其它值 = 固定的 host 分库 dbName。 */
   const [projectMode, setProjectMode] = usePersistedString('library.project', 'follow')
   /** GUI 当前工作区（与侧边栏同一判定）与 host 的项目宫殿清单。 */
@@ -2935,14 +3035,16 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           </div>
         </>
       )}
-      {/* Header：单行两端对齐，按设置弹窗 ~600px 内容区设计，无任何品牌装饰。
+      {/* Header + Tab 栏吸顶（v0.8.13,#15）：长内容滚动时钉在顶部,内容从下方穿过。 */}
+      <div className={styles.panelSticky}>
+      {/* Header：单行两端对齐，无任何品牌装饰。
           左：scope 三宫格（当前 scope 在此高亮）；右：今日到期角标 + 重访 + 导出。 */}
       <div className={styles.header}>
         <div className={styles.headerActions}>
           <div className={`${styles.segGroup} ${styles.segScope}`}>
             <span className={styles.segIndicator}
               style={{ left: `${String(segIndicator.left)}px`, width: `${String(segIndicator.width)}px`, opacity: segIndicator.opacity }} />
-            {(['user', 'project', 'shared'] as const).map(option => (
+            {(['user', 'shared', 'project'] as const).map(option => (
               <button key={option} type="button" ref={node => { segRefs.current.set(option, node) }}
                 className={scope === option ? `${styles.segItem} ${styles.on}` : styles.segItem}
                 onClick={() => { setScope(option); setOffset(0); setExpanded(null); clearSelection() }}>
@@ -2953,8 +3055,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           </div>
           {/* 项目宫殿工作区下拉：紧贴三宫格同行（仅 project 作用域），替代旧版独占一行的 chip + 下拉 */}
           {scope === 'project' && (
-            <select className={`${styles.input} ${styles.wsSelect}`} value={projectMode}
-              aria-label={t('projectSwitch')} title={t('projectSwitch')}
+            <SelectField selectClassName={`${styles.input} ${styles.wsSelect}`} value={projectMode}
+              ariaLabel={t('projectSwitch')} title={t('projectSwitch')}
               onChange={event => { setProjectMode(event.target.value); setOffset(0); setExpanded(null); clearSelection() }}>
               <option value="follow">{t('projectFollow')}</option>
               {(workspaceList?.items ?? []).map(item => (
@@ -2963,7 +3065,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               {pinnedMissing && (
                 <option value={projectMode}>{`${shortDbName(projectMode)} · ${t('projectUnregistered')}`}</option>
               )}
-            </select>
+            </SelectField>
           )}
         </div>
         <div className={styles.headerActions}>
@@ -2984,13 +3086,13 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               用列表而不是三个并排按钮：误点只会展开列表、不会当场换掉语言，且将来
               语言变多时不会把顶栏撑开、挤坏排版。选项写各自语言的本名，任何语言下
               都能认出自己那一条。 */}
-          <select className={`${styles.input} ${styles.langSelect}`} value={lang}
-            aria-label={t('language')}
+          <SelectField selectClassName={`${styles.input} ${styles.langSelect}`} value={lang}
+            ariaLabel={t('language')}
             onChange={(event) => { setLang(event.target.value as PanelLang) }}>
             <option value="zh">中文</option>
             <option value="en">English</option>
             <option value="ru">Русский</option>
-          </select>
+          </SelectField>
           <ExportMenu t={t} scope={scope} project={projectSelector} />
         </div>
       </div>
@@ -3018,6 +3120,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           onClick={() => { setActiveTab('corridor') }}>
           <Icon name="corridor" className={styles.tabIcon} />
           {t('tabCorridor')}
+        </button>
+        {/* 回忆螺旋（v0.9.x）：时间型鸟瞰视图，挨着「走廊」语义相邻，鸟瞰集合。 */}
+        <button type="button" role="tab"
+          className={activeTab === 'spiral' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
+          aria-selected={activeTab === 'spiral'}
+          onClick={() => { setActiveTab('spiral') }}>
+          <Icon name="spiral" className={styles.tabIcon} />
+          {t('tabSpiral')}
         </button>
         <button type="button" role="tab"
           className={activeTab === 'episodes' ? `${styles.tabItem} ${styles.on}` : styles.tabItem}
@@ -3080,14 +3190,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 </button>
               ))}
             </div>
-            {/* 今日到期：复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。 */}
-            <div className={styles.segGroup}>
-              <button type="button" aria-pressed={dueOnly}
-                className={dueOnly ? `${styles.segItem} ${styles.on}` : styles.segItem}
-                onClick={() => { setDueOnly(!dueOnly); setOffset(0); setExpanded(null); clearSelection() }}>
-                {t('filterDueToday')}
-              </button>
-            </div>
+            {/* 今日到期：复习调度今天到期的条目（消费者是 agent，这里只做观测筛选）。
+                单独一个按钮不嵌 .segGroup（没有玻璃指示器可滑动）；用 .chip/.chipOn 的视觉语言
+                让激活态有清晰品牌色提示，跟其他激活态一致。 */}
+            <button type="button" aria-pressed={dueOnly}
+              className={dueOnly ? `${styles.chip} ${styles.chipOn}` : styles.chip}
+              onClick={() => { setDueOnly(!dueOnly); setOffset(0); setExpanded(null); clearSelection() }}>
+              {t('filterDueToday')}
+            </button>
             <div className={styles.segGroup}>
               {([['time', t('sortTime')], ['tour', t('sortTour')]] as const).map(([value, label]) => (
                 <button key={value} type="button"
@@ -3130,10 +3240,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           )}
 
           {error !== null && (
-            <div className={styles.empty}>
-              <b>{t('loadFailed', { msg: error })}</b>
-              <span>{t('emptyHint')}</span>
-            </div>
+            <EmptyState title={t('loadFailed', { msg: error })} hint={t('emptyHint')} />
           )}
           {error === null && list === null && (
             <div className={styles.skeletonList}>
@@ -3143,10 +3250,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             </div>
           )}
           {error === null && list !== null && pageRecords.length === 0 && (
-            <div className={styles.empty}>
-              <b>{t('empty')}</b>
-              <span>{t('emptyHint')}</span>
-            </div>
+            <EmptyState title={t('empty')} hint={t('emptyHint')} />
           )}
 
           {pageRecords.length > 0 && (
@@ -3289,6 +3393,12 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
 
+      {activeTab === 'spiral' && (
+        <div className={styles.tabPanel}>
+          <SpiralPanel t={t} scope={scope} project={projectSelector} reloadTick={reloadTick} />
+        </div>
+      )}
+
       {activeTab === 'episodes' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabEpisodes')} subtitle={t('pageHeaderEpisodesSubtitle')} />
@@ -3325,7 +3435,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
       {activeTab === 'ops' && (
         <div className={styles.tabPanel}>
-          <PageHeader title={t('tabOps')} subtitle={t('pageHeaderOpsSubtitle')} />
+          {/* ops tab 是三件工具的容器，不是独立页面：去掉 PageHeader，让每个 sectionHead
+              作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
           <section className={styles.section}>
             <div className={styles.sectionHead}>
               <h4 className={styles.sectionTitle}>{t('tabBackfill')}</h4>

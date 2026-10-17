@@ -439,6 +439,37 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             })
             return
           }
+          if (req.method === 'GET' && route === 'timeline') {
+            // 通用时间线（v0.9.x · Memory Spiral 视图专用）：返回当前 scope 的全部活跃记忆，
+            // 上限放宽到 500（list 路由的上限 100 在大规模库下不够画螺旋）。
+            // 字段对客户端足够：id/kind/content/importance/confidence/accessCount/createdAt/slot。
+            const scope = scopeOf(url.searchParams.get('scope'), 'user')
+            const since = toNumber(url.searchParams.get('since'))
+            const until = toNumber(url.searchParams.get('until'))
+            const limit = Math.min(500, Math.max(1, toNumber(url.searchParams.get('limit')) ?? 500))
+            const store = await storeFor(scope)
+            const records = await store.timeline({
+              scopes: [scope],
+              ...(since === undefined ? {} : { since }),
+              ...(until === undefined ? {} : { until }),
+              limit,
+            })
+            json(res, 200, {
+              scope,
+              total: records.length,
+              records: records.map(record => ({
+                id: record.id,
+                kind: record.kind,
+                content: record.content,
+                importance: record.importance,
+                confidence: record.confidence,
+                accessCount: record.accessCount,
+                createdAt: record.createdAt,
+                ...(record.slot === undefined ? {} : { slot: record.slot }),
+              })),
+            })
+            return
+          }
           if (req.method === 'GET' && route === 'activity') {
             // 最近活动：合并两库 op_log 倒序（摄取/检索改写/压缩/蒸馏/条目操作全貌）。
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
