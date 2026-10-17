@@ -288,7 +288,8 @@ async function preStep(
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(ctx, resolved.jev, resolved.dbDir),
+        // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -308,7 +309,8 @@ async function preStep(
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(ctx, resolved.jev, resolved.dbDir),
+        // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -739,7 +741,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     call: callParams => streamText(ctx, { ...callParams, sessionId: '' }),
     logRequest: logIngestRequest,
     // 面板覆盖免缓存装配：每次回填运行时读 jev-config.json，面板保存立即生效。
-    ...resolveJevField(ctx, resolved.jev, resolved.dbDir),
+    ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => (resolved.routeOverride ?? preStepState.route)?.provider),
   })
 
   /** 回填任务（进程内单例；面板轮询它的进度，工具同步等待自己的那一次运行）。 */
@@ -827,7 +829,9 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     call: callParams => streamText(ctx, { ...callParams, sessionId: callParams.sessionId ?? '' }),
     routeOverride: resolved.routeOverride,
     // 面板覆盖免缓存装配：工具每次调用时读 jev-config.json，面板保存立即生效。
-    ...resolveJevField(ctx, resolved.jev, resolved.dbDir),
+    // Читатель маршрута ленивый: инструменты регистрируются до первой сессии, и
+    // провайдер берётся в момент вопроса, а не в момент регистрации.
+    ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => preStepState.route?.provider),
     queryRewrite: resolved.queryRewrite,
     exportDir: `${resolved.dbDir}/exports`,
     language: resolved.language,
@@ -907,7 +911,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(ctx, resolved.jev, resolved.dbDir),
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => (resolved.routeOverride ?? routeFromEvents(events))?.provider),
         call: params => streamText(ctx, { ...params, sessionId: session.id }),
         logRequest: logIngestRequest,
         signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),

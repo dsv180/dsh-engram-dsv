@@ -155,18 +155,27 @@ export function parseJevPatch(current: JevOverride, patch: Readonly<Record<strin
 }
 
 /**
+ * Непустое значение либо `undefined`: пустая строка означает «поле не названо»,
+ * а не «названо пустым». Без этого шага очищенное поле панели затирало бы значение
+ * из cordis.yml вместо того, чтобы уступить ему место.
+ */
+function named(value: string | undefined): string | undefined {
+  return value !== undefined && value !== '' ? value : undefined
+}
+
+/**
  * Слить перекрытие панели с базой из cordis.yml по полям.
- * Если провайдер или модель не выбраны, `enabled` принудительно снимается: Jev
- * недоступен и потому молча уходит в чистые правила — запуск не блокируется.
+ *
+ * Провайдер и модель вправе остаться неназванными: провайдера тогда подставит ленивый
+ * резолвер соединения (маршрут текущей сессии), а модель — первая Jev-модель этого
+ * провайдера. Поэтому `enabled` здесь означает только «пользователь включил Jev»:
+ * снимать его заранее значило бы терять наследование, которое видно лишь в момент вопроса.
  */
 export function effectiveJevConfig(base: ResolvedJevConfig, override: JevOverride): ResolvedJevConfig {
-  const provider = override.provider ?? base.provider
-  const model = override.model ?? base.model
-  const complete = provider !== undefined && provider !== '' && model !== undefined && model !== ''
   return {
-    enabled: (override.enabled ?? base.enabled) && complete,
-    provider,
-    model,
+    enabled: override.enabled ?? base.enabled,
+    provider: named(override.provider) ?? named(base.provider),
+    model: named(override.model) ?? named(base.model),
     // Адрес хранится отдельно: пусто означает «подставить шаблон от провайдера».
     endpoint: override.endpoint ?? base.endpoint,
     timeoutMs: override.timeoutMs ?? base.timeoutMs,
@@ -193,25 +202,36 @@ export function jevConfigView(base: ResolvedJevConfig, override: JevOverride): J
 
 /**
  * Единая точка сборки: прочитать перекрытие панели, слить с базой cordis.yml и,
- * если Jev включён и выбор сделан, отдать судью; иначе — пустой объект.
+ * если Jev включён, отдать судью; иначе — пустой объект.
  * Результат раскладывается условным расширением в четыре вида зависимостей
  * (запись, инструменты, последний ход, догрузка истории).
- * Реквизиты соединения резолвятся лениво — при первом вопросе судьи.
+ * Реквизиты соединения резолвятся лениво — при первом вопросе судьи, и там же
+ * доопределяются провайдер и модель, которых не назвал никто.
  * @param ctx - контекст плагина (доступ к сервисам хоста: llm, settings, credentials).
  * @param base - база из cordis.yml.
  * @param dbDir - каталог данных (там лежит файл перекрытия).
+ * @param routeProvider - провайдер текущей сессии: подставляется, только если его не
+ *   назвали ни панель, ни cordis.yml. Читается в момент вопроса, поэтому смена
+ *   маршрута посреди сессии подхватывается сама.
  */
 export function resolveJevField(
   ctx: HostContext,
   base: ResolvedJevConfig,
   dbDir: string,
+  routeProvider?: () => string | undefined,
 ): { judge: MemoryJudge } | Record<string, never> {
   const config = effectiveJevConfig(base, loadJevOverride(dbDir))
-  if (!config.enabled || config.provider === undefined || config.model === undefined) return {}
-  const provider = config.provider
-  const model = config.model
+  if (!config.enabled) return {}
+  const configured = config.provider
+  const model = config.model ?? ''
   const endpoint = config.endpoint
+  const timeoutMs = config.timeoutMs
   return {
-    judge: createMemoryJudge(config, () => resolveJevConnection(ctx, provider, model, config.timeoutMs, endpoint)),
+    judge: createMemoryJudge(config, () => {
+      const provider = configured !== undefined && configured !== ''
+        ? configured
+        : (routeProvider?.() ?? '')
+      return resolveJevConnection(ctx, provider, model, timeoutMs, endpoint)
+    }),
   }
 }
