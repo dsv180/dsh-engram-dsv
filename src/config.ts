@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
+import { ENGRAM_MODEL_ID } from './embedder/local.ts'
 import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
@@ -17,6 +18,40 @@ export type IngestModeConfig = 'off' | 'light' | 'eager'
 
 /** 信念巩固档位：off 仅允许手动 engram_reflect；suggest 会话结束只登记待巩固；auto 会话结束后自动巩固。 */
 export type ReflectModeConfig = 'off' | 'suggest' | 'auto'
+
+/**
+ * 嵌入后端。
+ *
+ * `local` — 包内模型，离线推理，数据不出机。
+ * `remote` — OpenAI 兼容端点；既可以是公开的嵌入服务，也可以是局域网内的推理
+ * 服务器，因此「本地/远程」由 baseUrl 的取值界定，而不是单独的档位。
+ */
+export type EmbedderKind = 'local' | 'remote'
+
+/** 把 token 归并成单个向量的方式。bge-m3 与同族模型需要 cls。 */
+export type EmbedderPooling = 'mean' | 'cls'
+
+/** 嵌入器子配置：本地模型或远程端点（二者互斥）。 */
+export interface EmbedderConfig {
+  /** 后端；默认 local——旧版本的行为原样保留。 */
+  kind?: EmbedderKind
+  /** local：transformers.js 模型标识；默认 Xenova/bge-small-zh-v1.5。 */
+  localModel?: string
+  /** local：池化方式；默认 mean。 */
+  localPooling?: EmbedderPooling
+  /** remote：模型标识，原样传给服务端（例如 text-embedding-3-small）。 */
+  model?: string
+  /** remote：端点根地址含版本号，例如 https://api.example.com/v1。 */
+  baseUrl?: string
+  /** remote：直接写在配置里的 Bearer 密钥——与 jev.apiKey 同一做法。 */
+  apiKey?: string
+  /** remote：存放密钥的环境变量名；已设置的变量优先于 apiKey。 */
+  apiKeyEnv?: string
+  /** remote：单次请求的文本条数上限；默认 32。 */
+  batchSize?: number
+  /** remote：单次请求的超时毫秒数；默认 30000。 */
+  timeoutMs?: number
+}
 
 /** Jev System One 模型子配置：DEFER 模糊带自动裁决与矛盾边确认；默认关闭时四态判定保持纯规则。 */
 export interface JevConfig {
@@ -98,6 +133,8 @@ export interface EngramConfig {
   historyBackfillIncludeNoCwd?: boolean
   /** Jev System One 裁决子配置；默认关闭（纯规则四态判定，行为与旧版一致）。 */
   jev?: JevConfig
+  /** 嵌入器：本地离线模型或远程 OpenAI 兼容端点；默认 local。 */
+  embedder?: EmbedderConfig
   /**
    * Язык текстов, которые плагин формирует сам: имена комнат, сообщения инструментов.
    * «auto» (по умолчанию) — язык системы. Интерфейс панели настраивается отдельно,
@@ -142,6 +179,22 @@ export interface ResolvedJevConfig {
   readonly contradictMinProbability: number
 }
 
+/** 解析后的嵌入器子配置（默认值已落地）。 */
+export interface ResolvedEmbedderConfig {
+  readonly kind: EmbedderKind
+  readonly localModel: string
+  readonly localPooling: EmbedderPooling
+  /** 远程端点；kind=local 时为 undefined。 */
+  readonly remote: {
+    readonly model: string
+    readonly baseUrl: string
+    readonly apiKey: string | undefined
+    readonly apiKeyEnv: string | undefined
+    readonly batchSize: number
+    readonly timeoutMs: number
+  } | undefined
+}
+
 /** 解析后的完整配置（显式默认值集中在此一步，实现不再 `?? 默认`）。 */
 export interface ResolvedEngramConfig {
   readonly dbDir: string
@@ -170,6 +223,8 @@ export interface ResolvedEngramConfig {
   readonly historyBackfill: ResolvedHistoryRules
   /** Jev System One 裁决子配置（默认关闭）。 */
   readonly jev: ResolvedJevConfig
+  /** 解析后的嵌入器子配置。 */
+  readonly embedder: ResolvedEmbedderConfig
   /** Язык вывода серверной половины (после разворачивания «auto» в язык системы). */
   readonly language: EngramLanguage
   /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
@@ -185,7 +240,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'autoSlot', 'reviewScheduling', 'assessReminder',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
-  'jev', 'language', 'redactWords',
+  'jev', 'embedder', 'language', 'redactWords',
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
@@ -231,6 +286,17 @@ export const Config: z<EngramConfig> = z.object({
     deferAcceptBelow: z.number().min(0).max(0.5),
     contradictMinProbability: z.number().min(0.5).max(1),
   }) as unknown as z<JevConfig>,
+  embedder: z.object({
+    kind: z.string(),
+    localModel: z.string(),
+    localPooling: z.string(),
+    model: z.string(),
+    baseUrl: z.string(),
+    apiKey: z.string(),
+    apiKeyEnv: z.string(),
+    batchSize: z.number().step(1).min(1).max(256),
+    timeoutMs: z.number().step(1).min(1000).max(600000),
+  }) as unknown as z<EmbedderConfig>,
   language: z.string() as unknown as z<LanguageSetting>,
   redactWords: z.array(z.string()),
 })
@@ -347,6 +413,42 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       throw new Error('dsh-engram: jev.deferAcceptBelow must be less than jev.deferMergeAbove')
     }
   }
+  const embedderConfig = config.embedder
+  const embedderKind = embedderConfig?.kind ?? 'local'
+  if (embedderConfig !== undefined) {
+    if (embedderConfig.kind !== undefined && embedderConfig.kind !== 'local' && embedderConfig.kind !== 'remote') {
+      throw new Error('dsh-engram: embedder.kind must be one of local|remote')
+    }
+    if (embedderConfig.localPooling !== undefined && embedderConfig.localPooling !== 'mean' && embedderConfig.localPooling !== 'cls') {
+      throw new Error('dsh-engram: embedder.localPooling must be one of mean|cls')
+    }
+    if (embedderConfig.batchSize !== undefined
+      && (!Number.isInteger(embedderConfig.batchSize) || embedderConfig.batchSize < 1 || embedderConfig.batchSize > 256)) {
+      throw new Error('dsh-engram: embedder.batchSize must be an integer in [1, 256]')
+    }
+    if (embedderConfig.timeoutMs !== undefined
+      && (!Number.isInteger(embedderConfig.timeoutMs) || embedderConfig.timeoutMs < 1000 || embedderConfig.timeoutMs > 600000)) {
+      throw new Error('dsh-engram: embedder.timeoutMs must be an integer in [1000, 600000]')
+    }
+    const baseUrl = embedderConfig.baseUrl
+    if (baseUrl !== undefined && baseUrl !== '') {
+      try {
+        const parsed = new URL(baseUrl)
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('unsupported protocol')
+      } catch {
+        throw new Error('dsh-engram: embedder.baseUrl must be an http(s) URL')
+      }
+    }
+    // 只对选中的后端提要求：local 不必知道 baseUrl，remote 不必知道模型缓存。
+    if (embedderKind === 'remote') {
+      if (embedderConfig.model === undefined || embedderConfig.model === '') {
+        throw new Error('dsh-engram: embedder.kind=remote requires embedder.model')
+      }
+      if (baseUrl === undefined || baseUrl === '') {
+        throw new Error('dsh-engram: embedder.kind=remote requires embedder.baseUrl')
+      }
+    }
+  }
   const dbDir = config.dbDir ?? join(homedir(), '.dsh', 'engram')
   return {
     dbDir,
@@ -389,6 +491,21 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
       deferMergeAbove: config.jev?.deferMergeAbove ?? 0.85,
       deferAcceptBelow: config.jev?.deferAcceptBelow ?? 0.15,
       contradictMinProbability: config.jev?.contradictMinProbability ?? 0.8,
+    },
+    embedder: {
+      kind: embedderKind,
+      localModel: embedderConfig?.localModel ?? ENGRAM_MODEL_ID,
+      localPooling: embedderConfig?.localPooling ?? 'mean',
+      remote: embedderKind === 'remote' && embedderConfig?.model !== undefined && embedderConfig.baseUrl !== undefined
+        ? {
+            model: embedderConfig.model,
+            baseUrl: embedderConfig.baseUrl,
+            apiKey: embedderConfig.apiKey,
+            apiKeyEnv: embedderConfig.apiKeyEnv,
+            batchSize: embedderConfig.batchSize ?? 32,
+            timeoutMs: embedderConfig.timeoutMs ?? 30000,
+          }
+        : undefined,
     },
   }
 }
