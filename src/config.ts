@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
+import { legacyJevFields, noteLegacyJevFields } from './jev/stale.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
 export type LegacyMigrationPolicy = 'eager' | 'conservative'
@@ -311,6 +312,10 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   }
   const jev = config.jev
   if (jev !== undefined) {
+    // Поля прежнего формата (apiKey/baseUrl) не читаются с переезда ключа к провайдеру
+    // хоста; одноразовое предупреждение объясняет это тому, у кого они уже написаны.
+    const legacy = legacyJevFields(jev)
+    if (legacy.length > 0) noteLegacyJevFields('cordis.yml', legacy)
     if (jev.enabled !== undefined && typeof jev.enabled !== 'boolean') {
       throw new Error('dsh-engram: jev.enabled must be a boolean')
     }

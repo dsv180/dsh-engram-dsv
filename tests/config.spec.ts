@@ -1,9 +1,27 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.ts'
 
 describe('resolveConfig', () => {
+  it('поля Jev прежнего формата не мешают разбору и предупреждают один раз', () => {
+    // Конфигурация, написанная до переезда ключа к провайдеру хоста: разбор её пропускает,
+    // но человеку один раз говорят, что ключ и адрес больше не читаются.
+    const legacy = { enabled: true, apiKey: 'legacy-key', baseUrl: 'https://api.typesafe.ai' }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const resolved = resolveConfig({ jev: legacy } as never)
+      expect(resolved.jev.enabled).toBe(true)
+      expect(resolved.jev.provider).toBeUndefined()
+      resolveConfig({ jev: legacy } as never)
+      const said = warn.mock.calls.map(call => String(call[0]))
+      expect(said.filter(line => line.includes('cordis.yml') && line.includes('jev.apiKey'))).toHaveLength(1)
+      expect(said.filter(line => line.includes('cordis.yml') && line.includes('jev.baseUrl'))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('空配置回落到 ~/.dsh/engram 与全部默认值', () => {
     const resolved = resolveConfig({})
     expect(resolved.dbDir).toBe(join(homedir(), '.dsh', 'engram'))

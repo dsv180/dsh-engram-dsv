@@ -20,6 +20,7 @@ import type { MemoryJudge } from '../write-disposition.ts'
 import { message } from '../i18n/messages.ts'
 import { createMemoryJudge } from './client.ts'
 import { resolveJevConnection, type HostContext } from './host.ts'
+import { legacyJevFields, noteLegacyJevFields } from './stale.ts'
 
 /** Поля Jev, которые правит панель; три порога остаются расширенной настройкой cordis.yml. */
 export interface JevOverride {
@@ -78,6 +79,10 @@ export function loadJevOverride(dbDir: string): JevOverride {
 function collectOverride(value: unknown): JevOverride {
   if (value === null || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
+  // Прежний формат не читаем, но и не прячем: одноразовое предупреждение скажет,
+  // что ключ из этого файла больше не используется и куда он переехал.
+  const legacy = legacyJevFields(raw)
+  if (legacy.length > 0) noteLegacyJevFields('jev-config.json', legacy)
   return {
     ...(typeof raw['enabled'] === 'boolean' ? { enabled: raw['enabled'] } : {}),
     ...(typeof raw['provider'] === 'string' && raw['provider'] !== '' ? { provider: raw['provider'] } : {}),

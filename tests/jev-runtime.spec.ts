@@ -149,14 +149,24 @@ describe('loadJevOverride', () => {
     })
   })
 
-  it('поля старого формата (apiKey/baseUrl) игнорируются', async () => {
+  it('поля старого формата (apiKey/baseUrl) игнорируются, о чём предупреждаем один раз', async () => {
     // Файл прежней версии: ключ и адрес плагин больше не хранит — их место занял выбор провайдера.
     await writeFile(
       jevOverridePath(dir),
       JSON.stringify({ enabled: true, apiKey: 'legacy-key', baseUrl: 'https://api.aitunnel.ru', model: 'jev-1.13' }),
       'utf8',
     )
-    expect(loadJevOverride(dir)).toEqual({ enabled: true, model: 'jev-1.13' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(loadJevOverride(dir)).toEqual({ enabled: true, model: 'jev-1.13' })
+      // Второе чтение того же файла: судья собирается на каждой записи, текст не должен повторяться.
+      expect(loadJevOverride(dir)).toEqual({ enabled: true, model: 'jev-1.13' })
+      const said = warn.mock.calls.map(call => String(call[0]))
+      expect(said.filter(line => line.includes('jev-config.json') && line.includes('jev.apiKey'))).toHaveLength(1)
+      expect(said.filter(line => line.includes('jev-config.json') && line.includes('jev.baseUrl'))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 
