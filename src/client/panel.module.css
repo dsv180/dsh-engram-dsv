@@ -49,6 +49,9 @@
    页可独立滚动。内边距只在这一层给（面板内容层不再叠加，避免双重留白）。sticky 浮层定位到本层。
    v0.8.7 安全区：border-box（否则 100%+padding 溢出容器右缘，文字被裁）+ 四周留足 24-32px。 */
 .panelRoot { width: 100%; height: 100%; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: var(--space-5) var(--space-6) var(--space-7); }
+/* 吸顶区（v0.8.13,#15）：Header + Tab 栏在长内容滚动时钉在顶部。
+   z-index 40（drawerLayer 是 41，比它低一级）；背景不透明遮 content 从下方穿过。 */
+.panelSticky { position: sticky; top: 0; z-index: 40; background: var(--dsw-alias-bg-base); padding-bottom: var(--space-1); }
 /* 对角双光斑水印：右上琥珀 + 左下玫瑰。伪元素 inset:0 铺满面板，渐变中心用 at 定位到边缘之外——
    光斑视觉在面板外，但绘制面不溢出（旧版负偏移需要 overflow:hidden，会吞掉 sticky 浮层的滚动参照）。
    isolation 建立 stacking context，z-index:-1 让水印垫在流内容之下、panel 背景之上。
@@ -83,7 +86,7 @@
 }
 
 /* ---------- Header（单行两端对齐：左 scope 三宫格 / 右 到期角标+重访+导出；按设置弹窗 ~600px 内容区设计，无品牌装饰） ---------- */
-.header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); min-height: 36px; position: relative; z-index: 5; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); min-height: 36px; position: relative; z-index: 5; }
 .headerActions { display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0; }
 
 /* ---------- 线性图标基础样式（Phosphor 风：stroke 1.75 / round cap / currentColor） ---------- */
@@ -103,12 +106,11 @@
 .dueDot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-error-primary); flex: none; }
 
 /* ---------- 顶部 Tab Bar（渐变下划线，amber→rose，工具型软件视觉签名） ---------- */
-.tabs { display: flex; align-items: flex-end; gap: var(--space-3); border-bottom: 1px solid var(--dsw-alias-border-l2); margin-bottom: var(--space-4); position: relative; overflow-x: auto; }
-.tabs::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--dsw-alias-border-l2); }
+.tabs { display: flex; align-items: flex-end; gap: var(--space-3); border-bottom: 1px solid var(--dsw-alias-border-l2); position: relative; overflow-x: auto; overflow-y: hidden; }
 .tabItem { position: relative; background: transparent; border: 0; padding: var(--space-2) 0 var(--space-3); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-ctrl); font-weight: 500; cursor: pointer; transition: color var(--dur-fast) var(--ease-spring); display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
 .tabItem:hover { color: var(--dsw-alias-label-secondary); }
 .tabItem.on { color: var(--dsw-alias-label-primary); }
-.tabItem.on::after { content: ''; position: absolute; left: -2px; right: -2px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--brand-grad-line); box-shadow: 0 1px 6px -1px color-mix(in srgb, var(--brand-2) 50%, transparent); animation: tabUnderline var(--dur-base) var(--ease-spring) both; }
+.tabItem.on::after { content: ''; position: absolute; left: -2px; right: -2px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--brand-grad-line); box-shadow: 0 1px 6px -1px color-mix(in srgb, var(--brand-2) 50%, transparent); animation: tabUnderline var(--dur-base) var(--ease-spring) both; }
 /* Tab 图标：与文字同行，等宽对齐；on 时着色跟随 brand gradient。 */
 .tabIcon { width: 14px; height: 14px; flex: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; }
 .tabItem.on .tabIcon { color: color-mix(in srgb, var(--brand-2) 65%, var(--dsw-alias-label-primary)); }

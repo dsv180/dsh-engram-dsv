@@ -3165,6 +3165,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {t('tabOps')}
         </button>
       </div>
+      </div>
 
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
