@@ -209,6 +209,8 @@ interface ProviderRekvisites {
   readonly baseUrl: string | undefined
   readonly apiKey: string
   readonly apiKeyEnv: string | undefined
+  /** Модели из настроек провайдера — из них берётся замена пустому полю модели. */
+  readonly modelIds: readonly string[]
 }
 
 async function readProviderRekvisites(
@@ -222,6 +224,7 @@ async function readProviderRekvisites(
     baseUrl: readString(profile, 'baseURL'),
     apiKey: await readProviderKey(ctx, profile),
     apiKeyEnv: readString(profile, 'apiKeyEnv'),
+    modelIds: readModels(profile).map(item => item.id),
   }
 }
 
@@ -285,8 +288,12 @@ export async function readJevCatalog(ctx: HostContext): Promise<JevCatalog> {
 
 /**
  * Живой список моделей провайдера: `GET {baseURL}/models` тем же ключом, что и
- * судейство. Если среди моделей есть Jev-модели, список сужается до них — так
- * панель предлагает именно то, что может отвечать протоколом System One.
+ * судейство. Список сужается до Jev-моделей — панель предлагает только то, что
+ * может отвечать протоколом System One.
+ *
+ * Если Jev-моделей у провайдера не нашлось, не предлагается ничего: остальные его
+ * модели этого протокола не понимают, и подсказка из них была бы подсказкой сломать
+ * судью. Имя в таком случае вписывают руками — поле принимает любое.
  * Ничего не бросает: причина отказа возвращается полем error.
  * @param ctx - контекст плагина.
  * @param providerId - выбранный провайдер DSH.
@@ -332,8 +339,9 @@ export async function readProviderModels(ctx: HostContext, providerId: string): 
     }
     ids.sort((left, right) => left.localeCompare(right))
     const jevModels = ids.filter(id => /jev/i.test(id))
-    if (jevModels.length > 0) return { models: jevModels, filtered: true, error: undefined }
-    return { models: ids, filtered: false, error: undefined }
+    // Пустой список вместо всех моделей провайдера: сузить до нуля честнее, чем
+    // предложить модель, которая протоколом System One не отвечает (см. пояснение выше).
+    return { models: jevModels, filtered: true, error: undefined }
   } catch (error) {
     return {
       models: [],
@@ -345,10 +353,11 @@ export async function readProviderModels(ctx: HostContext, providerId: string): 
 
 /**
  * Собрать соединение Jev: адрес — из настроек Jev либо шаблоном от провайдера,
- * ключ — из хранилища секретов по ссылке `apiKeyEnv`.
+ * ключ — из хранилища секретов по ссылке `apiKeyEnv`, модель — из настроек Jev
+ * либо первая Jev-модель провайдера.
  * @param ctx - контекст плагина.
- * @param providerId - выбранный в панели провайдер DSH.
- * @param model - выбранная модель.
+ * @param providerId - выбранный провайдер DSH; пусто = провайдера не назвал никто.
+ * @param model - выбранная модель; пусто = взять Jev-модель провайдера.
  * @param timeoutMs - тайм-аут одного запроса.
  * @param endpointOverride - адрес из настроек Jev; пусто = взять шаблон от провайдера.
  * @returns соединение либо текст ошибки (как в `parseJevPatch`).
@@ -360,10 +369,15 @@ export async function resolveJevConnection(
   timeoutMs: number,
   endpointOverride?: string,
 ): Promise<JevConnection | string> {
-  if (providerId.trim() === '') return message('misc.jevProviderMustNotBeEmpty')
-  if (model.trim() === '') return message('misc.jevModelMustNotBeEmpty')
+  // Провайдера мог не назвать никто: ни панель, ни cordis.yml, ни маршрут сессии.
+  if (providerId.trim() === '') return message('misc.jevProviderUnresolved')
   const rekvisites = await readProviderRekvisites(ctx, providerId)
   if (typeof rekvisites === 'string') return rekvisites
+  // Пустое поле модели означает «взять Jev-модель этого провайдера», а не «любую его
+  // модель»: чат-модель не отвечает протоколом System One, и подстановка ломала бы
+  // судью молча — вместо этого Jev уходит в чистые правила с видимой причиной.
+  const chosenModel = model.trim() !== '' ? model.trim() : pickJevModel(rekvisites.modelIds)
+  if (chosenModel === undefined) return message('misc.jevModelNotPicked', { provider: providerId })
   const chosen = endpointOverride !== undefined && endpointOverride.trim() !== ''
     ? endpointOverride.trim()
     : undefined
@@ -374,5 +388,16 @@ export async function resolveJevConnection(
   if (rekvisites.apiKey === '') {
     return message('misc.jevProviderKeyMissing', { provider: providerId, ref: rekvisites.apiKeyEnv ?? '' })
   }
-  return { endpoint, apiKey: rekvisites.apiKey, model: model.trim(), timeoutMs }
+  return { endpoint, apiKey: rekvisites.apiKey, model: chosenModel, timeoutMs }
+}
+
+/**
+ * Первая Jev-модель из настроек провайдера — замена пустому полю модели.
+ * Порядок не пересортировываем: он задан пользователем в настройках DSH, и выбранной
+ * должна стать та модель, которую он поставил выше.
+ * @param modelIds - модели провайдера из его настроек в DSH.
+ * @returns имя модели либо `undefined`, если Jev-моделей у провайдера нет.
+ */
+function pickJevModel(modelIds: readonly string[]): string | undefined {
+  return modelIds.find(id => /jev/i.test(id))
 }

@@ -2,10 +2,10 @@ import { statSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedJevConfig } from '../src/config.ts'
 import type { HostContext } from '../src/jev/host.ts'
-import { readJevCatalog } from '../src/jev/host.ts'
+import { readJevCatalog, readProviderModels, resolveJevConnection } from '../src/jev/host.ts'
 import {
   effectiveJevConfig,
   jevConfigView,
@@ -42,6 +42,7 @@ function hostWithCatalog(options: {
   readonly declared?: boolean | undefined
   readonly configurable?: readonly Record<string, unknown>[]
   readonly routes?: readonly Record<string, unknown>[]
+  readonly models?: readonly Record<string, unknown>[]
 } = {}): HostContext {
   const configurable = options.configurable ?? [
     { provider: 'anthropic', displayName: 'anthropic', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'anthropic'], ...(options.declared === undefined ? {} : { declared: options.declared }) },
@@ -65,7 +66,7 @@ function hostWithCatalog(options: {
                   displayName: 'AITunnel',
                   baseURL: 'https://api.aitunnel.ru/v1',
                   apiKeyEnv: 'AITUNNEL_API_KEY',
-                  models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+                  models: options.models ?? [{ id: 'jev-1.13', name: 'Jev 1.13' }],
                 },
               },
             },
@@ -266,17 +267,20 @@ describe('effectiveJevConfig', () => {
     expect(merged.contradictMinProbability).toBe(0.8)
   })
 
-  it('нет провайдера или модели: enabled принудительно снимается', () => {
+  it('провайдер и модель вправе остаться неназванными: enabled сохраняется, доопределение — в момент вопроса', () => {
     const noProvider = effectiveJevConfig({ ...baseConfig, provider: undefined }, { enabled: true })
-    expect(noProvider.enabled).toBe(false)
+    expect(noProvider.enabled).toBe(true)
     expect(noProvider.provider).toBeUndefined()
     const noModel = effectiveJevConfig({ ...baseConfig, model: undefined }, { enabled: true })
-    expect(noModel.enabled).toBe(false)
+    expect(noModel.enabled).toBe(true)
+    expect(noModel.model).toBeUndefined()
   })
 
-  it('панель снимает выбор провайдера: Jev выключается, даже если yml его задавал', () => {
-    const merged = effectiveJevConfig(baseConfig, { enabled: true, provider: '' })
-    expect(merged.enabled).toBe(false)
+  it('поле панели очищено: это «не названо», база из yml остаётся в силе', () => {
+    const merged = effectiveJevConfig(baseConfig, { enabled: true, provider: '', model: '' })
+    expect(merged.enabled).toBe(true)
+    expect(merged.provider).toBe('aitunnel')
+    expect(merged.model).toBe('jev-1')
   })
 
   it('панель выключает тумблер: Jev выключен', () => {
@@ -298,9 +302,9 @@ describe('jevConfigView', () => {
     expect(view.contradictMinProbability).toBe(0.8)
   })
 
-  it('пустой выбор провайдера: enabled=false в виде', () => {
+  it('провайдер не назван: тумблер всё равно включён — провайдера подставит маршрут сессии', () => {
     const view = jevConfigView({ ...baseConfig, provider: undefined }, {})
-    expect(view.enabled).toBe(false)
+    expect(view.enabled).toBe(true)
     expect(view.provider).toBeUndefined()
   })
 })
@@ -325,8 +329,21 @@ describe('resolveJevField', () => {
     expect(resolveJevField(hostStub, { ...baseConfig, enabled: false }, dir)).toEqual({})
   })
 
-  it('провайдер не выбран: пустой объект, судья не собирается', () => {
-    expect(resolveJevField(hostStub, { ...baseConfig, provider: undefined }, dir)).toEqual({})
+  it('провайдер не назван никем: судья собирается, причину назовёт момент вопроса', () => {
+    const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined, model: undefined }, dir)
+    expect(typeof field.judge?.ask).toBe('function')
+  })
+
+  it('наследование маршрута сессии: читатель провайдера вызывается и подставляет своё', () => {
+    let asked = 0
+    const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined, model: undefined }, dir, () => {
+      asked += 1
+      return 'from-session'
+    })
+    // Сборка судьи ленива: провайдер сессии спрашивается не при сборке, а при вопросе,
+    // поэтому смена маршрута посреди сессии подхватывается сама.
+    expect(typeof field.judge?.ask).toBe('function')
+    expect(asked).toBe(0)
   })
 
   it('панель выключает тумблер: перекрытие перечитывается сразу, судья исчезает', async () => {
@@ -339,5 +356,61 @@ describe('resolveJevField', () => {
     saveJevOverride(dir, { enabled: true, provider: 'aitunnel', model: 'jev-1' })
     const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined }, dir)
     expect(typeof field.judge?.ask).toBe('function')
+  })
+})
+
+describe('resolveJevConnection: провайдер и модель доопределяются лениво', () => {
+  it('модель не названа: берётся первая Jev-модель провайдера из его настроек', async () => {
+    const connection = await resolveJevConnection(hostWithCatalog(), 'aitunnel', '', 3000)
+    expect(connection).toEqual({
+      endpoint: 'https://api.aitunnel.ru/v1/systemone',
+      apiKey: 'host-key',
+      model: 'jev-1.13',
+      timeoutMs: 3000,
+    })
+  })
+
+  it('модель названа вручную: подстановка не перебивает имя, данное пользователем', async () => {
+    const connection = await resolveJevConnection(hostWithCatalog(), 'aitunnel', 'systemone-2', 3000)
+    expect(connection).toMatchObject({ model: 'systemone-2' })
+  })
+
+  it('у провайдера нет Jev-моделей: чужая модель не подставляется, причина названа', async () => {
+    const host = hostWithCatalog({ models: [{ id: 'gpt-4o', name: 'GPT-4o' }] })
+    const result = await resolveJevConnection(host, 'aitunnel', '', 3000)
+    expect(typeof result).toBe('string')
+    expect(result).toContain('JEV')
+  })
+
+  it('провайдера не назвал никто: причина вместо соединения', async () => {
+    const result = await resolveJevConnection(hostWithCatalog(), '', 'jev-1.13', 3000)
+    expect(typeof result).toBe('string')
+    expect(result).toContain('Jev')
+    expect(result).not.toContain('aitunnel')
+  })
+})
+
+describe('readProviderModels: в подсказки идут только Jev-модели', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  /** Живой список моделей провайдера подменяется: наружу теста сеть не выходит. */
+  const respond = (ids: readonly string[]): void => {
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: ids.map(id => ({ id })) }),
+    }))
+  }
+
+  it('Jev-модели есть: список сужается до них', async () => {
+    respond(['gpt-4o', 'jev-1.13'])
+    const list = await readProviderModels(hostWithCatalog(), 'aitunnel')
+    expect(list).toEqual({ models: ['jev-1.13'], filtered: true, error: undefined })
+  })
+
+  it('Jev-моделей нет: не предлагается ничего — остальные протокол не понимают', async () => {
+    respond(['gpt-4o', 'claude-3'])
+    const list = await readProviderModels(hostWithCatalog(), 'aitunnel')
+    expect(list).toEqual({ models: [], filtered: true, error: undefined })
   })
 })
