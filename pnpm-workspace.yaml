@@ -1,0 +1,14 @@
+# pnpm 11 читает настройки отсюда, а не из .npmrc: старые ключи в .npmrc
+# больше не применяются — проверено, auto-install-peers в .npmrc игнорировался,
+# и установка падала на несуществующем в npm пакете @deepseek-ai/dsh-type-meta.
+packages:
+  - .
+autoInstallPeers: false
+# Плоская раскладка повторяет профиль DSH (там то же значение), поэтому локальная
+# проверка видит те же зависимости, что и рабочая среда: onnxruntime-node лежит
+# на верхнем уровне, а не только внутри хранилища.
+nodeLinker: hoisted
+allowBuilds:
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
