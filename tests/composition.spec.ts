@@ -692,6 +692,46 @@ describe('dsh-engram real Loader composition', () => {
     expect(badEntry).toBeDefined()
     await expect(badEntry!.fiber!.await()).rejects.toThrow(/unknown config key/)
   })
+
+  it('会话压缩后画像重新注入（#32）', { timeout: 60_000 }, async () => {
+    // 回归：画像注入原先只在 step===1 执行，会话压缩把注入的快照摘要掉之后，
+    // step 永远不再等于 1，常驻画像从此缺席——README 承诺的 always present 失效。
+    // 现行为：自上次注入以来出现 compaction/end 时，任何一轮都重新注入；
+    // 哈希去重只在无压缩时生效。
+    const loaded = await loadComposition([], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      await store.saveProfileBlock('user', undefined, '演示画像：用户是星尘咖啡会员系统的常驻架构师，回答始终使用中文。', 'edit')
+      await store.close()
+    })
+    // 快照事件可变：压缩事件在中途追加，模拟「长对话进行中触发 compaction」。
+    const events: Array<{ type: string; data: unknown; seq: number; time: number }> = [
+      { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4' } } }, seq: 1, time: Date.now() },
+    ]
+    const fakeAgent = {
+      id: 'sess-compact',
+      session: {
+        id: 'sess-compact',
+        header: { cwd: process.cwd() },
+        snapshotEvents: () => events,
+      },
+    }
+    const emitter = loaded as unknown as { waterfall: (name: string, ...args: unknown[]) => unknown }
+    const callPreStep = async (step: number): Promise<string> => {
+      // waterfall：返回最外层（prepended 的 engram）处理器的决策——与宿主派发语义一致。
+      const decision = await (emitter.waterfall('agent/pre-step', { agent: fakeAgent, step, turn: 1, signal: new AbortController().signal },
+        async () => ({ kind: 'enter', messages: [] })) as Promise<{ messages: unknown[] }>)
+      return JSON.stringify(decision?.messages ?? [])
+    }
+    // 第 1 轮：注入画像。
+    expect(await callPreStep(1)).toContain('演示画像')
+    // 第 2 轮（无压缩）：内容与上次一致 → 哈希去重，不重注。
+    expect(await callPreStep(2)).not.toContain('演示画像')
+    // 压缩发生 → 任何一轮都必须重注，即使内容完全未变。
+    events.push({ type: 'compaction/end', data: {}, seq: events.length + 1, time: Date.now() })
+    expect(await callPreStep(3)).toContain('演示画像')
+    // 压缩被消化后无新压缩 → 恢复去重。
+    expect(await callPreStep(4)).not.toContain('演示画像')
+  })
 })
 
 

@@ -261,7 +261,7 @@ async function preStep(
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
-  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
+  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
@@ -337,7 +337,17 @@ async function preStep(
       }
     }
   }
-  if (step !== 1) return decision
+  // #32：画像「always present」不能只靠 step===1 的首轮注入——会话压缩（compaction）
+  // 会把注入的快照摘要掉，而 step 在压缩/恢复后永远不会再等于 1，画像从此缺席直到
+  // 重开对话。自上次注入以来出现 compaction/end 事件时，任何一轮都重新注入；哈希去重
+  // 只在无压缩时生效（压缩后即使内容未变也要重注——旧包已不在上下文）。
+  // 已知边界：应用重启后 state 清空，重启之前发生的压缩无法感知（此时历史快照仍在，
+  // 保守不重注）；纯恢复（无压缩）时快照仍在历史里，维持不重注。
+  const compactionCount = (agent.session.snapshotEvents() as unknown as readonly SessionEventLike[])
+    .filter(event => event.type === 'compaction/end').length
+  const compacted = state.lastProfileCompactions !== null && compactionCount > state.lastProfileCompactions
+  if (state.lastProfileCompactions === null) state.lastProfileCompactions = compactionCount
+  if (step !== 1 && !compacted) return decision
   const store = await openStore('user')
   // curated block：engram_profile_edit 维护的画像段，优先于自动派生画像注入。
   const curated = await store.getProfileBlock('user')
@@ -396,9 +406,10 @@ async function preStep(
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
   const hash = createHash('sha256').update(textWithRationale).digest('hex')
-  if (state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
+  if (!compacted && state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
   state.lastProfileAgent = String(agent.id)
   state.lastProfileHash = hash
+  state.lastProfileCompactions = compactionCount
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
   const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
   return {
@@ -626,9 +637,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     pendingReplayed: boolean
     lastProfileAgent: string | null
     lastProfileHash: string | null
+    lastProfileCompactions: number | null
     lastAssessReminder: string | null
     route: LlmRoute | undefined
-  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastAssessReminder: null, route: undefined }
+  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastProfileCompactions: null, lastAssessReminder: null, route: undefined }
 
   // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
   /** 会话持久化服务（可选；缺席时历史回填不可用）。 */
