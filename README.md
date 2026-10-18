@@ -275,7 +275,9 @@ pnpm test
 
 感谢社区贡献者让这个项目更好：
 
-- **[@lujfsd](https://github.com/lujfsd)（路杰锋）** —— [PR #2](https://github.com/kenz1117/dsh-engram/pull/2)：适配新版 dsh 的 `sessionPersistence` 只读句柄（新版已移除 `load()`）、摄取逐条判宫殿（提炼输出新增 `scope`）、项目宫殿随工作区切换（`GET /api/engram/workspaces` + 面板工作区选择器），并把无 git 时的分库命名从「cwd 前 12 字符」改为 cwd 全量 sha256（修掉同前缀目录撞库）。随 PR 附 17 条测试与两份设计文档。
+- **[@dsv180](https://github.com/dsv180)** —— 最高产的社区贡献者。[PR #13](https://github.com/kenz1117/dsh-engram/pull/13)：宿主消息目录双语化（zh/en）+ 语言模式验收脚本（`check-patterns` 的骨架）。[PR #22](https://github.com/kenz1117/dsh-engram/pull/22)：CI 门禁，让两道不依赖私有 peer 的检查在托管 runner 上真实执行。[PR #23](https://github.com/kenz1117/dsh-engram/pull/23)：`peerDependenciesMeta` 全 peer optional——修复了 0.8.0–0.8.14 十五个版本在干净环境装不上的打包事故。另有 [PR #20](https://github.com/kenz1117/dsh-engram/pull/20)（Jev 凭据上收宿主、插件不再存密钥）与 [PR #21](https://github.com/kenz1117/dsh-engram/pull/21)（嵌入器成为部署属性 + 维度硬守卫）在评审中。每个 PR 都附双语说明、逐项验证证据与诚实的限制清单——协作范本。
+- **[@FeiLZX3Km](https://github.com/FeiLZX3Km)** —— [Issue #19](https://github.com/kenz1117/dsh-engram/issues/19)：三轮高质量 UI 反馈（侧栏图标回归单色、翻新清单满宽铺开 + 弹窗可读性），每轮都附自己的代码排查，v0.8.15 / v0.9.1 的界面修复直接源于此。
+- - **[@lujfsd](https://github.com/lujfsd)（路杰锋）** —— [PR #2](https://github.com/kenz1117/dsh-engram/pull/2)：适配新版 dsh 的 `sessionPersistence` 只读句柄（新版已移除 `load()`）、摄取逐条判宫殿（提炼输出新增 `scope`）、项目宫殿随工作区切换（`GET /api/engram/workspaces` + 面板工作区选择器），并把无 git 时的分库命名从「cwd 前 12 字符」改为 cwd 全量 sha256（修掉同前缀目录撞库）。随 PR 附 17 条测试与两份设计文档。
 - **[@f0909172434](https://github.com/f0909172434)** —— [PR #4](https://github.com/kenz1117/dsh-engram/pull/4)：遗留项目库迁移的归属治理——eager 迁移改名时补写 JSON 墓碑 sidecar（`<旧库名>.migrated-to`，独占创建 + 0o600，记录 `migratedTo` / `claimedByCwd` / `claimedAt`），后续工作区撞上同一旧命名时收到指向先前归属的告警；新增 `legacyMigration` 配置（`eager` 默认自动迁移 / `conservative` 不动旧库只告警），迁移结果细化为 `renamed` / `kept-both` / `deferred` / `already-migrated` 等状态。随 PR 附测试。
 
 ## 许可证
