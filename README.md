@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/screenshots/hero.png" width="100%" alt="dsh-engram · 记忆宫殿 — DeepSeek Harness 跨会话长期记忆插件（位置当索引 · 固定路线定顺序 · 骨架长期复用 · 标记独一无二）">
+
 # dsh-engram · 记忆宫殿
 
 <p align="center">DeepSeek Harness 跨会话长期记忆插件 — 把记忆宫殿的<b>信息架构</b>（而不是它的神经科学隐喻）真正落进 agent：<b>位置当索引</b>（每条记忆钉在「房间#桩位」坐标上）、<b>固定路线定顺序</b>（巡游路线只增不改）、<b>骨架长期复用</b>（同主题永远同房同序）、<b>标记独一无二</b>（门牌纪律：唯一 · 差异化 · 带日期）。配套间隔重复的检索练习（只给线索、不给正文）与知识飞轮（摄取 → 强化 → 蒸馏 → 衰减）。纯 TypeScript，零外部进程、零 Python 依赖。</p>
