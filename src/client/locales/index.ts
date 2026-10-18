@@ -193,6 +193,7 @@ export type EngramKey =
   | 'refurbMergeWith'
   | 'refurbPreviewOpen'
   | 'retry'
+  | 'versionMismatch'
   | 'heroDue'
   | 'filterDueToday'
   | 'sortTime'

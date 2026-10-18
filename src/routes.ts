@@ -765,6 +765,11 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             })
             return
           }
+          if (req.method === 'GET' && route === 'version') {
+            // 版本握手（审计 F8）：面板比对 client/server 版本，偏斜（客户端已热更、后端进程旧）时挂横幅提示重启。
+            json(res, 200, { pluginVersion: deps.pluginVersion })
+            return
+          }
           if (req.method === 'GET' && route === 'models') {
             // 已注册的 provider 与模型清单：面板「辅助模型」下拉的数据源。
             json(res, 200, await deps.history.models())

@@ -202,6 +202,7 @@ export const ru: Record<EngramKey, string> = {
   refurbMergeWith: 'Кандидаты на слияние ({n})',
   refurbPreviewOpen: 'Нажмите, чтобы открыть запись целиком',
   retry: 'Повторить',
+  versionMismatch: 'Версии панели ({client}) и бэкенда ({server}) различаются — перезапустите приложение DSH, чтобы завершить обновление; до этого часть функций может работать некорректно.',
   heroDue: 'Срок сегодня',
   filterDueToday: 'Срок сегодня',
   sortTime: 'По времени',

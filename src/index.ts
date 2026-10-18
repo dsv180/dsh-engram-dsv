@@ -58,8 +58,9 @@ import type { EngramScope, Slot } from './types.ts'
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
 export const name = 'dsh-engram'
 
-/** 插件版本（与 package.json 同步，写进备份 _meta.json）。 */
-export const VERSION = '0.7.6'
+/** 插件版本：单一来源 = package.json（审计 F9：手写常量已漂移到 0.7.6，备份 _meta.json 随之记错版本）。 */
+import pluginPackageJson from '../package.json' with { type: 'json' }
+export const VERSION: string = pluginPackageJson.version
 
 /** 必需服务：工具注册表与 LLM 流式端点（摄取/蒸馏的辅助调用）。 */
 export const inject = ['tools', 'llm']

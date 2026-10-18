@@ -16,6 +16,10 @@ import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
+import pluginPackageJson from '../../package.json' with { type: 'json' }
+
+/** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
+const CLIENT_VERSION: string = pluginPackageJson.version
 
 /**
  * 线性图标库（Phosphor 风）：统一 24px viewBox、stroke 1.75、round cap/join、
@@ -3080,9 +3084,26 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
     return () => { window.removeEventListener('resize', onResize) }
   }, [measureSeg])
 
+  // 版本握手（审计 F8）：客户端 bundle 可热更新而插件后端进程仍旧（重启前）——
+  // v0.8.15 白屏事故正是这种偏斜。挂载时比对一次，不一致即顶部黄横幅提示重启；
+  // 旧后端（<0.8.17）没有 /version 路由时静默，维持原状。
+  const [versionMismatch, setVersionMismatch] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    api<{ pluginVersion: string }>('version')
+      .then(data => { if (!cancelled && data.pluginVersion !== CLIENT_VERSION) setVersionMismatch(data.pluginVersion) })
+      .catch(() => { /* 旧后端无此路由：不打扰 */ })
+    return () => { cancelled = true }
+  }, [])
+
   return (
     // v0.8+ 主列满宽：.panelRoot 接管纵向滚动（宿主主列可能是 grid 子项不滚动；这里自管滚动后，sticky 浮层定位到 panelRoot 即生效）
     <div className={styles.panelRoot}>
+      {versionMismatch !== null && (
+        <div className={styles.versionBanner} role="status">
+          {t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch })}
+        </div>
+      )}
     <div className={styles.panel}>
       {/* 对角双光斑水印由 .panel::before/::after 伪元素绘制，不再占用子元素名额。 */}
       {/* Drawer：sticky 层必须是面板第一个子元素——它位于面板顶部，向下滚动时被滚出头顶即被 sticky

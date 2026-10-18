@@ -535,6 +535,9 @@ select.input { padding-right: 28px; appearance: none; }
 .refurbCandidates { display: flex; flex-direction: column; gap: 4px; }
 .refurbCandidatesLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 
+/* 版本握手横幅（审计 F8）：client/server 版本偏斜时的可见警告（v0.8.15 白屏事故的可见形态）。 */
+.versionBanner { padding: var(--space-2) var(--space-3); font-size: var(--fs-body); color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, var(--dsw-alias-bg-layer-1)); border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, var(--dsw-alias-border-l2)); }
+
 /* ---------- 语言下拉 ---------- */
 /* 三种语言用下拉，原因有二：并排段控一点即换（误触就改语言，且不留痕迹），
    语言数量增加时段控会把按钮组一路拉长、挤坏顶栏排版；列表则只展开、只加一行。
