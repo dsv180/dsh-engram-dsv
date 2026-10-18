@@ -7,7 +7,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -176,6 +176,12 @@ class UnknownProjectError extends Error {
 /** 管理面板的路由依赖。 */
 export interface RouteDeps {
   readonly openStore: (scope: EngramScope) => Promise<EngramStore>
+  /**
+   * 关闭并清空全部分库缓存。restore-backup 成功后必须调用：restore 用 rename 换掉了
+   * .db 的 inode，缓存连接仍指向旧文件，继续写入会落进 .before-restore-* 且重启后丢失
+   * （审计 F16，数据丢失级）。
+   */
+  readonly closeStores: () => Promise<void>
   /**
    * 项目宫殿（工作区）清单与解析：面板「项目」scope 的落点随 GUI 当前工作区切换。
    * `open(undefined)` = 插件进程目录兜底（旧行为）；未知选择器返回 undefined。
@@ -866,14 +872,19 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 400, { error: 'archivePath required' })
               return
             }
-            // 路径安全：必须在 dbDir 子树内（防止任意文件覆盖）。
+            // 路径安全：必须在 dbDir 子树内（防止任意文件覆盖）。relative 判定对两种分隔符都成立
+            // ——旧写法 startsWith(dbDir + '/') 在 Windows 恒 false，restore 恒 400（审计 F26）。
             const normalized = join(deps.dbDir, body.archivePath.replace(/^\/+/, ''))
-            if (!normalized.startsWith(deps.dbDir + '/') && normalized !== deps.dbDir) {
+            const rel = relative(deps.dbDir, normalized)
+            if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
               json(res, 400, { error: messageIn(deps.language, 'misc.archivePathOutsideDbDir') })
               return
             }
             try {
               const result = await restoreBackup(normalized, deps.dbDir)
+              // 审计 F16：rename 换掉了 .db 的 inode，必须让缓存连接全部失效，
+              // 否则「恢复成功」后读旧库、新写入进 .before-restore-* 且重启后静默丢失。
+              await deps.closeStores()
               json(res, 200, { restored: result.restored, meta: result.archiveMeta })
             } catch (restoreError: unknown) {
               const message = restoreError instanceof Error ? restoreError.message : String(restoreError)

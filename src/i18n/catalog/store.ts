@@ -24,6 +24,7 @@ export const zh = {
 
   // —— backup/tar.ts ——
   'store.backupSchemaMismatch': '备份 schema 版本 {found} 与当前 {expected} 不兼容（请升级插件或使用旧版恢复）',
+  'store.preMigrationSnapshotFailed': '迁移前快照失败（继续升级，但本次迁移无法整文件回退）：{path}：{msg}',
   'store.backupMetaMissingPluginVersion': '备份 _meta.json 缺少 pluginVersion 字段，可能已损坏',
 
   // —— backup/tar-stream.ts ——
@@ -74,6 +75,7 @@ export const en = {
 
   // —— backup/tar.ts ——
   'store.backupSchemaMismatch': 'backup schema version {found} is incompatible with the current {expected} (upgrade the plugin or restore with the older version)',
+  'store.preMigrationSnapshotFailed': 'pre-migration snapshot failed (upgrading anyway; this migration cannot be rolled back file-wise): {path}: {msg}',
   'store.backupMetaMissingPluginVersion': 'backup _meta.json is missing the pluginVersion field; it may be corrupted',
 
   // —— backup/tar-stream.ts ——
@@ -124,6 +126,7 @@ export const ru = {
 
   // —— backup/tar.ts ——
   'store.backupSchemaMismatch': 'Версия schema резервной копии {found} несовместима с текущей {expected} (обновите плагин или восстановите старой версией)',
+  'store.preMigrationSnapshotFailed': 'Не удалось сделать снимок перед миграцией (продолжаем; откат этой миграции файлом невозможен): {path}: {msg}',
   'store.backupMetaMissingPluginVersion': 'В _meta.json резервной копии нет поля pluginVersion — возможно, файл повреждён',
 
   // —— backup/tar-stream.ts ——

@@ -546,6 +546,9 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         if (assigned > 0) console.warn(message('core.warnSlotsBackfilled', { count: assigned, path }))
         return store
       })
+    // 审计 F17：打开失败（SCHEMA_INCOMPATIBLE / 迁移中断 / 文件损坏）不缓存 rejection——
+    // 否则盘上修复后进程内也永远拿不到重试机会。
+    created.catch(() => { stores.delete(dbName) })
     stores.set(dbName, created)
     return created
   }
@@ -554,17 +557,25 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     scope === 'user' ? 'user.db' : scope === 'shared' ? 'shared.db' : identity.dbName,
   )
 
-  // 卸载/重启时关闭已打开的分库连接：不关会在 Windows 上锁住 .db 文件
-  // （插件卸载后目录删不掉、备份/迁移也可能失败）。disposer 返回 promise，宿主会等它完成。
-  ctx.effect(() => () => Promise.allSettled(
-    [...stores.values()].map(async pending => {
+  /**
+   * 关闭并清空全部分库缓存。两个用途：
+   *  - 卸载/重启时释放连接（不关会在 Windows 上锁住 .db 文件，目录删不掉）；
+   *  - 审计 F16：restore 备份后 rename 换掉了 .db 的 inode，缓存连接仍指向旧文件——
+   *    继续写入会落进 .before-restore-* 且重启后静默丢失。restore 成功后必须调用，
+   *    让下一次访问按恢复后的文件重新打开。
+   */
+  const closeStores = async (): Promise<void> => {
+    await Promise.allSettled([...stores.values()].map(async pending => {
       try {
         await (await pending).close()
       } catch {
         // 关闭失败无补救动作（连接会随进程退出释放）。
       }
-    }),
-  ), 'dsh-engram: close stores')
+    }))
+    stores.clear()
+  }
+
+  ctx.effect(() => () => closeStores(), 'dsh-engram: close stores')
 
   /** cwd → 分库文件名（历史回填会对每个历史 cwd 解析一次，避免重复读 git 元数据）。 */
   const cwdDbNames = new Map<string, string>()
@@ -843,6 +854,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     // 外层 ctx 未依赖 webServer 时属性不可用。
     registerEngramRoutes(webCtx, {
       openStore,
+      closeStores,
       projects: projectsDeps,
       exportDir: `${resolved.dbDir}/exports`,
       mirrorDir: `${resolved.dbDir}/palaces`,

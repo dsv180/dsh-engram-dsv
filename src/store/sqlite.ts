@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { copyFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EngramError, EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, asObservationId, normalizeEntityName } from '../types.ts'
 import { assignSlot } from '../palace/slots.ts'
@@ -380,6 +380,12 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(path)
+  // 审计 F15：全局 dbDir 被所有 DSH 进程共用，默认 rollback journal + 无 busy 等待时，
+  // 并发写直接 SQLITE_BUSY（摄取/衰减/面板路由全可触发，24h 定时任务必然周期撞车）。
+  // WAL 让读写不互斥；busy_timeout 给 5s 撞车缓冲；NORMAL 配 WAL 是官方推荐档。
+  db.exec('PRAGMA journal_mode = WAL;')
+  db.exec('PRAGMA busy_timeout = 5000;')
+  db.exec('PRAGMA synchronous = NORMAL;')
   /** 手工事务：BEGIN/COMMIT/ROLLBACK（兼容 ^22.19 引擎范围）。 */
   const withTransaction = (fn: () => void): void => {
     db.exec('BEGIN')
@@ -458,6 +464,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     if (!Number.isInteger(version) || version > SCHEMA_VERSION) {
       db.close()
       throw new EngramError('SCHEMA_INCOMPATIBLE', message('store.schemaVersionTooNew', { found: versionRow.value, supported: SCHEMA_VERSION, path }))
+    }
+    if (version < SCHEMA_VERSION) {
+      // 审计 F17：升版前做一次文件级快照（迁移有 bug 时可整文件回退）。
+      // 尽力而为：失败只警告不阻断升级；固定名字覆盖上次快照，避免无限累积（审计 F23）。
+      try {
+        await copyFile(path, `${path}.pre-migration`)
+      } catch (error) {
+        console.warn(message('store.preMigrationSnapshotFailed', { path, msg: error instanceof Error ? error.message : String(error) }))
+      }
     }
     while (version < SCHEMA_VERSION) {
       const migration = MIGRATIONS[String(version)]
