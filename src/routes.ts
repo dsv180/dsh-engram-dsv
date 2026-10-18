@@ -735,9 +735,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 执行是写操作，用户必须在看到原文的前提下决策（#19）。
             const rawScope = url.searchParams.get('scope')
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
+            // 理由文案语言跟随面板（审计 I1）：服务端进程语言在启动时冻结，面板语言运行时可切——
+            // 不带 lang 参数的旧客户端回落到 deps.language。
+            const rawLang = url.searchParams.get('lang')
+            const lang: EngramLanguage = rawLang === 'zh' || rawLang === 'en' || rawLang === 'ru' ? rawLang : deps.language
             const store = await storeFor(scope)
             const filter = await store.list({ scope, status: 'active', limit: 500, offset: 0 })
-            const suggestions = gatherRefurbSuggestions(filter.records, deps.language, DEFAULT_REFURB_OPTIONS)
+            const suggestions = gatherRefurbSuggestions(filter.records, lang, DEFAULT_REFURB_OPTIONS)
             const byId = new Map<string, MemoryRecord>(filter.records.map(record => [record.id, record]))
             const previewOf = (id: string) => {
               const record = byId.get(id)

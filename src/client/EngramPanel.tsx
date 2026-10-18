@@ -1341,7 +1341,7 @@ const EMPTY_PREVIEWS: readonly { id: string; kind: string; content: string; impo
  *  - review / split：跳到对应记忆抽屉查看（无副作用）。
  *  - demote：调用 engram_forget（带三问墓志铭），记忆转 archived。
  *  - merge：触发当前 scope 的 engram_distill（用户级闭馆整理），把多条相似记忆蒸馏为一条高层规律。 */
-function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
+function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }: {
   t: T
   scope: 'user' | 'project' | 'shared'
   /** 项目宫殿选择器（仅用于重载依赖；注入在 api() 里做）。 */
@@ -1349,6 +1349,8 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
   onSelect: (id: string) => void
   onAfterAction: () => void
   toast: ToastController
+  /** 面板语言（审计 I1）：理由文案在服务端按此语言生成——服务端进程语言在启动时冻结，不能代表面板当前语言。 */
+  lang: PanelLang
 }): React.ReactElement {
   interface MemoryPreview { id: string; kind: string; content: string; importance: number }
   interface Suggestion {
@@ -1368,11 +1370,11 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
   const [busy, setBusy] = useState(false)
   const reload = useCallback(() => {
     setBusy(true)
-    api<RefurbReport>(`refurb?scope=${scope}`)
+    api<RefurbReport>(`refurb?scope=${scope}&lang=${lang}`)
       .then((data) => { setReport(data); setFailed(null) })
       .catch((error: Error) => { setFailed(error.message) })
       .finally(() => { setBusy(false) })
-  }, [scope, project])
+  }, [scope, project, lang])
   useEffect(() => { reload() }, [reload])
   const labelOf = (action: Suggestion['action']): string => {
     switch (action) {
@@ -1391,15 +1393,16 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
     if (suggestion.action === 'demote') {
       if (!window.confirm(t('refurbConfirmDemote'))) return
       setBusy(true)
+      // 墓志铭三问走词典（审计 I3）：原先是硬编码中文字面量，EN/RU 用户的 op_log 里全是中文。
       api<{ id: string }>('forget', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           id: suggestion.primaryId,
           scope,
-          reason: '翻新清单降级',
-          affects: '无',
-          stillUseful: '可经 engram_restore 复原',
+          reason: t('refurbDemoteReasonText'),
+          affects: t('refurbDemoteAffects'),
+          stillUseful: t('refurbDemoteStillUseful'),
         }),
       })
         .then(() => {
@@ -3488,7 +3491,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                   <h4 className={styles.sectionTitle}>{t('refurbTitle')}</h4>
                 </div>
                 <div className={styles.panelCard}>
-                  <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} />
+                  <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} lang={lang} />
                 </div>
               </section>
               <section className={styles.section}>
