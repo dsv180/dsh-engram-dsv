@@ -1291,7 +1291,18 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
   onAfterAction: () => void
   toast: ToastController
 }): React.ReactElement {
-  interface Suggestion { action: 'merge' | 'demote' | 'review' | 'split'; primaryId: string; candidates: readonly string[]; reason: string; confidence: number }
+  interface MemoryPreview { id: string; kind: string; content: string; importance: number }
+  interface Suggestion {
+    action: 'merge' | 'demote' | 'review' | 'split'
+    primaryId: string
+    candidates: readonly string[]
+    reason: string
+    confidence: number
+    /** #19：主记忆内容摘要（后端截断 280 字），执行前给用户看原文。 */
+    primary: MemoryPreview | null
+    /** #19：merge 候选的内容摘要，展示被合并的对象。 */
+    candidatePreviews: readonly MemoryPreview[]
+  }
   interface RefurbReport { count: number; suggestions: readonly Suggestion[] }
   const [report, setReport] = useState<RefurbReport | null>(null)
   const [busy, setBusy] = useState(false)
@@ -1375,17 +1386,44 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
         ? <div className={styles.expandLoading}>{t('refurbEmpty')}</div>
         : (
           <ul className={styles.refurbList}>
-            {report.suggestions.map((suggestion, index) => (
-              <li key={`${suggestion.action}-${suggestion.primaryId}-${index}`} className={styles.refurbItem}>
-                <button type="button" className={styles.refurbBadge} onClick={() => { onSelect(suggestion.primaryId) }}>
-                  {labelOf(suggestion.action)}
-                </button>
-                <div className={styles.refurbReason}>{suggestion.reason}</div>
-                <span className={styles.refurbConfidence}>{(suggestion.confidence * 100).toFixed(0)}%</span>
-                <button type="button" className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
-                  onClick={() => { execute(suggestion) }}>{t('refurbExecute')}</button>
-              </li>
-            ))}
+            {report.suggestions.map((suggestion, index) => {
+              const primary = suggestion.primary
+              return (
+                <li key={`${suggestion.action}-${suggestion.primaryId}-${index}`} className={styles.refurbItem}>
+                  <div className={styles.refurbRow}>
+                    <button type="button" className={styles.refurbBadge} title={t('refurbPreviewOpen')}
+                      onClick={() => { onSelect(suggestion.primaryId) }}>
+                      {labelOf(suggestion.action)}
+                    </button>
+                    <div className={styles.refurbReason} title={suggestion.reason}>{suggestion.reason}</div>
+                    <span className={styles.refurbConfidence}>{(suggestion.confidence * 100).toFixed(0)}%</span>
+                    <button type="button" className={`${styles.refurbExec} ${styles.button}`} disabled={busy}
+                      onClick={() => { execute(suggestion) }}>{t('refurbExecute')}</button>
+                  </div>
+                  {primary !== null && (
+                    <button type="button" className={styles.refurbPreview} title={t('refurbPreviewOpen')}
+                      onClick={() => { onSelect(primary.id) }}>
+                      <span className={styles.refurbPreviewKind}>{primary.kind}</span>
+                      <span className={styles.refurbPreviewText}>{primary.content}</span>
+                    </button>
+                  )}
+                  {suggestion.candidatePreviews.length > 0 && (
+                    <div className={styles.refurbCandidates}>
+                      <span className={styles.refurbCandidatesLabel}>
+                        {t('refurbMergeWith', { n: suggestion.candidatePreviews.length })}
+                      </span>
+                      {suggestion.candidatePreviews.map(candidate => (
+                        <button key={candidate.id} type="button" className={styles.refurbPreview}
+                          title={t('refurbPreviewOpen')} onClick={() => { onSelect(candidate.id) }}>
+                          <span className={styles.refurbPreviewKind}>{candidate.kind}</span>
+                          <span className={styles.refurbPreviewText}>{candidate.content}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
     </div>

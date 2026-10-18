@@ -190,6 +190,8 @@ export type EngramKey =
   | 'refurbMergeDone'
   | 'refurbActionFailed'
   | 'refurbMergeEmpty'
+  | 'refurbMergeWith'
+  | 'refurbPreviewOpen'
   | 'heroDue'
   | 'filterDueToday'
   | 'sortTime'

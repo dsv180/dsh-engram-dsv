@@ -503,7 +503,9 @@ select.input { padding-right: 28px; appearance: none; }
 .refurbCount { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .refurbList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--dsw-alias-border-l1); animation: refurbReflow var(--dur-slow) var(--ease-spring) backwards; max-height: 320px; overflow-y: auto; }
 /* 行式与陈展列表同一语言：分隔线取代色块，卡内工具行（建议数 + 重新扫描）单独一行。 */
-.refurbItem { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); animation: refurbItemIn var(--dur-base) var(--ease-spring) backwards; }
+/* v0.8.15（#19）：条目改为「决策行 + 原文预览」两段式——执行是写操作，先给看完整上下文。 */
+.refurbItem { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); animation: refurbItemIn var(--dur-base) var(--ease-spring) backwards; }
+.refurbRow { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .refurbList > .refurbItem:last-child { border-bottom: 0; }
 .refurbItem:nth-child(2) { animation-delay: 40ms; }
 .refurbItem:nth-child(3) { animation-delay: 80ms; }
@@ -521,9 +523,17 @@ select.input { padding-right: 28px; appearance: none; }
 }
 .refurbBadge { padding: 2px var(--space-2); font-size: var(--fs-micro); font-weight: 600; letter-spacing: 0.04em; border-radius: 999px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, var(--dsw-alias-bg-layer-1)); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-primary); cursor: pointer; flex: none; transition: background var(--dur-fast) var(--ease-spring); }
 .refurbBadge:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, var(--dsw-alias-bg-layer-1)); }
-.refurbReason { flex: 1; min-width: 0; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 理由两行截断（#19：单行 ellipsis 让用户读不到完整决策依据），全文走 title 悬停。 */
+.refurbReason { flex: 1; min-width: 0; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .refurbConfidence { flex: none; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
 .refurbExec { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-micro); line-height: 1; flex: none; }
+/* 原文预览（#19）：整块可点进详情；kind 作角标，正文两行截断，全文已在后端截到 280 字。 */
+.refurbPreview { display: flex; align-items: baseline; gap: var(--space-2); width: 100%; padding: 5px var(--space-3); text-align: left; font: inherit; color: inherit; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 4px; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
+.refurbPreview:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); }
+.refurbPreviewKind { flex: none; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.refurbPreviewText { min-width: 0; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.refurbCandidates { display: flex; flex-direction: column; gap: 4px; }
+.refurbCandidatesLabel { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 
 /* ---------- 语言下拉 ---------- */
 /* 三种语言用下拉，原因有二：并排段控一点即换（误触就改语言，且不留痕迹），
