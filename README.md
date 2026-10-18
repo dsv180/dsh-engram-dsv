@@ -213,6 +213,17 @@ pnpm typecheck
 pnpm bundle
 ```
 
+### 提 PR 前自检
+
+```sh
+node scripts/check-messages.mjs   # 代码请求的键都已声明、无孤立键、zh/en/ru 三语配平
+node scripts/check-patterns.mjs   # 密钥清洗与闲聊拒收在所有已声明语言下的行为
+pnpm typecheck
+pnpm test
+```
+
+前两项在干净的检出上即可运行，CI（`.github/workflows/checks.yml`）跑的正是这两项，另加 `pnpm install --frozen-lockfile --ignore-scripts`。后三项不行：`@deepseek-ai/*` peer 不在 npm 上（见 `.npmrc`），只在 `deepseek-harness` 工作区内才能解析。提 PR 前请在本地把四项都跑一遍——字典漏配会在本机大声报错，而依赖语言环境的断言（断言中文文本，而 `language: 'auto'` 落到开发者自己的语言环境）只在别人的机器上变红。
+
 安装与构建脚本的两点说明：
 
 - **GitHub 源码快捷安装**（`dsh plugin add github:kenz1117/dsh-engram`）拿的是源码，`prepare` 会在 `lib/` 缺失时自动执行 `pnpm bundle` 现场构建——失败时看 prepare 日志的 bundle 段，而不是宿主报的 "no entry point"。
