@@ -269,7 +269,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'stats') {
-            const scopes: EngramScope[] = ['user', 'project']
+            // shared 必须在内（#19 后续发现）：scope 选择器提供「共享」，速览却因
+            // parts 缺 shared 分部而永远显示 0——一行修复前它是真实的幽灵 scope。
+            const scopes: EngramScope[] = ['user', 'project', 'shared']
             const parts = await Promise.all(scopes.map(async (scope) => ({ scope, stats: await (await storeFor(scope)).stats() })))
             json(res, 200, { parts })
             return
