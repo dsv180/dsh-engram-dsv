@@ -89,7 +89,10 @@ describe('saveJevOverride', () => {
     saveJevOverride(dir, override)
     expect(loadJevOverride(dir)).toEqual(override)
     // mode 与 0o777 取与：屏蔽文件类型位，只比权限位。
-    expect(statSync(jevOverridePath(dir)).mode & 0o777).toBe(0o600)
+    // Windows 不维护 POSIX 权限位（stat 回报 0o666），断言仅对 POSIX 生效（#13 贡献者实录）。
+    if (process.platform !== 'win32') {
+      expect(statSync(jevOverridePath(dir)).mode & 0o777).toBe(0o600)
+    }
   })
 })
 

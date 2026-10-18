@@ -424,7 +424,10 @@ describe('dsh-engram real Loader composition', () => {
     expect(root).toBeDefined()
     const overridePath = join(root!, 'engram', 'jev-config.json')
     expect(existsSync(overridePath)).toBe(true)
-    expect(statSync(overridePath).mode & 0o777).toBe(0o600)
+    // Windows 不维护 POSIX 权限位（stat 回报 0o666），断言仅对 POSIX 生效（#13 贡献者实录）。
+    if (process.platform !== 'win32') {
+      expect(statSync(overridePath).mode & 0o777).toBe(0o600)
+    }
 
     // 任一字段非法即整体 400：合法字段也不落盘。
     const bad = await call(port, 'POST', '/api/engram/jev-config', { model: 'good', timeoutMs: 1 })
