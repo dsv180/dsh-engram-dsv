@@ -190,6 +190,7 @@ export const en: Record<EngramKey, string> = {
   refurbMergeEmpty: 'No merge candidates',
   refurbMergeWith: 'Merge candidates ({n})',
   refurbPreviewOpen: 'Click to view the full memory',
+  retry: 'Retry',
   heroDue: 'Due today',
   filterDueToday: 'Due today',
   sortTime: 'By time',

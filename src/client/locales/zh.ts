@@ -190,6 +190,7 @@ export const zh: Record<EngramKey, string> = {
   refurbMergeEmpty: '无可合并的候选条目',
   refurbMergeWith: '合并候选（{n} 条）',
   refurbPreviewOpen: '点击查看记忆全文',
+  retry: '重试',
   heroDue: '今日到期',
   filterDueToday: '今日到期',
   sortTime: '按时间',

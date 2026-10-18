@@ -201,6 +201,7 @@ export const ru: Record<EngramKey, string> = {
   refurbMergeEmpty: 'Нет кандидатов на слияние',
   refurbMergeWith: 'Кандидаты на слияние ({n})',
   refurbPreviewOpen: 'Нажмите, чтобы открыть запись целиком',
+  retry: 'Повторить',
   heroDue: 'Срок сегодня',
   filterDueToday: 'Срок сегодня',
   sortTime: 'По времени',

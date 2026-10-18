@@ -1130,6 +1130,17 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
   )
 }
 
+/** 加载失败行（紧凑）：文案 + 重试按钮，用于卡片内失败态；整页失败态用 EmptyState。
+ *  #S3（审计）：禁止 catch 里把失败伪装成空态——失败与健康必须可区分。 */
+function LoadFailedLine({ t, msg, onRetry }: { t: T; msg: string; onRetry: () => void }): React.ReactElement {
+  return (
+    <div className={styles.expandLoading}>
+      {t('loadFailed', { msg })}
+      <button type="button" className={styles.button} onClick={onRetry}>{t('retry')}</button>
+    </div>
+  )
+}
+
 /**
  * 管家日志整页视图：顶部近 7 天三个计数，下面是两库合并的完整 op_log
  * （时间 · 操作 · 宫殿 · 摘要），可按操作类别筛选；不再限高裁切，供逐条审计。
@@ -1143,13 +1154,15 @@ function LogPanel({ t, telemetry, project }: {
 }): React.ReactElement {
   const [rows, setRows] = useState<ActivityRow[] | null>(null)
   const [filter, setFilter] = useState<LogFilter>('all')
+  const [failed, setFailed] = useState<string | null>(null)
+  const [reloadTick, setReloadTick] = useState(0)
   useEffect(() => {
     let cancelled = false
     api<{ operations: ActivityRow[] }>('activity?limit=50', undefined, true)
-      .then((data) => { if (!cancelled) setRows(data.operations) })
-      .catch(() => { if (!cancelled) setRows([]) })
+      .then((data) => { if (!cancelled) { setRows(data.operations); setFailed(null) } })
+      .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
     return () => { cancelled = true }
-  }, [project])
+  }, [project, reloadTick])
   const allow = LOG_GROUPS[filter]
   const visible = (rows ?? []).filter(row => allow === null || allow.includes(row.op))
   const counts = telemetry?.counts
@@ -1188,7 +1201,9 @@ function LogPanel({ t, telemetry, project }: {
         </div>
       </div>
       <div className={styles.panelCard}>
-        {rows === null
+        {failed !== null
+          ? <LoadFailedLine t={t} msg={failed} onRetry={() => { setReloadTick(tick => tick + 1) }} />
+          : rows === null
           ? <div className={styles.expandLoading}>{t('loading')}</div>
           : visible.length === 0
             ? <EmptyState title={t('activityEmpty')} hint={t('emptyHint')} />
@@ -1225,21 +1240,24 @@ function TourProposalCard({ t, scope, project, onSelect }: {
   const KINDS_FOCUS = ['', 'fact', 'preference', 'decision', 'episode', 'skill'] as const
   const [focusKind, setFocusKind] = usePersistedState<string>('tour.focusKind', '', KINDS_FOCUS)
   const [proposal, setProposal] = useState<Proposal | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [reloadTick, setReloadTick] = useState(0)
   useEffect(() => {
     let cancelled = false
     const path = focusKind === ''
       ? `tour-proposal?scope=${scope}`
       : `tour-proposal?scope=${scope}&focusKind=${focusKind}`
     api<Proposal>(path)
-      .then((data) => { if (!cancelled) setProposal(data) })
-      .catch(() => { if (!cancelled) setProposal({ greeting: t('tourProposalEmpty'), activeCount: 0, empty: true, suggestedStops: [] }) })
+      .then((data) => { if (!cancelled) { setProposal(data); setFailed(null) } })
+      .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
     return () => { cancelled = true }
-  }, [t, scope, project, focusKind])
+  }, [t, scope, project, focusKind, reloadTick])
   const labelKind = (kind: string): string => {
     if (kind === '') return t('tourFocusAll')
     const key = KIND_KEY[kind]
     return key === undefined ? kind : t(key)
   }
+  if (failed !== null) return <LoadFailedLine t={t} msg={failed} onRetry={() => { setReloadTick(tick => tick + 1) }} />
   if (proposal === null) return <div className={styles.expandLoading}>{t('loading')}</div>
   return (
     <div className={styles.tourProposal}>
@@ -1278,6 +1296,9 @@ function TourProposalCard({ t, scope, project, onSelect }: {
   )
 }
 
+/** 旧后端（<0.8.15）的 refurb 响应没有 candidatePreviews 字段：用稳定空数组兜底，避免每次渲染新建引用。 */
+const EMPTY_PREVIEWS: readonly { id: string; kind: string; content: string; importance: number }[] = []
+
 /** 翻新清单：扫描 active 条目，给出 merge / demote / review / split 四类建议；带手动刷新 + 写回按钮。
  *  - review / split：跳到对应记忆抽屉查看（无副作用）。
  *  - demote：调用 engram_forget（带三问墓志铭），记忆转 archived。
@@ -1298,19 +1319,20 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
     candidates: readonly string[]
     reason: string
     confidence: number
-    /** #19：主记忆内容摘要（后端截断 280 字），执行前给用户看原文。 */
-    primary: MemoryPreview | null
-    /** #19：merge 候选的内容摘要，展示被合并的对象。 */
-    candidatePreviews: readonly MemoryPreview[]
+    /** #19：主记忆内容摘要（后端截断 280 字），执行前给用户看原文。旧后端（<0.8.15）缺省。 */
+    primary?: MemoryPreview | null
+    /** #19：merge 候选的内容摘要，展示被合并的对象。旧后端（<0.8.15）缺省。 */
+    candidatePreviews?: readonly MemoryPreview[]
   }
   interface RefurbReport { count: number; suggestions: readonly Suggestion[] }
   const [report, setReport] = useState<RefurbReport | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const reload = useCallback(() => {
     setBusy(true)
     api<RefurbReport>(`refurb?scope=${scope}`)
-      .then((data) => { setReport(data) })
-      .catch(() => { setReport({ count: 0, suggestions: [] }) })
+      .then((data) => { setReport(data); setFailed(null) })
+      .catch((error: Error) => { setFailed(error.message) })
       .finally(() => { setBusy(false) })
   }, [scope, project])
   useEffect(() => { reload() }, [reload])
@@ -1375,6 +1397,7 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
         .finally(() => { setBusy(false) })
     }
   }, [reload, onSelect, onAfterAction, toast, t, scope])
+  if (failed !== null) return <LoadFailedLine t={t} msg={failed} onRetry={reload} />
   if (report === null) return <div className={styles.expandLoading}>{t('loading')}</div>
   return (
     <div className={styles.refurb}>
@@ -1387,7 +1410,10 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
         : (
           <ul className={styles.refurbList}>
             {report.suggestions.map((suggestion, index) => {
-              const primary = suggestion.primary
+              // 兜底旧后端（0.8.14）：响应没有 primary/candidatePreviews 字段。
+              // 面板 slot 的错误边界会把渲染异常放大成整面板白屏，这里必须容错。
+              const primary = suggestion.primary ?? null
+              const candidatePreviews = suggestion.candidatePreviews ?? EMPTY_PREVIEWS
               return (
                 <li key={`${suggestion.action}-${suggestion.primaryId}-${index}`} className={styles.refurbItem}>
                   <div className={styles.refurbRow}>
@@ -1407,12 +1433,12 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast }: {
                       <span className={styles.refurbPreviewText}>{primary.content}</span>
                     </button>
                   )}
-                  {suggestion.candidatePreviews.length > 0 && (
+                  {candidatePreviews.length > 0 && (
                     <div className={styles.refurbCandidates}>
                       <span className={styles.refurbCandidatesLabel}>
-                        {t('refurbMergeWith', { n: suggestion.candidatePreviews.length })}
+                        {t('refurbMergeWith', { n: candidatePreviews.length })}
                       </span>
-                      {suggestion.candidatePreviews.map(candidate => (
+                      {candidatePreviews.map(candidate => (
                         <button key={candidate.id} type="button" className={styles.refurbPreview}
                           title={t('refurbPreviewOpen')} onClick={() => { onSelect(candidate.id) }}>
                           <span className={styles.refurbPreviewKind}>{candidate.kind}</span>
@@ -1822,9 +1848,10 @@ function EntityView({ t, scope, project, reloadTick }: {
 
   useEffect(() => {
     let cancelled = false
+    const query = q.trim()
     const params = new URLSearchParams({ scope })
     if (kind !== 'all') params.set('kind', kind)
-    if (q !== '') params.set('q', q)
+    if (query !== '') params.set('q', query)
     api<EntityListView>(`entities?${params.toString()}`)
       .then(d => { if (!cancelled) { setData(d); setFailed(null) } })
       .catch((err: Error) => { if (!cancelled) setFailed(err.message) })
@@ -1877,7 +1904,7 @@ function EntityView({ t, scope, project, reloadTick }: {
         <span className={styles.searchBox}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
           <input className={`${styles.input} ${styles.search}`} placeholder={t('entitySearchPlaceholder')} value={q}
-            onChange={event => { setQ(event.target.value.trim()); setDetail(null); setFacts(null) }} />
+            onChange={event => { setQ(event.target.value); setDetail(null); setFacts(null) }} />
         </span>
         {data !== null && <span className={styles.sectionHint}>{t('entityCount', { n: data.total })}</span>}
       </div>
@@ -2950,10 +2977,12 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
 
   useEffect(() => {
     let cancelled = false
+    // q 保留原文（输入法/词组中间空格），只在请求边界 trim——trim 过早会让含空格查询永远打不出来。
+    const query = q.trim()
     const qs = new URLSearchParams({
       scope, status, kind, redacted, limit: String(PAGE_SIZE), offset: String(offset),
     })
-    if (q !== '') qs.set('q', q)
+    if (query !== '') qs.set('q', query)
     if (sort === 'tour') qs.set('sort', 'tour')
     api<ListResult>(`list?${qs.toString()}`)
       .then((data) => { if (!cancelled) { setList(data); setError(null) } })
@@ -3227,7 +3256,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             <span className={styles.searchBox}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 L21 21" /></svg>
               <input className={`${styles.input} ${styles.search}`} placeholder={t('searchPlaceholder')} value={q}
-                onChange={event => { setQ(event.target.value.trim()); setOffset(0); setExpanded(null); clearSelection() }} />
+                onChange={event => { setQ(event.target.value); setOffset(0); setExpanded(null); clearSelection() }} />
             </span>
             <div className={styles.segGroup}>
               {([
