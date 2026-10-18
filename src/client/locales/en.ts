@@ -191,6 +191,7 @@ export const en: Record<EngramKey, string> = {
   refurbMergeWith: 'Merge candidates ({n})',
   refurbPreviewOpen: 'Click to view the full memory',
   retry: 'Retry',
+  viewCrashed: 'This view failed to render — click Retry; if it keeps happening, please report with this error message',
   versionMismatch: 'Panel ({client}) and backend ({server}) versions differ — restart the DSH app to finish updating; some features may misbehave until then.',
   heroDue: 'Due today',
   filterDueToday: 'Due today',

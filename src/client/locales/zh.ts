@@ -191,6 +191,7 @@ export const zh: Record<EngramKey, string> = {
   refurbMergeWith: '合并候选（{n} 条）',
   refurbPreviewOpen: '点击查看记忆全文',
   retry: '重试',
+  viewCrashed: '该视图渲染失败——点击重试；若持续出现，请携带本条错误信息反馈',
   versionMismatch: '面板（{client}）与后端（{server}）版本不一致——请重启 DSH 应用完成更新；更新前部分功能可能异常。',
   heroDue: '今日到期',
   filterDueToday: '今日到期',

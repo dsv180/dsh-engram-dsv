@@ -7,7 +7,7 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
@@ -1143,6 +1143,40 @@ function LoadFailedLine({ t, msg, onRetry }: { t: T; msg: string; onRetry: () =>
       <button type="button" className={styles.button} onClick={onRetry}>{t('retry')}</button>
     </div>
   )
+}
+
+/** 视图级错误边界（审计 §1.1）：单个页签渲染异常降级为错误卡 + 重载按钮，
+ *  不再放大成宿主 slot 错误边界那种「整面板白屏且无恢复 UI」。
+ *  key=activeTab：切页签即换边界实例，错误不跨页签扩散；重试经 remount 重新拉取。
+ *  注意这只是兜底：新增响应字段仍必须可选 + 兜底（见 CONTRIBUTING 契约约定）。 */
+class ViewErrorBoundary extends Component<{
+  children: React.ReactNode
+  retryLabel: string
+  hintLabel: string
+}, { error: Error | null; tick: number }> {
+  override state: { error: Error | null; tick: number } = { error: null, tick: 0 }
+  static getDerivedStateFromError(error: Error): { error: Error | null; tick: number } {
+    return { error, tick: 0 }
+  }
+  private readonly handleRetry = (): void => {
+    this.setState(previous => ({ error: null, tick: previous.tick + 1 }))
+  }
+  override render(): React.ReactNode {
+    const { error, tick } = this.state
+    if (error !== null) {
+      return (
+        <div className={styles.tabPanel}>
+          <div className={styles.panelCard}>
+            <EmptyState title={this.props.hintLabel} hint={error.message} />
+            <div className={styles.expandLoading}>
+              <button type="button" className={styles.button} onClick={this.handleRetry}>{this.props.retryLabel}</button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    return <Fragment key={tick}>{this.props.children}</Fragment>
+  }
 }
 
 /**
@@ -3269,6 +3303,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       </div>
       </div>
 
+      <ViewErrorBoundary key={activeTab} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
           <PageHeader title={t('tabLibrary')} subtitle={t('pageHeaderLibrarySubtitle')} />
@@ -3565,6 +3600,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           </section>
         </div>
       )}
+      </ViewErrorBoundary>
 
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}
       {toast.viewport}
