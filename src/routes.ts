@@ -731,7 +731,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'GET' && route === 'refurb') {
             // 翻新清单：扫描当前 scope 的 active 条目，按规则生成 merge/demote/review/split 建议。
-            // 响应内联 primary 与 merge 候选的内容摘要（截断到 280 字，全文走徽章跳转）：
+            // 响应内联 primary 与 merge 候选的记忆原文：
             // 执行是写操作，用户必须在看到原文的前提下决策（#19）。
             const rawScope = url.searchParams.get('scope')
             const scope: EngramScope = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
@@ -743,15 +743,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const filter = await store.list({ scope, status: 'active', limit: 500, offset: 0 })
             const suggestions = gatherRefurbSuggestions(filter.records, lang, DEFAULT_REFURB_OPTIONS)
             const byId = new Map<string, MemoryRecord>(filter.records.map(record => [record.id, record]))
+            // 原文全量返回（#19 问题一，方案 A）：清单满宽铺开后长文本完整展示；
+            // 环回接口无带宽顾虑，不再截 280 字。
             const previewOf = (id: string) => {
               const record = byId.get(id)
               if (record === undefined) return null
-              return {
-                id: record.id,
-                kind: record.kind,
-                content: record.content.length > 280 ? `${record.content.slice(0, 280)}…` : record.content,
-                importance: record.importance,
-              }
+              return { id: record.id, kind: record.kind, content: record.content, importance: record.importance }
             }
             json(res, 200, {
               scope,

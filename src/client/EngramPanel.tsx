@@ -1385,7 +1385,7 @@ function RefurbCard({ t, scope, project, onSelect, onAfterAction, toast, lang }:
     candidates: readonly string[]
     reason: string
     confidence: number
-    /** #19：主记忆内容摘要（后端截断 280 字），执行前给用户看原文。旧后端（<0.8.15）缺省。 */
+    /** #19：主记忆原文（0.9.1 起全量返回），执行前给用户看原文。旧后端（<0.8.15）缺省。 */
     primary?: MemoryPreview | null
     /** #19：merge 候选的内容摘要，展示被合并的对象。旧后端（<0.8.15）缺省。 */
     candidatePreviews?: readonly MemoryPreview[]
@@ -3501,6 +3501,17 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                   <TourProposalCard t={t} scope={scope} project={projectSelector} onSelect={openReview} />
                 </div>
               </section>
+              {/* v0.9.1（#19 问题一/二，方案 A）：翻新清单从右下窄栏挪到主列满宽铺开——
+                  执行是写操作，长文本理由与记忆原文必须完整可读、就地操作，不再挤在
+                  小卡里靠弹窗补全。sideCol 只留纯展示的房间目录与画像。 */}
+              <section className={styles.section}>
+                <div className={styles.sectionHead}>
+                  <h4 className={styles.sectionTitle}>{t('refurbTitle')}</h4>
+                </div>
+                <div className={styles.panelCard}>
+                  <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} lang={lang} />
+                </div>
+              </section>
             </div>
             <aside className={styles.sideCol}>
               <section className={styles.section}>
@@ -3510,14 +3521,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
                 </div>
                 <div className={styles.panelCard}>
                   <RoomDirectory t={t} byKind={overview.byKind} />
-                </div>
-              </section>
-              <section className={styles.section}>
-                <div className={styles.sectionHead}>
-                  <h4 className={styles.sectionTitle}>{t('refurbTitle')}</h4>
-                </div>
-                <div className={styles.panelCard}>
-                  <RefurbCard t={t} scope={scope} project={projectSelector} onSelect={openReview} onAfterAction={reload} toast={toast} lang={lang} />
                 </div>
               </section>
               <section className={styles.section}>
