@@ -37,3 +37,25 @@ jobs:
         run: node scripts/check-messages.mjs
       - name: language pattern acceptance
         run: node scripts/check-patterns.mjs
+      # Packaging smoke (audit 2026-10-18 §7): 0.8.0–0.8.14 shipped a tarball a
+      # clean profile could not install (peers not optional — PR #23). Two cheap
+      # guards that run without the peers:
+      #  1. the published metadata must keep every @deepseek-ai/* peer optional;
+      #  2. the dependency tree of the packed tarball must resolve from the
+      #     registry (--dry-run: metadata only, no model downloads).
+      # lib/ itself cannot be built here (see the header comment) — tarball
+      # contents are verified locally by scripts/ensure-build.mjs at publish.
+      - name: packaging smoke
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const peers = Object.keys(pkg.peerDependencies ?? {});
+            const meta = pkg.peerDependenciesMeta ?? {};
+            const notOptional = peers.filter(p => meta[p]?.optional !== true);
+            if (peers.length === 0) throw new Error('no peerDependencies declared');
+            if (notOptional.length > 0) throw new Error('peers not optional: ' + notOptional.join(', '));
+            console.log('peers optional:', peers.join(', '));
+          "
+          npm pack --ignore-scripts
+          mkdir smoketest && cd smoketest && npm init -y
+          npm install --dry-run --ignore-scripts "$(find .. -name 'kenz1117-dsh-engram-*.tgz' | head -1)"
