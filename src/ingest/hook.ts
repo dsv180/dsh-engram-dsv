@@ -750,9 +750,26 @@ export interface ReplayOutcome {
 
 /**
  * 重放待补做的末轮摄取（下次会话首次 pre-step 调用）。已有 done 标记或键损坏的
- * pending 直接出队；事件源不可得的保留到下次。单个键失败抛出，剩余键留待下次。
+ * pending 直接出队；事件源不可得的保留到下次。
+ * 审计 F11：单个键失败不再冲出整个循环（队头阻塞——#1 失败 #2..N 全不试）。
+ * 审计 F12/F11②：LLM 已付费但输出不可解析/为空时保留 pending 下次重试（可能是暂时性
+ * 截断）；但会话陈旧（末事件早于 REPLAY_ABANDON_AGE_MS）即放弃——确定性失败不应
+ * 每个会话白付一次辅助调用、永久卡住队列。
  * 每条 pending 按它自己会话的 cwd 组装写入路由（补做时同样逐条判宫殿）。
  */
+
+/** pending 重放的放弃窗口：会话末事件早于该时长视为陈旧，失败即出队。 */
+const REPLAY_ABANDON_AGE_MS = 14 * 86_400_000
+
+/** 会话末事件早于放弃窗口即为陈旧（事件缺 time 无法判定时视作非陈旧，保守保留）。 */
+function replayStale(session: { events: readonly SessionEventLike[] }): boolean {
+  for (let i = session.events.length - 1; i >= 0; i -= 1) {
+    const time = session.events[i]?.time
+    if (time !== undefined) return Date.now() - time > REPLAY_ABANDON_AGE_MS
+  }
+  return false
+}
+
 export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<ReplayOutcome> {
   const store = await deps.openStore()
   const pendings = await store.listAuditDetails(INGEST_PENDING_OP)
@@ -769,24 +786,43 @@ export async function replayPendingIngests(deps: ReplayIngestDeps): Promise<Repl
       kept += 1
       continue
     }
-    await ingestPreviousTurn({
-      events: session.events,
-      sessionId: key.sessionId,
-      turn: key.turn,
-      slice: key.turn,
-      openStore: deps.openStore,
-      openAuditStore: deps.openStore,
-      ...ingestWriteRouting(session.cwd, deps.resolveStore, deps.openStore),
-      embedder: deps.embedder,
-      mode: deps.mode,
-      routeOverride: deps.routeOverride,
-      call: deps.call,
-      logRequest: deps.logRequest,
-      ...(deps.judge === undefined ? {} : { judge: deps.judge }),
-      signal: deps.signal,
-    })
-    await store.clearAudit(INGEST_PENDING_OP, detail)
-    replayed += 1
+    const stale = replayStale(session)
+    try {
+      const outcome = await ingestPreviousTurn({
+        events: session.events,
+        sessionId: key.sessionId,
+        turn: key.turn,
+        slice: key.turn,
+        openStore: deps.openStore,
+        openAuditStore: deps.openStore,
+        ...ingestWriteRouting(session.cwd, deps.resolveStore, deps.openStore),
+        embedder: deps.embedder,
+        mode: deps.mode,
+        routeOverride: deps.routeOverride,
+        call: deps.call,
+        logRequest: deps.logRequest,
+        ...(deps.judge === undefined ? {} : { judge: deps.judge }),
+        signal: deps.signal,
+      })
+      if (outcome.skipped === 'unparseable-output' || outcome.skipped === 'empty-answer') {
+        kept += 1
+        if (stale) {
+          await store.clearAudit(INGEST_PENDING_OP, detail)
+          console.warn(message('ingest.replayAbandoned'), key.sessionId, key.turn, outcome.skipped)
+        }
+        continue
+      }
+      await store.clearAudit(INGEST_PENDING_OP, detail)
+      replayed += 1
+    } catch (error) {
+      kept += 1
+      if (stale) {
+        await store.clearAudit(INGEST_PENDING_OP, detail)
+        console.warn(message('ingest.replayAbandoned'), key.sessionId, key.turn, error instanceof Error ? error.message : error)
+      } else {
+        console.warn(message('ingest.replayKeyFailed'), key.sessionId, key.turn, error)
+      }
+    }
   }
   return { replayed, kept }
 }

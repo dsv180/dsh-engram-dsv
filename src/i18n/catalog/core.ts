@@ -53,6 +53,8 @@ export const zh = {
 
   // ---- Диагностика (console) ----
   'core.warnReplayPendingFailed': '[dsh-engram] 待补做摄取重放失败（保留 pending，不影响对话）：',
+  'ingest.replayKeyFailed': '[dsh-engram] 重放单条 pending 失败（保留，下个会话重试）：',
+  'ingest.replayAbandoned': '[dsh-engram] 陈旧 pending 放弃重放（会话超 14 天仍失败，出队）：',
   'core.warnIngestPreviousFailed': '[dsh-engram] 本轮自动摄取失败（已跳过，不影响对话）：',
   'core.warnHistoryBackfillFailed': '[dsh-engram] 历史回填失败：',
   'core.warnDisposeFinalFailed': '[dsh-engram] 会话结束的收尾处理异常（不影响对话）：',
@@ -114,6 +116,8 @@ export const en = {
 
   // ---- Diagnostics (console) ----
   'core.warnReplayPendingFailed': '[dsh-engram] Replaying a pending ingest failed (pending kept, conversation unaffected):',
+  'ingest.replayKeyFailed': '[dsh-engram] Replaying one pending key failed (kept for next session):',
+  'ingest.replayAbandoned': '[dsh-engram] Stale pending abandoned (session older than 14 days, still failing — dequeued):',
   'core.warnIngestPreviousFailed': '[dsh-engram] Automatic ingest of this turn failed (skipped, conversation unaffected):',
   'core.warnHistoryBackfillFailed': '[dsh-engram] History backfill failed:',
   'core.warnDisposeFinalFailed': '[dsh-engram] Session-end finalisation threw (conversation unaffected):',
@@ -175,6 +179,8 @@ export const ru = {
 
   // ---- Диагностика (console) ----
   'core.warnReplayPendingFailed': '[dsh-engram] Не удалось повторить отложенное извлечение (pending сохранён, диалог не затронут):',
+  'ingest.replayKeyFailed': '[dsh-engram] Не удалось повторить один pending (сохранён, повтор в следующей сессии):',
+  'ingest.replayAbandoned': '[dsh-engram] Устаревший pending снят с очереди (сессия старше 14 дней, всё ещё падает):',
   'core.warnIngestPreviousFailed': '[dsh-engram] Автоматическое извлечение этого хода не удалось (пропущено, диалог не затронут):',
   'core.warnHistoryBackfillFailed': '[dsh-engram] Заполнение истории не удалось:',
   'core.warnDisposeFinalFailed': '[dsh-engram] Ошибка завершающей обработки при закрытии сессии (диалог не затронут):',
