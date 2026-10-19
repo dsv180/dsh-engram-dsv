@@ -19,6 +19,7 @@ import type { EngramStore } from '../store/interface.ts'
 import { parseEntityMentions } from '../ingest/hook.ts'
 import type { EngramKind, EngramScope, EntityId, EntityMention, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
+import type { ProfileBlockVersion } from '../types.ts'
 import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
 import { redactSecrets } from '../security/redact.ts'
@@ -1856,6 +1857,18 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
   })
 
   /**
+   * 版本行 source 的显示名：三语目录各有一项（旧库只可能是 edit/rollback，
+   * seed 由配置的 стартовый блок 写入）。
+   * @param source - 版本行的产生方式。
+   * @returns 当前语言的显示名。
+   */
+  const profileSourceLabel = (source: ProfileBlockVersion['source']): string => {
+    if (source === 'rollback') return message('tool.profileEditSourceRollback')
+    if (source === 'seed') return message('tool.profileEditSourceSeed')
+    return message('tool.profileEditSourceEdit')
+  }
+
+  /**
    * 画像可编辑：维护会话开始注入的 curated block（注入时优先于自动派生画像）。
    * view 查看当前内容与版本历史；edit 编辑（乐观锁，冲突 loud 失败）；rollback
    * 把历史版本的内容作为新版本写入（版本链只增不改，可反复回滚）。
@@ -1895,7 +1908,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
             ...versions.map(version =>
               message('tool.profileEditVersionLine', {
                 version: version.version,
-                source: version.source === 'rollback' ? message('tool.profileEditSourceRollback') : message('tool.profileEditSourceEdit'),
+                source: profileSourceLabel(version.source),
                 at: new Date(version.at).toISOString().slice(0, 16).replace('T', ' '),
                 chars: version.content.length,
               })),

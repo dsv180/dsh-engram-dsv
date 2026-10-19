@@ -369,6 +369,20 @@ export interface StoreAutomation {
 const DEFAULT_AUTOMATION: StoreAutomation = { autoSlot: true, reviewScheduling: true }
 
 /**
+ * 版本行 source 列的读取归一化。
+ *
+ * 库里存的是自由文本，读取端必须收窄成联合类型：已知值原样返回，未知值一律当
+ * `edit`（旧库只可能写过 edit/rollback；seed 由配置的 стартовый блок 写入）。
+ * @param raw - 数据库里的 source 文本。
+ * @returns 收窄后的产生方式。
+ */
+function profileSourceOf(raw: string): ProfileBlockVersion['source'] {
+  if (raw === 'rollback') return 'rollback'
+  if (raw === 'seed') return 'seed'
+  return 'edit'
+}
+
+/**
  * 打开（必要时创建）一个 scope 分库。
  * @param path - SQLite 文件路径；目录不存在会自动创建（0o700）。
  * @param rankBoost - 排序 boost 参数；缺省不乘任何因子。
@@ -1169,7 +1183,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         scope: row.scope as EngramScope,
         version: row.version,
         content: row.content,
-        source: row.source === 'rollback' ? 'rollback' : 'edit',
+        source: profileSourceOf(row.source),
         at: row.at,
       }))
     },
@@ -1182,7 +1196,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         scope: row.scope as EngramScope,
         version: row.version,
         content: row.content,
-        source: row.source === 'rollback' ? 'rollback' : 'edit',
+        source: profileSourceOf(row.source),
         at: row.at,
       }
     },

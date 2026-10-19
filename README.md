@@ -23,8 +23,10 @@
 ## 快速开始
 
 ```sh
-dsh plugin --profile web add @kenz1117/dsh-engram
+dsh plugin --profile web add @kenz1117/dsh-engram --ignore-scripts
 ```
+
+`--ignore-scripts` 不是可选项：依赖里的 `onnxruntime-node` 与 `protobufjs` 声明了构建脚本，pnpm 会以非零退出码报 `ERR_PNPM_IGNORED_BUILDS`，而插件管理器把「pnpm 步骤失败」当作安装失败——包会落进 `node_modules`，但**不会被登记进 `dsh.profile.bundles`**，插件于是静默不挂载。加上 `--ignore-scripts` 后 pnpm 退出 0，插件自动成为 profile 层；本地嵌入器不受影响（跳过构建脚本后实测仍可加载多语言模型并给出 384 维向量）。
 
 安装后无需配置即可使用（默认分库与模型缓存在 `~/.dsh/engram`，画像注入开启，自动摄取关闭）。
 
@@ -117,6 +119,9 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     dbDir: '~/.dsh/engram'          # 分库与模型缓存根目录
     injectProfile: true             # 会话开始注入用户画像摘要
     profileTopN: 8                  # 注入条数上限（1-64）
+    # profileSeed: |                # 空库首次注入时就地建立的 curated block（已有块则完全不参与，只增不改）
+    #   1. 先检索记忆宫殿，再回答；殿里没有就看当前对话与文件，不要凭印象。
+    #   2. 一出现事实/决定/机制就写进宫殿；新记录取代旧记录时按 id 改旧的，不要并列留着。
     injectTokenBudget: 1024         # 注入 token 预算（128-8192，中文按 1.5 token/字、其余按 4 字符/token 估算，装不下的条目降级为索引行）
     injectItemBudgetStart: 160      # 分级递减预算：首条正文字符数（40-2000，逐条按 decay 递减、装不下先截断）
     injectItemBudgetDecay: 0.9      # 分级递减预算：逐条递减系数（0.5-1）
@@ -124,6 +129,12 @@ dsh plugin --profile web add @kenz1117/dsh-engram
     assessReminder: true            # 证据门收尾提醒：存在未判定检索批次时在下一步开始前注入 engram_assess 提醒
     modelCacheDir: '~/.dsh/engram/models'  # 嵌入模型缓存目录
     hfEndpoint: 'https://huggingface.co'   # 模型下载端点，网络受限可配镜像
+    # 嵌入器（缺省本地 bge-small-zh-v1.5，512 维，中文向）。多语言/俄语场景建议换：
+    # embedder:
+    #   kind: local
+    #   localModel: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2'   # 384 维，50+ 语言
+    #   localPooling: mean
+    # 换模型后旧向量与新模型不可比（库内不记录模型 id），需要重建向量：最稳妥是换新的 dbDir。
     ingest: 'off'                   # 自动摄取：off | light（仅用户消息，每轮≤2条）| eager（含助手消息，每轮≤5条）
     reflect: 'off'                  # 自动信念巩固：off | suggest（会话结束只登记待巩固，engram_reflect 执行）| auto（会话结束后台巩固）；任何档位均可手动调 engram_reflect
     # provider 与 model 必须成对提供：摄取/蒸馏的辅助 LLM 路由覆盖（缺省从会话日志解析）
@@ -226,7 +237,7 @@ pnpm bundle
 
 #### What the model sees
 
-会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session) — Grand Hall (always present):` 加用户级记忆列表（默认至多 8 条且整段不超过 1024 token 预算，超预算条目降级为 `#id` 索引行，`injectProfile: false` 关闭），行内带宫殿坐标（`房间#桩位`）；有到期复习条目时末尾追加一行提示今日待回忆条数。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注、桩位坐标、矛盾候选提示与降级说明）。自动摄取与蒸馏各产生一次辅助 LLM 调用（独立于主对话计费路径，带 purpose 归因）。
+会话每轮第一步追加一条 plugin 来源的 user 快照：`User memory profile (dsh-engram, cross-session) — Grand Hall (always present):` 加用户级记忆列表（默认至多 8 条且整段不超过 1024 token 预算，超预算条目降级为 `#id` 索引行，`injectProfile: false` 关闭），行内带宫殿坐标（`房间#桩位`）；有到期复习条目时末尾追加一行提示今日待回忆条数。内容未变时按哈希去重，不重复追加；**会话压缩（compaction）之后的那一轮无条件重注一次**——旧包已被摘要掉，内容一字未改也要补回来，否则长会话里这段会静默消失（issue #32）。工具调用结果为纯文本行列表（含 `id=`、scope/kind 标注、桩位坐标、矛盾候选提示与降级说明）。自动摄取与蒸馏各产生一次辅助 LLM 调用（独立于主对话计费路径，带 purpose 归因）。
 
 #### Token effect
 

@@ -50,11 +50,12 @@ import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { resolveJevField } from './jev/runtime.ts'
 import { readJevCatalog, readProviderModels, resolveJevConnection } from './jev/host.ts'
-import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
+import { currentUserRequestText, renderMemoryPacket, sanitizeProtocolText } from './security/sanitize.ts'
+import { redactSecrets } from './security/redact.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
-import type { EngramScope, Slot } from './types.ts'
+import type { EngramScope, ProfileBlock, Slot } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
 export const name = 'dsh-engram'
@@ -250,6 +251,40 @@ async function compressProfileOverflow(
 }
 
 /**
+ * Стартовый курируемый блок: если в user-базе блока ещё нет, а в конфигурации задан
+ * `profileSeed`, блок записывается как v1 прямо здесь — свежая установка сразу получает
+ * рабочий профиль, без ручного вызова engram_profile_edit.
+ *
+ * Пишется только при отсутствии блока: дальше блок живёт своей жизнью, и правки
+ * пользователя (engram_profile_edit) ложатся поверх него, а не поверх семени.
+ * Содержимое проходит те же очистку протокольных тегов и редактирование секретов,
+ * что и ручная правка, — конфигурация не может протащить в профиль ни то, ни другое.
+ * @param store - store области user (в него же пишет engram_profile_edit).
+ * @param seed - текст из конфигурации; undefined или пустой = стартовый блок не задан.
+ * @returns текущий блок (созданный или уже существовавший); undefined, если блока нет и создать не удалось.
+ */
+async function ensureCuratedProfile(store: EngramStore, seed: string | undefined): Promise<ProfileBlock | undefined> {
+  const existing = await store.getProfileBlock('user')
+  if (existing !== undefined || seed === undefined || seed.trim() === '') return existing
+  const content = redactSecrets(sanitizeProtocolText(seed))
+  if (content.trim() === '') {
+    console.warn(message('core.warnProfileSeedEmpty'))
+    return undefined
+  }
+  try {
+    const block = await store.saveProfileBlock('user', undefined, content, 'seed')
+    // Та же дисциплина, что у ручной правки: след в op_log (панель покажет это отдельным действием).
+    await store.audit('profile-seed', 'user', JSON.stringify({ version: block.version, chars: content.length }))
+    console.log(message('core.logProfileSeedDone', { version: block.version, chars: content.length }))
+    return block
+  } catch (error) {
+    // Семя — удобство, а не условие работы: не удалось записать — работаем на выведенном профиле.
+    console.warn(message('core.warnProfileSeedFailed'), error)
+    return undefined
+  }
+}
+
+/**
  * agent/pre-step waterfall：每轮第一步注入画像（内容与上次相同则跳过重复注入）；
  * 同时 fire-and-forget 触发上一轮的自动摄取（不阻塞请求）；进程内首次第一步
  * 重放待补做的末轮摄取。必须调用 next() 委托链路；reject 决策原样透传，
@@ -261,7 +296,7 @@ async function preStep(
   openStoreForProjectCwd: (cwd: string) => Promise<EngramStore>,
   resolved: ResolvedEngramConfig,
   embedder: Promise<EngramEmbedder | undefined>,
-  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
+  state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
@@ -339,10 +374,21 @@ async function preStep(
       }
     }
   }
-  if (step !== 1) return decision
+  // #32：画像「always present」不能只靠 step===1 的首轮注入——会话压缩（compaction）
+  // 会把注入的快照摘要掉，而 step 在压缩/恢复后永远不会再等于 1，画像从此缺席直到
+  // 重开对话。自上次注入以来出现 compaction/end 事件时，任何一轮都重新注入；哈希去重
+  // 只在无压缩时生效（压缩后即使内容未变也要重注——旧包已不在上下文）。
+  // 已知边界：应用重启后 state 清空，重启之前发生的压缩无法感知（此时历史快照仍在，
+  // 保守不重注）；纯恢复（无压缩）时快照仍在历史里，维持不重注。
+  const compactionCount = (agent.session.snapshotEvents() as unknown as readonly SessionEventLike[])
+    .filter(event => event.type === 'compaction/end').length
+  const compacted = state.lastProfileCompactions !== null && compactionCount > state.lastProfileCompactions
+  if (state.lastProfileCompactions === null) state.lastProfileCompactions = compactionCount
+  if (step !== 1 && !compacted) return decision
   const store = await openStore('user')
   // curated block：engram_profile_edit 维护的画像段，优先于自动派生画像注入。
-  const curated = await store.getProfileBlock('user')
+  // 库里还没有块、而配置给了 profileSeed 时，这里就地建立 v1（свежая установка сразу с рабочим профилем）。
+  const curated = await ensureCuratedProfile(store, resolved.profileSeed)
   const top = await store.topActive('user', resolved.profileTopN)
   if (top.length === 0 && curated === undefined) return decision
   // 今日待回忆提示（检索练习调度）：有到期条目时在画像末尾附一行，引导 agent 主动自测。
@@ -393,14 +439,16 @@ async function preStep(
   }
   // 注入去重：同一会话内画像文本与上次相同时跳过（上一轮注入仍在上下文里）；
   // 新会话（lastProfileAgent 不同）必须注入，即使文本与上个会话相同。due 行纳入 hash 输入。
+  // 压缩后的那一轮例外：旧包已被摘要掉，内容未变也必须重注（compacted 绕过去重）。
   const dueLine = dueTotal === 0
     ? ''
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
   const hash = createHash('sha256').update(textWithRationale).digest('hex')
-  if (state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
+  if (!compacted && state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
   state.lastProfileAgent = String(agent.id)
   state.lastProfileHash = hash
+  state.lastProfileCompactions = compactionCount
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
   const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
   return {
@@ -618,9 +666,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     pendingReplayed: boolean
     lastProfileAgent: string | null
     lastProfileHash: string | null
+    lastProfileCompactions: number | null
     lastAssessReminder: string | null
     route: LlmRoute | undefined
-  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastAssessReminder: null, route: undefined }
+  } = { pendingReplayed: false, lastProfileAgent: null, lastProfileHash: null, lastProfileCompactions: null, lastAssessReminder: null, route: undefined }
 
   // ---- 历史会话回填：把 dsh 持久化的历史会话逐轮摄取进宫殿（面板「历史回填」tab / engram_ingest_history）----
   /** 会话持久化服务（可选；缺席时历史回填不可用）。 */

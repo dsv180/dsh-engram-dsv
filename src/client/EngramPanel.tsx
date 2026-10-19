@@ -1137,19 +1137,30 @@ interface ProfileBlockView {
 }
 
 /**
+ * 版本行 source 的显示名：未知值当 edit（旧库只写过 edit/rollback，
+ * seed 由配置的 стартовый блок 写入）。
+ * @param t - 面板词典。
+ * @param source - 版本行的产生方式（数据层原样文本）。
+ * @returns 当前面板语言的显示名。
+ */
+function profileSourceLabel(t: T, source: string): string {
+  if (source === 'rollback') return t('profileSourceRollback')
+  if (source === 'seed') return t('profileSourceSeed')
+  return t('profileSourceEdit')
+}
+
+/**
  * 画像 curated block 审计卡：当前内容 + 版本历史 + 任意两版本的行级 diff。
  * 只读视图（编辑走 engram_profile_edit 工具，乐观锁在存储层）；scope/project 变化时重载。
  */
 function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 'shared'; project: string | null }): React.ReactElement {
-  const [viewScope, setViewScope] = useState<'user' | 'project' | 'shared'>(scope)
   const [data, setData] = useState<ProfileBlockView | null>(null)
   const [failed, setFailed] = useState(false)
   const [baseVersion, setBaseVersion] = useState<number | null>(null)
   const [targetVersion, setTargetVersion] = useState<number | null>(null)
   useEffect(() => {
     let cancelled = false
-    // forceProject=true инжектит селектор палаты только для project-профиля; user/shared — нет.
-    api<ProfileBlockView>(`profile-block?scope=${viewScope}`, undefined, viewScope === 'project')
+    api<ProfileBlockView>(`profile-block?scope=${scope}`, undefined, true)
       .then((view) => {
         if (cancelled) return
         setData(view)
@@ -1160,32 +1171,18 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
       })
       .catch(() => { if (!cancelled) setFailed(true) })
     return () => { cancelled = true }
-  }, [viewScope, project])
-  // Переключатель scope: позволяет смотреть личный / проектный / общий профиль, не меняя общий scope панели.
-  const scopePicker = (
-    <label className={styles.profileScopeRow}>
-      <span className={styles.sectionHint}>{t('profileScopeLabel')}</span>
-      <select className={styles.profileSelect} value={viewScope}
-        onChange={event => setViewScope(event.target.value as 'user' | 'project' | 'shared')}>
-        <option value="user">{t('profileScopeUser')}</option>
-        <option value="project">{t('profileScopeProject')}</option>
-        <option value="shared">{t('profileScopeShared')}</option>
-      </select>
-    </label>
-  )
+  }, [scope, project])
   if (failed) {
-    return (
-      <div className={styles.profileScopeWrap}>
-        {scopePicker}
-        <div className={styles.expandLoading}>{t('profileLoadFailed')}</div>
-      </div>
-    )
+    return <div className={styles.expandLoading}>{t('profileLoadFailed')}</div>
   }
   if (data === null) {
+    return <div className={styles.expandLoading}>{t('loading')}</div>
+  }
+  if (data.block === null) {
     return (
-      <div className={styles.profileScopeWrap}>
-        {scopePicker}
-        <div className={styles.expandLoading}>{t('loading')}</div>
+      <div className={styles.expandLoading}>
+        <p>{t('profileEmpty')}</p>
+        <p className={styles.sectionHint}>{t('profileEmptyHint')}</p>
       </div>
     )
   }
@@ -1196,58 +1193,48 @@ function ProfileCard({ t, scope, project }: { t: T; scope: 'user' | 'project' | 
   const diffRows = base !== undefined && target !== undefined ? lineDiff(base.content, target.content) : []
   const hasDiff = diffRows.some(row => row.kind !== 'same')
   return (
-    <div className={styles.profileScopeWrap}>
-      {scopePicker}
-      {data.block === null ? (
-        <div className={styles.expandLoading}>
-          <p>{t('profileEmpty')}</p>
-          <p className={styles.sectionHint}>{t('profileEmptyHint')}</p>
-        </div>
-      ) : (
-        <div className={styles.profileCard}>
-          <h5 className={styles.profileHeading}>{t('profileCurrent', { n: data.block.version })}</h5>
-          <pre className={styles.profileContent}>{data.block.content}</pre>
-          {versions.length > 1 && (
-            <>
-              <h5 className={styles.profileHeading}>{t('profileHistory')}</h5>
-              <div className={styles.profilePickerRow}>
-                <label>
-                  <span className={styles.sectionHint}>{t('profileDiffBase')}</span>
-                  <select className={styles.profileSelect} value={baseVersion ?? undefined}
-                    onChange={event => { setBaseVersion(Number(event.target.value)) }}>
-                    {versions.map(version => (
-                      <option key={version.version} value={version.version}>
-                        v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span className={styles.sectionHint}>{t('profileDiffTarget')}</span>
-                  <select className={styles.profileSelect} value={targetVersion ?? undefined}
-                    onChange={event => { setTargetVersion(Number(event.target.value)) }}>
-                    {versions.map(version => (
-                      <option key={version.version} value={version.version}>
-                        v{version.version} · {version.source === 'rollback' ? t('profileSourceRollback') : t('profileSourceEdit')}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {base !== undefined && target !== undefined && (
-                <div className={styles.profileDiff}>
-                  {hasDiff
-                    ? diffRows.map((row, index) => (
-                      <div key={index} className={
-                        row.kind === 'add' ? styles.profileDiffAdd : row.kind === 'del' ? styles.profileDiffDel : styles.profileDiffSame
-                      }>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}</div>
-                    ))
-                    : <div className={styles.sectionHint}>{t('profileDiffNone')}</div>}
-                </div>
-              )}
-            </>
+    <div className={styles.profileCard}>
+      <h5 className={styles.profileHeading}>{t('profileCurrent', { n: data.block.version })}</h5>
+      <pre className={styles.profileContent}>{data.block.content}</pre>
+      {versions.length > 1 && (
+        <>
+          <h5 className={styles.profileHeading}>{t('profileHistory')}</h5>
+          <div className={styles.profilePickerRow}>
+            <label>
+              <span className={styles.sectionHint}>{t('profileDiffBase')}</span>
+              <select className={styles.profileSelect} value={baseVersion ?? undefined}
+                onChange={event => { setBaseVersion(Number(event.target.value)) }}>
+                {versions.map(version => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} · {profileSourceLabel(t, version.source)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className={styles.sectionHint}>{t('profileDiffTarget')}</span>
+              <select className={styles.profileSelect} value={targetVersion ?? undefined}
+                onChange={event => { setTargetVersion(Number(event.target.value)) }}>
+                {versions.map(version => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} · {profileSourceLabel(t, version.source)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {base !== undefined && target !== undefined && (
+            <div className={styles.profileDiff}>
+              {hasDiff
+                ? diffRows.map((row, index) => (
+                  <div key={index} className={
+                    row.kind === 'add' ? styles.profileDiffAdd : row.kind === 'del' ? styles.profileDiffDel : styles.profileDiffSame
+                  }>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}</div>
+                ))
+                : <div className={styles.sectionHint}>{t('profileDiffNone')}</div>}
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   )

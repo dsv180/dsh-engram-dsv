@@ -379,8 +379,8 @@ export interface ProfileBlockVersion {
   /** 版本号：从 1 起单调递增，回滚也产生新版本（历史永不改写）。 */
   readonly version: number
   readonly content: string
-  /** 产生方式：edit 人工/模型编辑；rollback 回滚到历史版本的内容。 */
-  readonly source: 'edit' | 'rollback'
+  /** 产生方式：edit 人工/模型编辑；rollback 回滚到历史版本的内容；seed 来自配置的 стартовый блок。 */
+  readonly source: 'edit' | 'rollback' | 'seed'
   readonly at: number
 }
 

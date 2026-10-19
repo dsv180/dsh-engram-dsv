@@ -18,6 +18,10 @@ export const zh = {
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
   'core.reviewDue': '\nPalace review due today: {count}{plus} memories. Use engram_review_queue for active recall (recall beats re-reading).',
+  // ---- Стартовый курируемый блок (profileSeed) ----
+  'core.logProfileSeedDone': '[dsh-engram] 已用配置里的 profileSeed 建立常驻画像（user 库，v{version}，{chars} 字）。',
+  'core.warnProfileSeedFailed': '[dsh-engram] profileSeed 未能写入常驻画像，插件继续使用自动派生的画像：',
+  'core.warnProfileSeedEmpty': '[dsh-engram] profileSeed 经协议标签清理与密钥脱敏后为空——未创建常驻画像。',
   'core.compressSystem': '把记忆条目压缩为更短的一句话表述（每条不超过 40 个字符），保留可跨会话复用的关键信息（事实、偏好、决策、方法）。\n只输出一个 JSON 数组，每项形如 {"id": "原样返回的id", "content": "压缩后表述"}，条目数量与 id 必须与输入一一对应。\n不要输出 JSON 以外的任何内容。',
 
   // ---- Обоснование отбора (selection-rationale) ----
@@ -79,6 +83,10 @@ export const en = {
   'core.observationsHeader': 'Consolidated beliefs (distilled from multiple stored memories; verify against sources before high-stakes use):',
   'core.observationItem': '- {belief} ({count} sources)',
   'core.reviewDue': '\nPalace review due today: {count}{plus} memories. Use engram_review_queue for active recall (recall beats re-reading).',
+  // ---- Стартовый курируемый блок (profileSeed) ----
+  'core.logProfileSeedDone': '[dsh-engram] Curated profile seeded from the profileSeed config (user store, v{version}, {chars} characters).',
+  'core.warnProfileSeedFailed': '[dsh-engram] profileSeed was not written to the curated profile block; the plugin keeps working on the derived profile:',
+  'core.warnProfileSeedEmpty': '[dsh-engram] profileSeed is empty after protocol-tag stripping and secret redaction; no curated profile block was created.',
   'core.compressSystem': 'Compress each memory entry into a shorter single-sentence wording (at most 40 characters per entry), keeping the key information that can be reused across sessions (facts, preferences, decisions, methods).\nOutput only one JSON array, each item shaped like {"id": "the id returned verbatim", "content": "the compressed wording"}; the number of items and the ids must correspond one-to-one with the input.\nDo not output anything other than JSON.',
 
   // ---- Selection rationale (selection-rationale) ----
@@ -140,6 +148,10 @@ export const ru = {
   'core.observationsHeader': 'Устоявшиеся убеждения (выведены из множества сохранённых воспоминаний; перед важными решениями сверяйтесь с источниками):',
   'core.observationItem': '- {belief} (источников: {count})',
   'core.reviewDue': '\nСегодня пора вспомнить: {count}{plus} воспоминаний во дворце. Используйте engram_review_queue для активного припоминания (припоминание сильнее перечитывания).',
+  // ---- Стартовый курируемый блок (profileSeed) ----
+  'core.logProfileSeedDone': '[dsh-engram] Курируемый профиль засеян из настройки profileSeed (база user, v{version}, {chars} символов).',
+  'core.warnProfileSeedFailed': '[dsh-engram] profileSeed не записан в курируемый блок профиля — плагин продолжает работать на выведенном профиле:',
+  'core.warnProfileSeedEmpty': '[dsh-engram] profileSeed пуст после очистки протокольных тегов и редактирования секретов — курируемый блок не создан.',
   'core.compressSystem': 'Сожми каждую запись памяти в более короткую однострочную формулировку (не более 40 символов на запись), сохранив ключевую информацию, пригодную для повторного использования между сессиями (факты, предпочтения, решения, методы).\nВыведи только один JSON-массив, каждый элемент вида {"id": "id, возвращённый как есть", "content": "сжатая формулировка"}; число элементов и id должны взаимно однозначно соответствовать входу.\nНе выводи ничего, кроме JSON.',
 
   // ---- Обоснование отбора (selection-rationale) ----

@@ -23,8 +23,10 @@
 ## Quick Start
 
 ```sh
-dsh plugin --profile web add @kenz1117/dsh-engram
+dsh plugin --profile web add @kenz1117/dsh-engram --ignore-scripts
 ```
+
+`--ignore-scripts` is not optional: two dependencies (`onnxruntime-node`, `protobufjs`) declare build scripts, so pnpm exits non-zero with `ERR_PNPM_IGNORED_BUILDS`, and the plugin manager treats a failed pnpm step as a failed install — the package lands in `node_modules` but is **never registered in `dsh.profile.bundles`**, so the plugin silently fails to mount. With `--ignore-scripts` pnpm exits 0 and the plugin becomes a profile layer automatically; the local embedder is unaffected (with build scripts skipped, the multilingual model still loads and returns 384-dim vectors, measured).
 
 Zero configuration after install (stores and model cache default to `~/.dsh/engram`; profile injection on, automatic capture off).
 
@@ -117,6 +119,9 @@ Optional configuration (cordis.yml):
     dbDir: '~/.dsh/engram'          # store and model-cache root directory
     injectProfile: true             # inject the user memory profile at session start
     profileTopN: 8                  # injection entry cap (1-64)
+    # profileSeed: |                # curated block created in place on the first injection into an empty store (ignored once a block exists; append-only)
+    #   1. Search the memory palace first, then answer; if it isn't there, read the current conversation and files instead of guessing.
+    #   2. Write facts/decisions/mechanisms to the palace as soon as they appear; when a new record supersedes an old one, edit the old one by id instead of keeping both.
     injectTokenBudget: 1024         # injection token budget (128-8192; CJK text counted at 1.5 tokens/char, other text at 4 chars/token; entries that still don't fit degrade to index lines)
     injectItemBudgetStart: 160      # graduated budget: body chars for the first entry (40-2000, decayed per entry; truncate first before degrading)
     injectItemBudgetDecay: 0.9      # graduated budget: per-entry decay factor (0.5-1)
@@ -124,6 +129,12 @@ Optional configuration (cordis.yml):
     assessReminder: true            # evidence-gate nudge: inject an engram_assess reminder before the next step when unassessed search batches exist
     modelCacheDir: '~/.dsh/engram/models'  # embedding model cache directory
     hfEndpoint: 'https://huggingface.co'   # model download endpoint; set a mirror behind restricted networks
+    # Embedder (default: local bge-small-zh-v1.5, 512-dim, Chinese-oriented). For multilingual/Russian use:
+    # embedder:
+    #   kind: local
+    #   localModel: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2'   # 384-dim, 50+ languages
+    #   localPooling: mean
+    # Vectors from different models are not comparable (no model id is recorded in the store), so switching means rebuilding: use a fresh dbDir.
     ingest: 'off'                   # automatic capture: off | light (user messages only, ≤2/turn) | eager (assistant messages too, ≤5/turn)
     reflect: 'off'                  # automatic belief consolidation: off | suggest (only enqueue on session end; drain via engram_reflect) | auto (consolidate in the background after the session); engram_reflect stays manually callable in every mode
     # provider and model must be given as a pair: aux-LLM route override for capture/distill (parsed from the session log by default)
@@ -225,7 +236,7 @@ Two notes on install and build scripts:
 
 #### What the model sees
 
-Each turn's first step appends a plugin-source user snapshot: `User memory profile (dsh-engram, cross-session) — Grand Hall (always present):` followed by the user-scope memory list (up to 8 entries within a 1024-token budget by default; over-budget entries degrade to `#id` index lines; `injectProfile: false` disables), each line carrying its palace coordinate (`room#slot`); when reviews are due, a line reporting how many memories are due is appended. Tool results are plain text lines (with `id=`, scope/kind annotations, slot coordinates, contradiction-candidate hints, and degradation notes). Automatic capture and distillation each make one aux-LLM call (billed independently of the main conversation path, with purpose attribution).
+Each turn's first step appends a plugin-source user snapshot: `User memory profile (dsh-engram, cross-session) — Grand Hall (always present):` followed by the user-scope memory list (up to 8 entries within a 1024-token budget by default; over-budget entries degrade to `#id` index lines; `injectProfile: false` disables), each line carrying its palace coordinate (`room#slot`); when reviews are due, a line reporting how many memories are due is appended. Unchanged content is deduplicated by hash, so it is not appended twice; **the turn right after a session compaction re-injects it unconditionally** — the old packet was summarized away, so it must come back even if not a character changed, otherwise the block silently disappears in long sessions (issue #32). Tool results are plain text lines (with `id=`, scope/kind annotations, slot coordinates, contradiction-candidate hints, and degradation notes). Automatic capture and distillation each make one aux-LLM call (billed independently of the main conversation path, with purpose attribution).
 
 #### Token effect
 

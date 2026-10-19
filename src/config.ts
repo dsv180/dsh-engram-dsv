@@ -83,6 +83,14 @@ export interface EngramConfig {
   injectProfile?: boolean
   /** 画像注入的最大条数；默认 8。 */
   profileTopN?: number
+  /**
+   * Стартовый курируемый блок профиля (свежая установка сразу с рабочим профилем).
+   *
+   * Если в user-базе блока ещё нет, при первой инъекции он создаётся из этого текста
+   * как v1; если блок уже есть (правка через engram_profile_edit), текст не применяется.
+   * Пусто или не задано — стартового блока нет, поведение прежнее.
+   */
+  profileSeed?: string
   /** 嵌入模型缓存目录；默认 `<dbDir>/models`。 */
   modelCacheDir?: string
   /** 嵌入模型下载端点；默认 huggingface.co，网络受限环境配镜像（如 https://hf-mirror.com）。 */
@@ -201,6 +209,8 @@ export interface ResolvedEngramConfig {
   readonly legacyMigration: LegacyMigrationPolicy
   readonly injectProfile: boolean
   readonly profileTopN: number
+  /** Стартовый курируемый блок; undefined = не задан (или пустой) — блок не создаётся. */
+  readonly profileSeed: string | undefined
   readonly modelCacheDir: string
   readonly hfEndpoint: string | undefined
   readonly ingest: IngestModeConfig
@@ -233,7 +243,7 @@ export interface ResolvedEngramConfig {
 
 /** 合法配置键集合（未知键 loud 失败）。 */
 const CONFIG_KEYS: ReadonlySet<string> = new Set([
-  'legacyMigration', 'dbDir', 'injectProfile', 'profileTopN', 'modelCacheDir', 'hfEndpoint',
+  'legacyMigration', 'dbDir', 'injectProfile', 'profileTopN', 'profileSeed', 'modelCacheDir', 'hfEndpoint',
   'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
@@ -252,6 +262,7 @@ export const Config: z<EngramConfig> = z.object({
   legacyMigration: z.string() as unknown as z<LegacyMigrationPolicy>,
   injectProfile: z.boolean(),
   profileTopN: z.number().step(1).min(1).max(64),
+  profileSeed: z.string(),
   modelCacheDir: z.string(),
   hfEndpoint: z.string(),
   ingest: z.string() as unknown as z<IngestModeConfig>,
@@ -455,6 +466,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     legacyMigration: config.legacyMigration ?? 'eager',
     injectProfile: config.injectProfile ?? true,
     profileTopN: config.profileTopN ?? 8,
+    // Пустая строка приравнена к «не задано»: YAML с `profileSeed: ""` не должен создавать пустой блок.
+    profileSeed: config.profileSeed === undefined || config.profileSeed.trim() === '' ? undefined : config.profileSeed,
     modelCacheDir: config.modelCacheDir ?? join(dbDir, 'models'),
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',

@@ -672,9 +672,6 @@ select.input { padding-right: 24px; appearance: none; background-image: linear-g
 
 /* ---------- 画像 curated block（当前内容 + 版本历史 + 行级 diff，只读审计卡） ---------- */
 .profileCard { display: flex; flex-direction: column; gap: var(--space-3); }
-/* Переключатель scope профиля (личный / по проекту / общий) — всегда сверху карточки. */
-.profileScopeWrap { display: flex; flex-direction: column; gap: var(--space-3); }
-.profileScopeRow { display: inline-flex; align-items: center; gap: var(--space-2); }
 .profileHeading { margin: 0; font-size: var(--fs-micro); font-weight: 600; color: var(--dsw-alias-label-secondary); }
 .profileContent { margin: 0; padding: var(--space-3); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); font-family: inherit; font-size: var(--fs-body); line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
 .profilePickerRow { display: flex; gap: var(--space-4); flex-wrap: wrap; }

@@ -21,6 +21,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { markPendingIngest } from '../src/ingest/hook.ts'
+import { MEMORY_CONTEXT_TAG } from '../src/security/sanitize.ts'
 import { readMigrationPointer, resolveProjectIdentity } from '../src/project/identity.ts'
 import * as Engram from '../src/index.ts'
 
@@ -199,6 +200,30 @@ async function loadComposition(extraConfig: readonly string[] = [], pending?: Pe
   // 注入子 fiber（webServer 就绪后注册路由）的完成等待。
   await new Promise(resolve => setTimeout(resolve, 300))
   return context
+}
+
+/**
+ * 跑一轮 pre-step 并回传本轮进入请求的消息文本。
+ *
+ * 派发必须走 `waterfall`（`emit` 返回 void，拿不到决策）——与 agent-loop 的
+ * `dispatch.waterfall('agent/pre-step', {messages, turn, step, signal}, next)` 同形。
+ * @param loaded - 已装载的组合上下文。
+ * @param agent - 最小 agent 替身（插件只读 id 与 session.snapshotEvents）。
+ * @param step - 该轮第几步（宿主里步号在同一 phase 内单调递增）。
+ * @returns 决策里全部消息的文本拼接（无注入则为空串）。
+ */
+async function runPreStep(loaded: Context, agent: unknown, step: number): Promise<string> {
+  const dispatch = loaded as unknown as {
+    waterfall: (name: string, payload: unknown, next: () => Promise<unknown>) => Promise<unknown>
+  }
+  const decision = await dispatch.waterfall('agent/pre-step', {
+    agent, step, turn: step, signal: new AbortController().signal,
+  }, async () => ({ kind: 'enter', messages: [] })) as {
+    messages: readonly { content: readonly { type: string; text?: string }[] }[]
+  }
+  return decision.messages
+    .map(entry => entry.content.map(block => block.text ?? '').join(''))
+    .join('\n')
 }
 
 /** GET/POST one engram API path; returns status and the parsed JSON body. */
@@ -798,4 +823,81 @@ describe('migration policy through the real Loader and session tools', () => {
       })
     }
   }
+
+  /**
+   * issue #32 回归：画像注入不能只发生在 step===1。
+   *
+   * 阶段：首轮注入 → 同内容去重 → 压缩后（内容一字未改）必须重注 → 无新压缩时去重恢复。
+   * 第 5 阶段单独验去重那一行：压缩后即使 step 回到 1（宿主开新 phase），旧包已不在上下文，
+   * 也必须重注——这正是原实现「同一 agent + 相同 hash 就跳过」漏掉的场景。
+   */
+  it('画像在压缩后重新注入，无压缩时维持哈希去重（issue #32）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    // 会话事件流可写：压缩事件由用例追加，等价于宿主把 compaction/end 写进会话快照。
+    const events: unknown[] = []
+    const agent = {
+      id: 'sess-compaction',
+      session: { id: 'sess-compaction', header: { cwd: process.cwd() }, snapshotEvents: () => events },
+    }
+
+    // 1) 首轮：注入（此时快照里没有压缩事件，基线记 0）。
+    expect(await runPreStep(loaded, agent, 1)).toContain(MEMORY_CONTEXT_TAG)
+    // 2) 同内容、无压缩：去重生效（上一轮注入仍在上下文里）。
+    expect(await runPreStep(loaded, agent, 2)).not.toContain(MEMORY_CONTEXT_TAG)
+    // 3) 会话被压缩：旧包已被摘要掉，内容未变也必须重注。
+    events.push({ type: 'compaction/end', data: {}, seq: 1, time: Date.now() })
+    expect(await runPreStep(loaded, agent, 3)).toContain(MEMORY_CONTEXT_TAG)
+    // 4) 该次压缩已计入基线：去重恢复。
+    expect(await runPreStep(loaded, agent, 4)).not.toContain(MEMORY_CONTEXT_TAG)
+    // 5) 第二次压缩 + step 回到 1：去重必须被压缩绕开（原实现在这里静默丢包）。
+    events.push({ type: 'compaction/end', data: {}, seq: 2, time: Date.now() })
+    expect(await runPreStep(loaded, agent, 1)).toContain(MEMORY_CONTEXT_TAG)
+  })
+
+  /** 空库里配置了 profileSeed：首次注入前就地建立 v1，并立刻进入本轮注入。 */
+  it('profileSeed создаёт стартовый курируемый блок (v1, source=seed)', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(["    profileSeed: 'Стартовое правило: сначала поиск в памяти.'"])
+    const agent = {
+      id: 'sess-seed',
+      session: { id: 'sess-seed', header: { cwd: process.cwd() }, snapshotEvents: () => [] },
+    }
+    expect(await runPreStep(loaded, agent, 1)).toContain('Стартовое правило')
+
+    const view = await call(loaded.webServer.port, 'GET', '/api/engram/profile-block?scope=user')
+    expect(view.status).toBe(200)
+    const body = view.json as {
+      block: { content: string; version: number } | null
+      versions: { version: number; source: string }[]
+    }
+    expect(body.block?.version).toBe(1)
+    expect(body.block?.content).toContain('Стартовое правило')
+    // 版本链里的产生方式必须是 seed，而不是伪装成人工编辑。
+    expect(body.versions[0]?.source).toBe('seed')
+  })
+
+  /** Уже есть блок (ручная правка) — profileSeed не участвует: стартовый блок только для пустой базы. */
+  it('profileSeed не перезаписывает существующий курируемый блок', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(
+      ["    profileSeed: 'Стартовое правило из настроек.'"],
+      undefined,
+      async (dbDir) => {
+        const store = await openEngramStore(join(dbDir, 'user.db'))
+        await store.saveProfileBlock('user', undefined, 'мой собственный блок', 'edit')
+        await store.close()
+      },
+    )
+    const agent = {
+      id: 'sess-seed-existing',
+      session: { id: 'sess-seed-existing', header: { cwd: process.cwd() }, snapshotEvents: () => [] },
+    }
+    const injected = await runPreStep(loaded, agent, 1)
+    expect(injected).toContain('мой собственный блок')
+    expect(injected).not.toContain('Стартовое правило из настроек')
+
+    const view = await call(loaded.webServer.port, 'GET', '/api/engram/profile-block?scope=user')
+    const body = view.json as { block: { content: string } | null; versions: { source: string }[] }
+    expect(body.block?.content).toBe('мой собственный блок')
+    expect(body.versions.length).toBe(1)
+    expect(body.versions[0]?.source).toBe('edit')
+  })
 })
