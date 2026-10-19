@@ -564,6 +564,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
   const sqlListAudit = db.prepare('SELECT detail FROM op_log WHERE op = ? AND detail IS NOT NULL ORDER BY seq')
   const sqlClearAudit = db.prepare('DELETE FROM op_log WHERE op = ? AND detail = ?')
+  // 基底事实（这库站在哪个模型上）住在 meta：不是操作日志，考古时不进 op_log。
+  const sqlWriteMeta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
   const sqlOpLogById = db.prepare('SELECT at, op, target_id, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
   const sqlGetManyByIds = db.prepare('SELECT * FROM nodes WHERE id IN (SELECT value FROM json_each(?))')
   const sqlNeighborsBounded = db.prepare(`SELECT * FROM nodes WHERE id IN (
@@ -1667,6 +1669,10 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async clearAudit(op: string, detail: string) {
       sqlClearAudit.run(op, detail)
+    },
+
+    async writeMeta(key: string, value: string) {
+      sqlWriteMeta.run(key, value)
     },
 
     async purge() {

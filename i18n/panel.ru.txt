@@ -32,3 +32,29 @@ model id	идентификатор модели
 dims	размерность
 pooling · weights	сведение · веса
 package default	умолчание пакета
+Palace bases	Базы дворца
+What each base stands on, and what the button will do	На чём стоит каждая база и что сделает кнопка
+base	база
+state	состояние
+records	записей
+no vector	без вектора
+wrong length	чужой длины
+vector length	длина вектора
+no base yet	базы ещё нет
+empty	пустая
+in order	в порядке
+no label	метки нет
+another model	другая модель
+mixed vectors	пересортица векторов
+records without a vector	записи без вектора
+not checked	не проверено
+Run	Выполнить
+Writing…	Пишу…
+The base is in order. Nothing to do.	База в порядке, действие не требуется.
+The base label {label} will be written.	Будет записана метка базы {label}.
+The vectors will be recomputed — not wired up yet (stage 2 of block B).	Будет выполнен пересчёт векторов — пока не подключён (этап 2 блока Б).
+The records without a vector will be filled in — not wired up yet (stage 2 of block B).	Будут дозаполнены векторы записей без вектора — пока не подключено (этап 2 блока Б).
+Label written: {label}	Метка записана: {label}
+Could not write the base label	Не удалось записать метку базы
+bases do not exist yet: {n} — the author's code creates them	баз ещё нет: {n} — их создаёт код автора
+The schema declaration did not load: base states are unknown.	Объявление схемы не прочитано: состояние баз неизвестно.

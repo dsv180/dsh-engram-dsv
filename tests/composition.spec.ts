@@ -284,6 +284,30 @@ describe('dsh-engram real Loader composition', () => {
     expect(exported.contentType).toContain('text/markdown')
     expect(exported.text).toContain('种子偏好')
 
+    // Обслуживание: перечень баз дворца и одна кнопка действия. Состояние считается
+    // на каждый запрос, поэтому после записи метки ответ обязан измениться — иначе
+    // кнопка показывала бы старое и просила сделать то, что уже сделано.
+    const registry = await call(port, 'GET', '/api/engram/registry')
+    expect(registry.status).toBe(200)
+    const bases = (registry.json as {
+      bases: { file: string, label: string | null, targetLabel: string | null, action: string | null, checked: boolean }[]
+    }).bases
+    expect(bases.map(base => base.file)).toContain('user.db')
+    expect((registry.json as { convertAvailable: boolean }).convertAvailable).toBe(false)
+
+    const labelled = await call(port, 'POST', '/api/engram/base-label', {})
+    expect(labelled.status).toBe(200)
+    expect((labelled.json as { failed: unknown[] }).failed).toEqual([])
+
+    // Каким бы ни был прогон, после записи метки просьбы её записать больше нет,
+    // а у баз, которые её просили, метка равна объявленной.
+    const after = await call(port, 'GET', '/api/engram/registry')
+    const afterBases = (after.json as { bases: { file: string, label: string | null, action: string | null }[] }).bases
+    expect(afterBases.filter(base => base.action === 'write-label')).toEqual([])
+    for (const base of bases.filter(candidate => candidate.action === 'write-label')) {
+      expect(afterBases.find(candidate => candidate.file === base.file)?.label).toBe(base.targetLabel)
+    }
+
     // 回环写守卫：跨站 Origin 的 POST 被 403 拒绝。
     const evil = await call(port, 'POST', '/api/engram/forget',
       { id: dropped!.id, scope: 'user', reason: 'x', affects: 'x', stillUseful: 'x' },

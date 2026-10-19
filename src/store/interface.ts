@@ -192,6 +192,12 @@ export interface EngramStore {
   nearestObservation(embedding: Float32Array): Promise<{ record: ObservationRecord; similarity: number } | undefined>
   /** 写入一条结构化审计记录（辅助 LLM 请求等，不进会话日志——下游插件禁止写未知事件类型）。 */
   audit(op: string, targetId: string, detail: string | null): Promise<void>
+  /**
+   * 写 `meta` 键（upsert）。同一键只有一个当前值，重复写即覆盖。
+   * 用于「这库站在哪个模型上」这类基底事实——它们不属于记忆，不该进 op_log；
+   * 读由只读核查（registry/base-census.ts）直连完成，不经仓储，避免为看一眼就打开并迁移别人的库。
+   */
+  writeMeta(key: string, value: string): Promise<void>
   /** 幂等键查重：op_log 中是否已存在指定 op+detail 的记录。 */
   hasAudit(op: string, detail: string): Promise<boolean>
   /** 列出指定 op 的全部 detail（按写入顺序；pending 队列枚举用）。 */

@@ -16,6 +16,7 @@ import type { EngramStore } from './store/interface.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
+import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
 import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
@@ -216,6 +217,65 @@ export interface RegistryView {
   readonly panel: Readonly<Record<string, string>>
 }
 
+/**
+ * Одна база дворца в карточке обслуживания: где лежит, на чём стоит и что с ней
+ * сделает кнопка «Выполнить». Состояние и действие считает ядро
+ * (`registry/base-state.ts`), панель их только называет словами.
+ */
+export interface BaseView {
+  /** Имя файла базы: `user.db`, `shared.db`, `project-<hash>.db`. */
+  readonly file: string
+  /** Чья это база: своя, общая или проектная. */
+  readonly scope: 'user' | 'shared' | 'project'
+  /** Заголовок проектного дворца; у user/shared его нет (панель называет их сама). */
+  readonly title: string | null
+  /** Метка из `meta`; базы без метки — null. */
+  readonly label: string | null
+  /** Метка, которую поставит или ожидает плагин; нечем собрать — null. */
+  readonly targetLabel: string | null
+  /** Состояние базы; null — не проверено (объявление схемы о другой версии базы). */
+  readonly state: BaseStateId | null
+  /** Что сделает кнопка; null — действие не определено, потому что состояние не проверено. */
+  readonly action: BaseActionId | null
+  /** Записей в области объявления схемы. */
+  readonly rows: number
+  /** Из них без вектора. */
+  readonly missing: number
+  /** Из них чужой длины. */
+  readonly foreign: number
+  /** Длины векторов по убыванию числа записей. */
+  readonly dims: readonly number[]
+  /** Состояние проверено; false — объявление схемы описывает другую версию базы. */
+  readonly checked: boolean
+  readonly problems: readonly { readonly kind: string, readonly detail: string }[]
+}
+
+/** Итог записи метки: что подписали и что не далось. */
+export interface BaseLabelResult {
+  readonly written: readonly { readonly file: string, readonly label: string }[]
+  readonly failed: readonly { readonly file: string, readonly error: string }[]
+}
+
+/**
+ * Ответ `GET registry`: снимок реестра плюс состояние баз.
+ *
+ * Разделение намеренное: реестр, словари и язык читаются один раз при сборке
+ * плагина, а состояние баз считается на каждый запрос — метку меняет кнопка в
+ * этой же карточке, и после неё панель обязана увидеть новое состояние, а не
+ * запомненное при запуске.
+ */
+export interface RegistryResponse extends RegistryView {
+  readonly bases: readonly BaseView[]
+  /** Есть ли базы, которых ещё нет: их создаёт код автора, не мы. */
+  readonly pendingBases: number
+  /**
+   * Подключён ли пересчёт векторов (этап 2 блока Б). false — кнопка умеет только
+   * ставить метку, а состояния «другая модель», «пересортица» и «записи без
+   * вектора» она честно называет невыполнимыми, вместо того чтобы молчать.
+   */
+  readonly convertAvailable: boolean
+}
+
 /** 未知项目选择器（路由统一映射为 404）。 */
 class UnknownProjectError extends Error {
   constructor(selector: string) {
@@ -259,6 +319,16 @@ export interface RouteDeps {
    * а собирается оно там, где известны и конфиг, и реестр, и словари (src/index.ts).
    */
   readonly registry: RegistryView
+  /**
+   * Обслуживание: состояние каждой базы дворца. Считается на каждый запрос, а не
+   * при сборке плагина: метку меняет кнопка в этой же карточке, и после неё панель
+   * должна увидеть новое состояние.
+   */
+  readonly baseStates: () => Promise<{ readonly bases: readonly BaseView[], readonly pendingBases: number }>
+  /** Обслуживание: поставить метку модели во все базы, которым она нужна. */
+  readonly writeBaseLabels: () => Promise<BaseLabelResult>
+  /** Подключён ли пересчёт векторов (этап 2 блока Б); false — кнопка умеет только метку. */
+  readonly convertAvailable: boolean
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
   readonly history: {
     /** 估算候选会话与轮数（不写库、不调 LLM）。 */
@@ -835,7 +905,22 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Обслуживание: чем считается содержимое базы (выбранная модель, каталог,
             // привязки) и какими словами оно описано (файлы словарей и их претензии).
             // Плюс словарь панели целиком — им клиент перекрывает тексты, вшитые в сборку.
-            json(res, 200, deps.registry)
+            // Плюс состояние каждой базы — оно считается здесь, а не при сборке плагина.
+            const states = await deps.baseStates()
+            json(res, 200, {
+              ...deps.registry,
+              bases: states.bases,
+              pendingBases: states.pendingBases,
+              convertAvailable: deps.convertAvailable,
+            })
+            return
+          }
+          if (req.method === 'POST' && route === 'base-label') {
+            // Обслуживание: поставить метку модели. Метка — единственное, что мы пишем
+            // в чужую базу (решение 20.10); подтверждение одно на все базы, поэтому
+            // тела у запроса нет: набор баз определяет состояние, а не клиент.
+            if (!guardWrite(req, res)) return
+            json(res, 200, await deps.writeBaseLabels())
             return
           }
           if (req.method === 'GET' && route === 'models') {

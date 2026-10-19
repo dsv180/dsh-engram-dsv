@@ -1,0 +1,59 @@
+{
+  "formatVersion": 1,
+  "schemaVersion": 13,
+  "tables": {
+    "nodes": {
+      "properties": {
+        "vector": {
+          "text": "content",
+          "where": "status = 'active'"
+        }
+      },
+      "fields": {
+        "id": "TEXT",
+        "scope": "TEXT",
+        "kind": "TEXT",
+        "content": "TEXT",
+        "importance": "REAL",
+        "confidence": "REAL",
+        "status": "TEXT",
+        "created_at": "INTEGER",
+        "last_accessed_at": "INTEGER",
+        "access_count": "INTEGER",
+        "source_session_id": "TEXT",
+        "source_round": "INTEGER",
+        "source_seq": "INTEGER",
+        "embedding": "BLOB",
+        "outcome": "TEXT",
+        "imagery_json": "TEXT",
+        "slot_room": "TEXT",
+        "slot_index": "INTEGER",
+        "imagery_score": "REAL",
+        "next_review_at": "INTEGER",
+        "ease_factor": "REAL",
+        "interval_days": "REAL",
+        "review_reps": "INTEGER"
+      }
+    },
+    "observations": {
+      "properties": {
+        "vector": {
+          "text": "belief",
+          "where": null
+        }
+      },
+      "fields": {
+        "id": "TEXT",
+        "scope": "TEXT",
+        "belief": "TEXT",
+        "status": "TEXT",
+        "sources_json": "TEXT",
+        "proof_count": "INTEGER",
+        "embedding": "BLOB",
+        "created_at": "INTEGER",
+        "updated_at": "INTEGER",
+        "last_validated_at": "INTEGER"
+      }
+    }
+  }
+}

@@ -2920,6 +2920,25 @@ function ExportMenu({ t, scope, project }: {
   )
 }
 
+/** Одна база дворца в ответе `registry` (host 侧 BaseView). */
+interface RegistryBase {
+  readonly file: string
+  readonly scope: 'user' | 'shared' | 'project'
+  readonly title: string | null
+  readonly label: string | null
+  readonly targetLabel: string | null
+  /** Состояние базы; null — не проверено (объявление схемы о другой версии базы). */
+  readonly state: string | null
+  /** Что сделает кнопка; null — действие не определено, потому что не проверено. */
+  readonly action: string | null
+  readonly rows: number
+  readonly missing: number
+  readonly foreign: number
+  readonly dims: readonly number[]
+  readonly checked: boolean
+  readonly problems: readonly { readonly kind: string, readonly detail: string }[]
+}
+
 /** GET /api/engram/registry 的返回（host 侧 RegistryView，字段名与响应一一对应）。 */
 interface RegistrySnapshot {
   readonly language: string
@@ -2937,6 +2956,12 @@ interface RegistrySnapshot {
     readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
   }[]
   readonly panel: Readonly<Record<string, string>>
+  /** Базы дворца: состояние каждой и что с ней сделает кнопка. */
+  readonly bases: readonly RegistryBase[]
+  /** Сколько баз ещё нет: их создаёт код автора, не мы. */
+  readonly pendingBases: number
+  /** Подключён ли пересчёт векторов (этап 2 блока Б). */
+  readonly convertAvailable: boolean
 }
 
 /** 文件全路径只留文件名：卡片里要的是「какой файл», а не «где лежит пакет». */
@@ -2948,6 +2973,21 @@ function baseName(path: string): string {
 /** Имя модели для человека: метка каталога, а полный идентификатор — по наведению. */
 function modelLabel(snapshot: RegistrySnapshot, id: string): string {
   return snapshot.models.find(row => row.id === id)?.label ?? id
+}
+
+/**
+ * Состояние базы → ключ文案: динамическая строка под union `EngramKey` статически
+ * не проверяется, поэтому таблица, а не шаблон. Состояния приходят с сервера теми
+ * же именами, что в `registry/base-state.ts`.
+ */
+const BASE_STATE_KEY: Readonly<Record<string, EngramKey>> = {
+  absent: 'baseStateAbsent',
+  empty: 'baseStateEmpty',
+  normal: 'baseStateNormal',
+  'no-label': 'baseStateNoLabel',
+  'other-model': 'baseStateOtherModel',
+  'mixed-dims': 'baseStateMixedDims',
+  'missing-vectors': 'baseStateMissingVectors',
 }
 
 /**
@@ -2964,6 +3004,8 @@ function modelLabel(snapshot: RegistrySnapshot, id: string): string {
 function RegistryCard({ t }: { t: T }): React.ReactElement {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const toast = useToast()
 
   useEffect(() => {
     let alive = true
@@ -2981,7 +3023,13 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
   // Словарь панели: слева английская строка (как в файле), справа перевод.
   // Нет файла — карта пуста, и тексты остаются теми, что вшиты в сборку.
   const panel = snapshot?.panel ?? {}
-  const tt = (key: EngramKey): string => panel[en[key]] ?? t(key)
+  // Словарь панели отдаёт готовую строку, вшитый текст — с подстановками: приводим
+  // оба к одному виду, подставляя значения поверх, а не полагаясь на `t`.
+  const tt = (key: EngramKey, params?: Record<string, string | number>): string => {
+    const text = panel[en[key]] ?? t(key)
+    if (params === undefined) return text
+    return text.replace(/\{(\w+)\}/g, (whole, name: string) => params[name] === undefined ? whole : String(params[name]))
+  }
 
   if (error !== null) {
     return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
@@ -2996,6 +3044,33 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
   const resolvedLabel = snapshot.resolved === null
     ? tt('registryNone')
     : snapshot.resolved.label ?? snapshot.resolved.id
+
+  // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
+  // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
+  // здесь же. Пересчёт векторов ещё не подключён (этап 2 блока Б): состояния,
+  // которым он нужен, называют себя невыполнимыми, вместо того чтобы молчать.
+  const actions = snapshot.bases.map(base => base.action)
+  const todo: 'convert' | 'repair' | 'write-label' | 'none' = actions.includes('convert')
+    ? 'convert'
+    : actions.includes('repair') ? 'repair' : actions.includes('write-label') ? 'write-label' : 'none'
+
+  const run = (): void => {
+    setBusy(true)
+    void api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
+      'base-label',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+    )
+      .then(async result => {
+        if (result.failed.length > 0) {
+          toast.push('error', `${tt('baseFailed')}: ${result.failed.map(row => `${row.file} — ${row.error}`).join('; ')}`)
+        } else {
+          toast.push('success', tt('baseDone', { label: result.written[0]?.label ?? '' }))
+        }
+        setSnapshot(await api<RegistrySnapshot>('registry'))
+      })
+      .catch((runError: Error) => { toast.push('error', runError.message) })
+      .finally(() => { setBusy(false) })
+  }
 
   return (
     <div>
@@ -3020,6 +3095,59 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
           {snapshot.resolved.pooling} · {snapshot.resolved.dtype}
         </p>
       )}
+
+      <div className={styles.regGroup}>
+        <span className={styles.regGroupTitle}>{tt('baseTitle')}</span>
+        {snapshot.bases.length === 0
+          ? <p className={styles.regNote}>{tt('baseNoSchema')}</p>
+          : (
+            <table className={styles.regTable}>
+              <thead>
+                <tr>
+                  <th>{tt('baseColBase')}</th>
+                  <th>{tt('baseColState')}</th>
+                  <th>{tt('baseColRows')}</th>
+                  <th>{tt('baseColMissing')}</th>
+                  <th>{tt('baseColForeign')}</th>
+                  <th>{tt('baseColDims')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snapshot.bases.map(base => (
+                  <tr key={base.file}>
+                    <td className={styles.regMono} title={base.file}>{base.title ?? base.file}</td>
+                    <td>{base.state === null ? tt('baseStateUnchecked') : tt(BASE_STATE_KEY[base.state] ?? 'baseStateUnchecked')}</td>
+                    <td>{base.rows}</td>
+                    <td>{base.missing}</td>
+                    <td>{base.foreign}</td>
+                    <td className={styles.regMono}>{base.dims.length === 0 ? tt('registryNone') : base.dims.join(' · ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        {snapshot.bases.some(base => !base.checked) && (
+          <ul className={styles.regBad}>
+            {snapshot.bases.filter(base => !base.checked).map(base => (
+              <li key={base.file}>
+                {base.file}: {base.problems.map(problem => `${problem.kind} — ${problem.detail}`).join('; ')}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className={styles.regNote}>
+          {todo === 'write-label'
+            ? tt('baseActionWriteLabel', { label: snapshot.bases[0]?.targetLabel ?? '' })
+            : todo === 'convert' ? tt('baseActionConvert') : todo === 'repair' ? tt('baseActionRepair') : tt('baseActionNone')}
+          {snapshot.pendingBases > 0 && <> · {tt('basePending', { n: snapshot.pendingBases })}</>}
+        </p>
+        <div className={styles.regActions}>
+          <button type="button" className={`${styles.button} ${styles.primary}`}
+            disabled={busy || todo !== 'write-label'} onClick={run}>
+            {busy ? tt('baseRunBusy') : tt('baseRun')}
+          </button>
+        </div>
+      </div>
 
       <div className={styles.regGroup}>
         <span className={styles.regGroupTitle}>{tt('registryModels')}</span>

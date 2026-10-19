@@ -784,3 +784,5 @@ select.input { padding-right: 28px; appearance: none; }
 .regNote { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
 .regNote b { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
 .regBad { margin: 4px 0 0; padding-left: 18px; color: var(--dsw-alias-state-error-primary); font-size: var(--fs-micro); line-height: 1.5; }
+/* Обслуживание: ряд с одной кнопкой действия — описание стоит строкой выше. */
+.regActions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }

@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
@@ -47,7 +47,11 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
-import type { ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
+import type { BaseLabelResult, BaseView, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
+import { judgeBase, MODEL_LABEL_KEY } from './registry/base-state.ts'
+import type { CatalogModel } from './registry/base-state.ts'
+import { readBaseCensus } from './registry/base-census.ts'
+import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
 import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
@@ -629,14 +633,38 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // Снимок обслуживания: что выбрано, по какому правилу и из каких файлов это следует.
   // Собирается один раз при сборке плагина — реестр и словари читаются один раз и
   // дальше не меняются, а панель показывает именно это состояние, а не свежий опрос.
+  // Выбор модели считается здесь, а не внутри снимка: та же строка нужна карточке баз —
+  // она называет метку, которой подписываются базы (`ru-minilm-l12`), и разойтись эти
+  // два места не должны.
+  const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
   const registryView = registrySnapshot({
     registry,
     language: resolved.language,
     remote: resolved.embedder.remote !== undefined,
-    model: resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling),
+    model: localModel,
     messages: dictionary,
     panel: panelDictionary,
   })
+  // Объявление схемы данных: какие таблицы несут векторы и по какому условию. Читается
+  // один раз — это реестр, а не состояние базы. Без него состояние баз не проверяется:
+  // судить о векторах по догадке мы не будем, и об этом скажет карточка.
+  const vectorSchema = loadVectorSchema({ dbDir: resolved.dbDir })
+  if (vectorSchema.problems.length > 0) {
+    console.warn(message('misc.warnRegistryProblems', {
+      count: vectorSchema.problems.length,
+      sample: describeRegistryProblems(vectorSchema.problems),
+    }))
+  }
+  /** Каталог моделей в том виде, в каком его понимает правило состояния базы. */
+  const catalogModels: readonly CatalogModel[] = [...registry.models.values()]
+    .map(row => ({ id: row.id, label: row.label, dimensions: row.dimensions }))
+  /** Ожидание базы: метка для выбранной модели и языка плюс её строка каталога. */
+  const baseTarget = {
+    label: localModel?.label,
+    model: localModel === undefined
+      ? undefined
+      : { id: localModel.id, label: registry.models.get(localModel.id)?.label, dimensions: registry.models.get(localModel.id)?.dimensions },
+  }
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
@@ -866,6 +894,81 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     },
   }
 
+  /** Имя файла базы → чья она. Имена задаёт сам плагин, поэтому разбор по имени точен. */
+  const scopeOfBaseFile = (file: string): BaseView['scope'] =>
+    file === 'user.db' ? 'user' : file === 'shared.db' ? 'shared' : 'project'
+
+  /**
+   * Состояние каждой базы дворца для карточки обслуживания.
+   *
+   * Считается на каждый запрос: метку меняет кнопка в этой же карточке, и старая
+   * картинка после неё была бы враньём. Базы читаются отдельным read-only
+   * соединением (см. `registry/base-census.ts`) — карточка не открывает чужие базы
+   * через хранилище и ничего в них не меняет.
+   */
+  const baseStates = async (): Promise<{ bases: readonly BaseView[], pendingBases: number }> => {
+    const palaces = await projectPalaces()
+    const titles = new Map(palaces.map(palace => [palace.dbName, palace.title]))
+    const files = readdirSync(resolved.dbDir).filter(name => name.endsWith('.db')).sort()
+    const bases: BaseView[] = []
+    for (const file of files) {
+      const census = await readBaseCensus({
+        path: join(resolved.dbDir, file),
+        specs: vectorSchema.specs,
+        schemaVersion: vectorSchema.schemaVersion,
+      })
+      const scope = scopeOfBaseFile(file)
+      // Объявление схемы описывает другую версию — состояние не проверяем и не
+      // выдумываем: карточка покажет «не проверено» и причину.
+      const verdict = census.checkable
+        ? judgeBase({ facts: census.facts, target: baseTarget, language: resolved.language, catalog: catalogModels })
+        : undefined
+      bases.push({
+        file,
+        scope,
+        title: scope === 'project' ? titles.get(file) ?? null : null,
+        label: census.facts.label ?? null,
+        targetLabel: baseTarget.label ?? null,
+        state: verdict?.state ?? null,
+        action: verdict?.action ?? null,
+        rows: verdict?.rows ?? census.facts.rows,
+        missing: verdict?.missing ?? census.facts.missing,
+        foreign: verdict?.foreign ?? 0,
+        dims: verdict?.dims ?? [],
+        checked: census.checkable,
+        problems: census.problems.map(problem => ({ kind: problem.kind, detail: problem.detail })),
+      })
+    }
+    const present = new Set(files)
+    return { bases, pendingBases: palaces.filter(palace => !present.has(palace.dbName)).length }
+  }
+
+  /**
+   * Поставить метку модели всем базам, которым она нужна.
+   *
+   * Пишем ровно одну строку в `meta` и только туда (решение 20.10): ни размерности,
+   * ни времени. Идём через хранилище плагина, а не вторым соединением: у базы должен
+   * быть один писатель в процессе — иначе два соединения начнут спорить за блокировку,
+   * а кеш соединений останется со старым представлением о файле.
+   */
+  const writeBaseLabels = async (): Promise<BaseLabelResult> => {
+    const written: { file: string, label: string }[] = []
+    const failed: { file: string, error: string }[] = []
+    if (baseTarget.label === undefined) return { written, failed }
+    const { bases } = await baseStates()
+    for (const base of bases) {
+      if (base.action !== 'write-label' || base.targetLabel === null) continue
+      try {
+        const store = await openDb(base.file)
+        await store.writeMeta(MODEL_LABEL_KEY, base.targetLabel)
+        written.push({ file: base.file, label: base.targetLabel })
+      } catch (error) {
+        failed.push({ file: base.file, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return { written, failed }
+  }
+
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
   const buildHistoryDeps = (): HistoryBackfillDeps => ({
     source: persistenceService(),
@@ -994,6 +1097,12 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       pluginVersion: VERSION,
       language: resolved.language,
       registry: registryView,
+      baseStates,
+      writeBaseLabels,
+      // Пересчёт векторов — этап 2 блока Б: конвертер живёт вне плагина и в карточку
+      // ещё не подключён. Пока false — карточка честно называет такие состояния
+      // невыполнимыми, а кнопка ничего не делает молча.
+      convertAvailable: false,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
       jev: { base: resolved.jev, dbDir: resolved.dbDir },

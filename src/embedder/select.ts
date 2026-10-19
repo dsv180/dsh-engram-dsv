@@ -97,7 +97,9 @@ export function resolveLocalModel(
   }
   return {
     id: row.id,
-    label: bindingLabel(language, row.label),
+    // Строка каталога без метки — это модель, которую нечем назвать в записи о базе.
+    // Подставлять вместо имени `undefined` нельзя: метка уезжает в чужую базу.
+    label: row.label === undefined ? undefined : bindingLabel(language, row.label),
     source,
     pooling: poolingOverride ?? row.pooling,
     dtype: row.dtype,
