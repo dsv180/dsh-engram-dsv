@@ -748,5 +748,3 @@ export const en = {
   'tool.profileEditRolledBack': 'Wrote the content of v{from} as v{to} ({scope}; the version chain only grows, so further rollbacks are possible).',
 } as const
 
-/** Русский набор. */
-

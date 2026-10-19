@@ -135,5 +135,3 @@ export const en = {
   'core.backfillBusy': 'A backfill job is already running; pause it or wait for it to finish first',
 } as const
 
-/** Русский набор. */
-

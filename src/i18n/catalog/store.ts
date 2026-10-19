@@ -110,5 +110,3 @@ export const en = {
   'store.budgetDropped': '({count} more not shown: narrow the query or lower the limit and retry)',
 } as const
 
-/** Русский набор. */
-

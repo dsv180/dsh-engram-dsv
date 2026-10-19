@@ -54,6 +54,8 @@ export const zh = {
   'misc.jevBaseUrlMustBeHttp': 'invalid: jev.baseUrl 必须是 http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
+  // i18n/dictionary-file.ts
+  'misc.warnDictionaryProblems': '[dsh-engram] 译文词典：有 {count} 行问题已跳过，这些文本仍为英文：{sample}',
 } as const
 
 /** Английский набор — образец полноты. */
@@ -98,7 +100,7 @@ export const en = {
   'misc.jevBaseUrlMustBeHttp': 'invalid: jev.baseUrl must be an http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model must not be empty',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
+  // i18n/dictionary-file.ts
+  'misc.warnDictionaryProblems': '[dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}',
 } as const
-
-/** Русский набор. */
 
