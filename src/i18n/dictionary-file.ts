@@ -12,9 +12,9 @@
  * @module @kenz1117/dsh-engram/i18n/dictionary-file
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { packageRoot } from '../registry/root.ts'
 import { parseDictionary } from './dictionary.ts'
 import type { DictionaryIssueKind, ParsedDictionary } from './dictionary.ts'
 import type { EngramLanguage } from './language.ts'
@@ -45,27 +45,6 @@ export interface DictionarySources {
   readonly dbDir: string
   /** Корень пакета; по умолчанию вычисляется от расположения модуля. */
   readonly packageRoot?: string
-}
-
-/** Насколько высоко подниматься в поисках `package.json`. */
-const ROOT_SEARCH_DEPTH = 6
-
-/**
- * Корень пакета.
- *
- * От `'..'` считать нельзя: в исходниках модуль лежит на два уровня ниже корня
- * (`src/i18n/`), а в сборке — на один (`lib/`). Поэтому поднимаемся до первого
- * каталога с `package.json`: правило одно и для репозитория, и для установки.
- */
-function packageRoot(): string {
-  let dir = dirname(fileURLToPath(import.meta.url))
-  for (let depth = 0; depth < ROOT_SEARCH_DEPTH; depth += 1) {
-    if (existsSync(join(dir, 'package.json'))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return dir
 }
 
 /** Прочитать один файл словаря; отсутствие файла — не претензия. */

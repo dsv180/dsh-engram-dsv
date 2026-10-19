@@ -7,7 +7,6 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
-import { ENGRAM_MODEL_ID } from './embedder/local.ts'
 import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
@@ -35,9 +34,9 @@ export type EmbedderPooling = 'mean' | 'cls'
 export interface EmbedderConfig {
   /** 后端；默认 local——旧版本的行为原样保留。 */
   kind?: EmbedderKind
-  /** local：transformers.js 模型标识；默认 Xenova/bge-small-zh-v1.5。 */
+  /** local：模型标识 — явное переопределение поверх привязок языка；по умолчанию модель берётся из реестра. */
   localModel?: string
-  /** local：池化方式；默认 mean。 */
+  /** local：способ сведения токенов — явное переопределение поверх каталога моделей. */
   localPooling?: EmbedderPooling
   /** remote：模型标识，原样传给服务端（例如 text-embedding-3-small）。 */
   model?: string
@@ -180,8 +179,10 @@ export interface ResolvedJevConfig {
 /** 解析后的嵌入器子配置（默认值已落地）。 */
 export interface ResolvedEmbedderConfig {
   readonly kind: EmbedderKind
-  readonly localModel: string
-  readonly localPooling: EmbedderPooling
+  /** Явное переопределение модели из настроек; undefined — взять из реестра по языку. */
+  readonly localModel: string | undefined
+  /** Явное переопределение сведения токенов; undefined — взять из каталога моделей. */
+  readonly localPooling: EmbedderPooling | undefined
   /** 远程端点；kind=local 时为 undefined。 */
   readonly remote: {
     readonly model: string
@@ -478,8 +479,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     },
     embedder: {
       kind: embedderKind,
-      localModel: embedderConfig?.localModel ?? ENGRAM_MODEL_ID,
-      localPooling: embedderConfig?.localPooling ?? 'mean',
+      localModel: embedderConfig?.localModel,
+      localPooling: embedderConfig?.localPooling,
       remote: embedderKind === 'remote' && embedderConfig?.model !== undefined && embedderConfig.baseUrl !== undefined
         ? {
             model: embedderConfig.model,

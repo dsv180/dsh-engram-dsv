@@ -56,6 +56,8 @@ export const zh = {
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
   // i18n/dictionary-file.ts
   'misc.warnDictionaryProblems': '[dsh-engram] 译文词典：有 {count} 行问题已跳过，这些文本仍为英文：{sample}',
+  // src/registry/registry-file.ts
+  'misc.warnRegistryProblems': '[dsh-engram] 模型登记表：有 {count} 行问题已跳过：{sample}',
 } as const
 
 /** Английский набор — образец полноты. */
@@ -102,5 +104,7 @@ export const en = {
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000',
   // i18n/dictionary-file.ts
   'misc.warnDictionaryProblems': '[dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}',
+  // src/registry/registry-file.ts
+  'misc.warnRegistryProblems': '[dsh-engram] The model registry skipped {count} problem line(s): {sample}',
 } as const
 

@@ -1,0 +1,17 @@
+{
+  "formatVersion": 1,
+  "models": [
+    {
+      "id": "Xenova/bge-small-zh-v1.5",
+      "pooling": "mean",
+      "dtype": "q8",
+      "dimensions": 512
+    },
+    {
+      "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+      "pooling": "mean",
+      "dtype": "q8",
+      "dimensions": 384
+    }
+  ]
+}

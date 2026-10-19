@@ -24,6 +24,7 @@ declare module '@deepseek-ai/dsh-llm' {
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary } from './i18n/dictionary-file.ts'
+import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
@@ -531,6 +532,16 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       sample: describeDictionaryProblems(dictionary.problems),
     }))
   }
+  // Реестры: каталог моделей и привязки «язык → модель» (см. src/registry). Каталог
+  // кладёт поставка, привязки перекрывает слой пользователя. Здесь же читается, а не
+  // при первом поиске: без каталога модель выбрать нечем, и об этом надо сказать сразу.
+  const registry = loadRegistry({ dbDir: resolved.dbDir })
+  if (registry.problems.length > 0) {
+    console.warn(message('misc.warnRegistryProblems', {
+      count: registry.problems.length,
+      sample: describeRegistryProblems(registry.problems),
+    }))
+  }
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
@@ -633,7 +644,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
   // 后端由配置选择：本地离线模型或 OpenAI 兼容端点。
-  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved)
+  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved, registry)
     .catch((error: unknown) => {
       console.warn(message('core.warnEmbedderUnavailable'), error)
       return undefined

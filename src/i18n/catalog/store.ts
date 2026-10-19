@@ -54,6 +54,8 @@ export const zh = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试',
+  // —— embedder/select.ts ——
+  'store.embedderModelUnresolved': '未能按语言确定本地嵌入模型；检索已降级为纯关键词模式，请检查模型登记表',
 
   // —— embedder/remote.ts ——
   'store.embedderRemoteUnreachable': '嵌入端点不可达（{baseUrl}，超时 {timeoutMs} 毫秒）',
@@ -112,6 +114,8 @@ export const en = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry',
+  // —— embedder/select.ts ——
+  'store.embedderModelUnresolved': 'could not resolve a local embedding model for this language; retrieval has degraded to keyword-only mode — check the model registry',
 
   // —— embedder/remote.ts ——
   'store.embedderRemoteUnreachable': 'embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)',

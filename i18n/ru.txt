@@ -119,6 +119,7 @@ invalid: jev.baseUrl must be an http(s) URL	invalid: jev.baseUrl должно б
 invalid: jev.model must not be empty	invalid: jev.model не может быть пустым
 invalid: jev.timeoutMs must be an integer number of milliseconds between 1000 and 60000	invalid: jev.timeoutMs должно быть целым числом миллисекунд от 1000 до 60000
 [dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}	[dsh-engram] Словарь переводов: пропущено проблемных строк — {count}; эти тексты остались английскими: {sample}
+[dsh-engram] The model registry skipped {count} problem line(s): {sample}	[dsh-engram] Реестр моделей: пропущено строк с замечаниями — {count}; {sample}
 
 // ==== store ====
 engram database schema version {found} is newer than the version supported by the plugin ({supported}): upgrade the plugin, or back up and delete the old database file ({path})	Версия schema базы engram {found} выше поддерживаемой плагином ({supported}): обновите плагин либо сделайте резервную копию и удалите старый файл базы ({path})
@@ -150,6 +151,7 @@ before handling this manually, stop the affected hosts and back up every databas
 [dsh-engram] the legacy database already has a migration record ({names}): {pointer}; the database migrated earlier may hold memories of the current directory. {manual}	[dsh-engram] У старой базы уже есть запись о переносе ({names}): {pointer}; в базе, перенесённой ранее, могут быть воспоминания текущего каталога. {manual}
 write-disposition: merge target {id} does not exist	write-disposition: цель слияния {id} не существует
 embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry	Не удалось скачать/загрузить модель эмбеддингов; поиск переведён в режим только по ключевым словам — проверьте сеть и повторите
+could not resolve a local embedding model for this language; retrieval has degraded to keyword-only mode — check the model registry	Не удалось определить локальную модель вложений для этого языка; поиск переведён в режим только по ключевым словам — проверьте реестр моделей
 embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)	эндпоинт эмбеддингов недоступен ({baseUrl}, таймаут {timeoutMs} мс)
 embedding endpoint returned HTTP {status}{detail}	эндпоинт эмбеддингов вернул HTTP {status}{detail}
 embedding endpoint returned {received} vectors instead of the requested {expected}	эндпоинт эмбеддингов вернул {received} векторов вместо запрошенных {expected}

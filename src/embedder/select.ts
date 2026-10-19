@@ -3,12 +3,21 @@
  *
  * 选择点只有一处：否则「当前用的是哪个嵌入器」就不再是可检验的部署属性，
  * 而变成每个调用点各自的属性。
+ *
+ * Местная модель выбирается не настройкой, а реестром: язык → модель берётся из
+ * привязок, модель → её свойства — из каталога (см. src/registry). Настройка
+ * `embedder.localModel` остаётся явным переопределением поверх реестра: она
+ * названа пользователем сознательно и потому главнее умолчания поставки.
  * @module @kenz1117/dsh-engram/embedder/select
  */
 
 import type { ResolvedEngramConfig } from '../config.ts'
+import { message } from '../i18n/messages.ts'
+import type { LoadedRegistry } from '../registry/registry-file.ts'
+import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
 import { createLocalEmbedder } from './local.ts'
+import type { LocalModelSpec, ModelDtype, PoolingMode } from './local.ts'
 import { createRemoteEmbedder } from './remote.ts'
 
 /**
@@ -24,12 +33,49 @@ function apiKeyFromEnv(name: string | undefined): string | undefined {
 }
 
 /**
- * 按配置创建嵌入器。
- * @param config - 插件解析后的配置。
- * @returns 就绪的 EngramEmbedder。
- * @throws EngramError 本地模型加载失败，或远程端点没有响应。
+ * Свойства модели, которой нет в каталоге.
+ *
+ * Такую модель может назвать только явное переопределение в настройках: о ней
+ * не известно ничего, кроме идентификатора. Берём исторические значения автора,
+ * mean и q8 — ровно то поведение, что было до появления реестра, поэтому
+ * переопределение ничего не ломает. Размерность такой модели не объявлена и
+ * узнаётся по первому вектору.
  */
-export function createEmbedder(config: ResolvedEngramConfig): Promise<EngramEmbedder> {
+const UNKNOWN_MODEL_POOLING: PoolingMode = 'mean'
+const UNKNOWN_MODEL_DTYPE: ModelDtype = 'q8'
+
+/**
+ * Строка локальной модели: привязка языка, затем умолчание `*`, затем явное
+ * переопределение из настроек.
+ * @param registry - прочитанные каталог моделей и привязки.
+ * @param language - язык вывода плагина.
+ * @param modelOverride - `embedder.localModel`, если задан.
+ * @param poolingOverride - `embedder.localPooling`, если задан.
+ * @returns строка каталога либо undefined, если модель выбрать нечем.
+ */
+export function resolveLocalModel(
+  registry: LoadedRegistry,
+  language: string,
+  modelOverride: string | undefined,
+  poolingOverride: PoolingMode | undefined,
+): LocalModelSpec | undefined {
+  const id = modelOverride ?? registry.bindings.get(language) ?? registry.bindings.get('*')
+  if (id === undefined || id === '') return undefined
+  const row = registry.models.get(id)
+  if (row === undefined) {
+    return { id, pooling: poolingOverride ?? UNKNOWN_MODEL_POOLING, dtype: UNKNOWN_MODEL_DTYPE }
+  }
+  return { id: row.id, pooling: poolingOverride ?? row.pooling, dtype: row.dtype }
+}
+
+/**
+ * Построить嵌入器 по конфигурации и реестру.
+ * @param config - разрешённая конфигурация плагина.
+ * @param registry - прочитанные каталог моделей и привязки.
+ * @returns готовый EngramEmbedder.
+ * @throws EngramError EMBEDDER_MODEL_UNRESOLVED — язык не привязан ни к одной модели; EMBEDDER_DOWNLOAD_FAILED / EMBEDDER_REMOTE_FAILED —后端 не поднялся.
+ */
+export function createEmbedder(config: ResolvedEngramConfig, registry: LoadedRegistry): Promise<EngramEmbedder> {
   const embedder = config.embedder
   const remote = embedder.remote
   if (remote !== undefined) {
@@ -42,5 +88,9 @@ export function createEmbedder(config: ResolvedEngramConfig): Promise<EngramEmbe
       timeoutMs: remote.timeoutMs,
     })
   }
-  return createLocalEmbedder(config.modelCacheDir, config.hfEndpoint, embedder.localModel, embedder.localPooling)
+  const spec = resolveLocalModel(registry, config.language, embedder.localModel, embedder.localPooling)
+  if (spec === undefined) {
+    return Promise.reject(new EngramError('EMBEDDER_MODEL_UNRESOLVED', message('store.embedderModelUnresolved')))
+  }
+  return createLocalEmbedder(config.modelCacheDir, config.hfEndpoint, spec)
 }
