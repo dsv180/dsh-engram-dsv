@@ -28,6 +28,7 @@
   },
   "files": [
     "lib/",
+    "i18n/",
     "scripts/",
     "cordis.patch.yml",
     "icon.svg",

@@ -23,8 +23,9 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
+import { describeDictionaryProblems, loadMessageDictionary } from './i18n/dictionary-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
-import { message, messageIn, setMessageLanguage } from './i18n/messages.ts'
+import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
 import { createLocalEmbedder } from './embedder/local.ts'
@@ -519,6 +520,17 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // функций, и протаскивать язык в каждую было бы куда грубее, чем задать его здесь
   // один раз при сборке плагина (см. src/i18n/messages.ts).
   setMessageLanguage(resolved.language)
+  // Переводы: файл словаря накладывается поверх наборов из кода (см. src/i18n/dictionary-file.ts).
+  // Нет файла — работаем на коде. Дефектные строки пропускаются: это чтение, а не запись,
+  // и падать из-за словаря незачем — но о них говорим, иначе правка «молча не работает».
+  const dictionary = loadMessageDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+  setMessageDictionary(resolved.language, dictionary.entries)
+  if (dictionary.problems.length > 0) {
+    console.warn(message('misc.warnDictionaryProblems', {
+      count: dictionary.problems.length,
+      sample: describeDictionaryProblems(dictionary.problems),
+    }))
+  }
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).

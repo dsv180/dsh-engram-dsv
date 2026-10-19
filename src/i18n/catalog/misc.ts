@@ -101,45 +101,4 @@ export const en = {
 } as const
 
 /** Русский набор. */
-export const ru = {
-  // routes.ts
-  'misc.entityNotFound': 'сущность {id} не найдена',
-  'misc.recordNotFound': 'запись {id} не найдена',
-  'misc.exportHeading': '# Экспорт dsh-engram ({scope})',
-  'misc.exportRecordLine': '- [{status}/{kind}] {content} (id={id}, importance {importance})',
-  'misc.exportEdgesHeading': '## Связи',
-  'misc.backfillCannotStart': 'не удалось запустить заполнение',
-  'misc.archivePathOutsideDbDir': 'archivePath должен находиться внутри dbDir',
-  'misc.restoreFailed': 'восстановление не удалось: {message}',
-  // mirror/markdown.ts
-  'misc.mirrorTitle': '# Дворец памяти · {palace}',
-  'misc.mirrorPalacePersonal': 'Личный дворец',
-  'misc.mirrorPalaceProject': 'Дворец проекта',
-  'misc.mirrorSummary': '> Экспорт {at} · всего **{total}** записей (открыто {active}) · коридоров {edges}',
-  'misc.mirrorRoomsHeading': '## Обзор комнат',
-  'misc.mirrorRoomLine': '- **{room}** · {count} записей (открыто {active} · выставка {archived} · закрыто {forgotten})',
-  'misc.mirrorRecordsHeading': '## Список записей',
-  'misc.mirrorCorridorsHeading': '## Коридоры (связи)',
-  'misc.mirrorNoCorridors': '(коридоров пока нет)',
-  'misc.mirrorUntitled': 'Табличка памяти',
-  'misc.mirrorCorridorSection': '## Коридоры',
-  'misc.mirrorNoEdges': '(эта запись пока не связана ни с одним коридором)',
-  'misc.mirrorEdgeLine': '- {direction} `{id}` ({type})',
-  // refurb.ts
-  'misc.refurbDemoteReason': 'важность {importance} < {threshold} и нет обращений {days} дн.; рекомендуется понизить до archived.',
-  'misc.refurbMergeReason': 'первые 20 символов совпадают с {count} записями; рекомендуется объединить их дистилляцией.',
-  'misc.refurbReviewReason': 'важность {importance}, но запись ни разу не посещали — возможно, она затерялась в коридоре; рекомендуется повторить.',
-  'misc.refurbSplitReason': 'длина содержимого {length} > 400; рекомендуется разделить на несколько независимых записей.',
-  'misc.refurbNoPlacardReason': '{slot}табличка не установлена: дисциплина дворца требует, чтобы каждый маркер был уникальным, различимым и с датой; добавьте её параметром placard инструмента engram_update.',
-  'misc.refurbLowPlacardReason': '{slot}оценка таблички {score} < 0.5 (нарушает дисциплину уникальности/различимости/даты); перепишите табличку.',
-  // imagery/score.ts
-  // 2026-10-11, A-16: полное пояснение — в китайском блоке выше; наружный параметр называется placard.
-  'misc.placardImprovementHint': 'табличка не соответствует дисциплине дворца (уникальность · различимость · дата): прикрепите параметром placard инструмента engram_update табличку из 4-30 символов с датой, первые 6 символов которой не совпадают с другими табличками той же комнаты.',
-  // jev/runtime.ts
-  'misc.jevEnabledMustBeBoolean': 'invalid: jev.enabled должно быть логическим значением',
-  'misc.jevApiKeyMustBeString': 'invalid: jev.apiKey должно быть строкой',
-  'misc.jevBaseUrlMustBeString': 'invalid: jev.baseUrl должно быть строкой',
-  'misc.jevBaseUrlMustBeHttp': 'invalid: jev.baseUrl должно быть URL со схемой http(s)',
-  'misc.jevModelMustNotBeEmpty': 'invalid: jev.model не может быть пустым',
-  'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs должно быть целым числом миллисекунд от 1000 до 60000',
-} as const
+
