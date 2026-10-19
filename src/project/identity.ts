@@ -219,8 +219,15 @@ export function migrationWarning(dbDir: string, identity: ProjectIdentity, outco
     case 'deferred':
       return message('store.migrationDeferred', { names, manual })
     case 'already-migrated': {
+      // 记录会由人（或代他行动的模型）照着这行文字去认库，所以给出可读写法而不是
+      // JSON：转义后的 `C:\\Users\\...` 既难读，又会让人把带双反斜杠的路径当真路径
+      // 复制走。落盘记录仍是 JSON，格式不变（见 migrateProjectDb）。
       const pointer = readMigrationPointer(dbDir, identity)
-      return message('store.migrationAlreadyMigrated', { names, pointer: JSON.stringify(pointer), manual })
+      const shown = pointer === undefined
+        // 走不到：already-migrated 只在记录读得出来时返回；读不出时给破折号而不是词。
+        ? '—'
+        : `${pointer.migratedTo} ← ${pointer.claimedByCwd} (${pointer.claimedAt})`
+      return message('store.migrationAlreadyMigrated', { names, pointer: shown, manual })
     }
   }
 }
