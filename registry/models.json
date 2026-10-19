@@ -3,12 +3,14 @@
   "models": [
     {
       "id": "Xenova/bge-small-zh-v1.5",
+      "label": "bge-small-zh",
       "pooling": "mean",
       "dtype": "q8",
       "dimensions": 512
     },
     {
       "id": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+      "label": "minilm-l12",
       "pooling": "mean",
       "dtype": "q8",
       "dimensions": 384

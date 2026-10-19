@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isEngramLanguage, pickLanguage, systemLanguage } from '../src/i18n/language.ts'
-import { parseBindings } from '../src/registry/models.ts'
+import { parseBindings, parseModels } from '../src/registry/models.ts'
 import { loadRegistry } from '../src/registry/registry-file.ts'
 import { packageRoot } from '../src/registry/root.ts'
 
@@ -92,5 +92,62 @@ describe('pickLanguage', () => {
     const system = systemLanguage()
     expect(pickLanguage(undefined, 'de')).toBe(system)
     expect(pickLanguage(undefined, undefined)).toBe(system)
+  })
+})
+
+describe('метка модели в каталоге', () => {
+  it('короткая метка читается, длинная и с косой чертой — претензия и пропуск строки', () => {
+    const ok = parseModels(JSON.stringify({
+      formatVersion: 1,
+      models: [{ id: 'Xenova/m', label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384 }],
+    }))
+    expect(ok.issues).toEqual([])
+    expect(ok.models.get('Xenova/m')?.label).toBe('minilm-l12')
+
+    const idInLabel = parseModels(JSON.stringify({
+      formatVersion: 1,
+      models: [{ id: 'Xenova/m', label: 'Xenova/m', pooling: 'mean', dtype: 'q8' }],
+    }))
+    expect(idInLabel.models.size).toBe(0)
+    expect(idInLabel.issues.map(issue => issue.kind)).toEqual(['badField'])
+
+    const long = parseModels(JSON.stringify({
+      formatVersion: 1,
+      models: [{ id: 'Xenova/m', label: 'a'.repeat(25), pooling: 'mean', dtype: 'q8' }],
+    }))
+    expect(long.models.size).toBe(0)
+    expect(long.issues.map(issue => issue.kind)).toEqual(['badField'])
+  })
+
+  it('без метки строка принимается: метка необязательна', () => {
+    const parsed = parseModels(JSON.stringify({
+      formatVersion: 1,
+      models: [{ id: 'Xenova/m', pooling: 'mean', dtype: 'q8' }],
+    }))
+    expect(parsed.issues).toEqual([])
+    expect(parsed.models.get('Xenova/m')?.label).toBeUndefined()
+  })
+
+  it('повтор метки — претензия: по метке база находит модель, и две одинаковые её обманут', () => {
+    const parsed = parseModels(JSON.stringify({
+      formatVersion: 1,
+      models: [
+        { id: 'Xenova/a', label: 'same', pooling: 'mean', dtype: 'q8' },
+        { id: 'Xenova/b', label: 'same', pooling: 'mean', dtype: 'q8' },
+      ],
+    }))
+    expect(parsed.models.size).toBe(1)
+    expect(parsed.issues.map(issue => issue.kind)).toEqual(['duplicateLabel'])
+  })
+})
+
+describe('каталог поставки: метки уникальны и по форме', () => {
+  it('обе поставляемые модели названы коротко', async () => {
+    const dbDir = await mkdtemp(join(tmpdir(), 'engram-models-db-'))
+    const loaded = loadRegistry({ packageRoot: packageRoot(), dbDir })
+    const labels = [...loaded.models.values()].map(row => row.label)
+    expect(loaded.problems).toEqual([])
+    expect(labels.every(label => label !== undefined && label.length <= 24)).toBe(true)
+    expect(new Set(labels).size).toBe(labels.length)
   })
 })

@@ -44,6 +44,23 @@ function apiKeyFromEnv(name: string | undefined): string | undefined {
 const UNKNOWN_MODEL_POOLING: PoolingMode = 'mean'
 const UNKNOWN_MODEL_DTYPE: ModelDtype = 'q8'
 
+/** Откуда взялась выбранная модель: чем человек её назвал. */
+export type ModelSource = 'override' | 'binding' | 'fallback'
+
+/**
+ * Выбранная локальная модель вместе с ответом на вопрос «почему именно она».
+ *
+ * Ответ нужен не ядру, а обслуживанию: когда модель у базы и модель в конфиге
+ * разные, разбираться приходится человеку, и первое, что он должен увидеть, —
+ * какая из двух победила и по какому правилу. Расширяет `LocalModelSpec`, а не
+ * заменяет его: ядро по-прежнему получает то, чем строится эмбеддер.
+ */
+export interface LocalModelChoice extends LocalModelSpec {
+  /** Метка модели из каталога; у модели вне каталога метки нет. */
+  readonly label: string | undefined
+  readonly source: ModelSource
+}
+
 /**
  * Строка локальной модели: привязка языка, затем умолчание `*`, затем явное
  * переопределение из настроек.
@@ -58,14 +75,29 @@ export function resolveLocalModel(
   language: string,
   modelOverride: string | undefined,
   poolingOverride: PoolingMode | undefined,
-): LocalModelSpec | undefined {
-  const id = modelOverride ?? registry.bindings.get(language) ?? registry.bindings.get('*')
+): LocalModelChoice | undefined {
+  const byOverride = modelOverride !== undefined && modelOverride !== ''
+  const byLanguage = registry.bindings.get(language)
+  const id = byOverride ? modelOverride : (byLanguage ?? registry.bindings.get('*'))
   if (id === undefined || id === '') return undefined
+  const source: ModelSource = byOverride ? 'override' : byLanguage !== undefined ? 'binding' : 'fallback'
   const row = registry.models.get(id)
   if (row === undefined) {
-    return { id, pooling: poolingOverride ?? UNKNOWN_MODEL_POOLING, dtype: UNKNOWN_MODEL_DTYPE }
+    return {
+      id,
+      label: undefined,
+      source,
+      pooling: poolingOverride ?? UNKNOWN_MODEL_POOLING,
+      dtype: UNKNOWN_MODEL_DTYPE,
+    }
   }
-  return { id: row.id, pooling: poolingOverride ?? row.pooling, dtype: row.dtype }
+  return {
+    id: row.id,
+    label: row.label,
+    source,
+    pooling: poolingOverride ?? row.pooling,
+    dtype: row.dtype,
+  }
 }
 
 /**

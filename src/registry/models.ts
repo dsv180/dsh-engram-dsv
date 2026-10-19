@@ -29,6 +29,16 @@ const POOLING_MODES: readonly PoolingMode[] = ['mean', 'cls']
 /** Виды весов, которые понимает разбор (множество transformers.js). */
 const DTYPES: readonly ModelDtype[] = ['q8', 'fp32', 'fp16', 'int8', 'uint8', 'q4', 'q4f16', 'bnb4']
 
+/**
+ * Метка модели: буквы, цифры, точка, дефис, подчёркивание; до 24 знаков.
+ *
+ * Предел не косметический: метка ложится в запись о базе и в отчёты, поэтому
+ * она должна быть короткой настолько, чтобы её читали целиком, и не содержать
+ * пробелов и разделителей строк. Имя с косой чертой или заглавными буквами
+ * выдаёт, что в метку положили идентификатор — это замечание, а не норма.
+ */
+const MODEL_LABEL = /^[a-z0-9][a-z0-9._-]{0,23}$/
+
 /** Код языка в привязках: `*` — все остальные, иначе код вида `zh` или `zh-Hans`. */
 const LANGUAGE_CODE = /^(\*|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$/
 
@@ -48,6 +58,15 @@ const LANGUAGE_ONLY = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
  */
 export interface ModelRecord {
   readonly id: string
+  /**
+   * Короткая метка модели — то, чем модель называется в записи о базе.
+   *
+   * Полный идентификатор (`Xenova/paraphrase-multilingual-MiniLM-L12-v2`) в
+   * запись о базе не помещается и человеку ничего не говорит. Метка — это имя
+   * самой модели, без языка: одна и та же многоязычная модель служит и русскому,
+   * и английскому, поэтому язык в неё зашивать нельзя — язык живёт в привязках.
+   */
+  readonly label: string | undefined
   readonly pooling: PoolingMode
   readonly dtype: ModelDtype
   /**
@@ -68,6 +87,7 @@ export type RegistryIssueKind =
   | 'badField'
   | 'futureVersion'
   | 'duplicateId'
+  | 'duplicateLabel'
   | 'duplicateLanguage'
   | 'unknownModel'
   | 'unknownLanguage'
@@ -191,6 +211,22 @@ export function parseModels(text: string): ParsedModels {
       issues.push({ kind: 'badField', detail: `${at}.id — не непустая строка` })
       return
     }
+    // Метка необязательна: без неё модель зовётся идентификатором. Но если она
+    // написана не по форме, строку не принимаем — по метке база находит модель,
+    // и молчаливая подмена метки на идентификатор сломала бы эту связь тихо.
+    const label = record.label
+    if (label !== undefined && (typeof label !== 'string' || !MODEL_LABEL.test(label))) {
+      issues.push({ kind: 'badField', detail: `${at}.label = ${String(label)}` })
+      return
+    }
+    if (label !== undefined) {
+      for (const existing of models.values()) {
+        if (existing.label === label) {
+          issues.push({ kind: 'duplicateLabel', detail: label })
+          return
+        }
+      }
+    }
     const pooling = textField(record, 'pooling')
     if (pooling === undefined || !POOLING_MODES.includes(pooling as PoolingMode)) {
       issues.push({ kind: 'badField', detail: `${at}.pooling = ${pooling ?? '—'}` })
@@ -212,6 +248,7 @@ export function parseModels(text: string): ParsedModels {
     }
     models.set(id, {
       id,
+      label: label as string | undefined,
       pooling: pooling as PoolingMode,
       dtype: dtype as ModelDtype,
       dimensions: dimensions as number | undefined,
