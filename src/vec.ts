@@ -36,3 +36,15 @@ export function cosine(a: Float32Array, b: Float32Array): number {
   if (na === 0 || nb === 0) return 0
   return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }
+
+/**
+ * Ошибка ли это «размерности не совпали».
+ *
+ * Сравнение векторов — единственное место, где она рождается сама; различать её
+ * приходится вызывающим, и различать по коду, а не по тексту: текст переводится.
+ * @param error - то, что попало в catch.
+ * @returns true, если это EngramError с кодом EMBEDDER_DIMENSION_MISMATCH.
+ */
+export function isDimensionMismatch(error: unknown): boolean {
+  return error instanceof EngramError && error.code === 'EMBEDDER_DIMENSION_MISMATCH'
+}

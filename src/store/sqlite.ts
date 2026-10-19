@@ -15,7 +15,7 @@ import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
 import { message } from '../i18n/messages.ts'
 // 余弦相似度：store 检索与巩固聚类共享 src/vec.ts 的单一实现（维度不匹配告警一次）。
-import { cosine } from '../vec.ts'
+import { cosine, isDimensionMismatch } from '../vec.ts'
 import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
@@ -508,11 +508,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
    * 打开时读一次，且两张带向量的表一起读：记忆与信念彼此比较，任何一边对不上
    * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
    * 没有可拒绝的东西。
+   *
+   * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
+   * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
    */
-  const storedDimRow = db.prepare(`SELECT LENGTH(embedding) AS bytes FROM nodes WHERE embedding IS NOT NULL
-    UNION ALL SELECT LENGTH(embedding) AS bytes FROM observations WHERE embedding IS NOT NULL LIMIT 1`)
+  const storedDimRow = db.prepare(`SELECT LENGTH(embedding) AS bytes FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % 4 = 0
+    UNION ALL SELECT LENGTH(embedding) AS bytes FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % 4 = 0 LIMIT 1`)
     .get() as unknown as { bytes: number } | undefined
   let storedDim = storedDimRow === undefined ? undefined : storedDimRow.bytes / Float32Array.BYTES_PER_ELEMENT
+
+  /** 维度不符导致读取降级时只提醒一次：检索是高频路径，逐次告警会淹掉日志。 */
+  let warnedDegradedRead = false
 
   /**
    * 放行向量入库，或拒绝并说出两边的维度。
@@ -830,24 +836,38 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
 
       // 道 2：向量余弦（active 且带向量的条目全量参与）。
+      // 维度不符时这一路整体降级，而不是把检索打掉：写侧已经拒绝异维向量入库，
+      // 所以走到这里只可能是「换了模型，库里还是旧模型的向量」——关键词一路照常，
+      // 结果里标记 degraded，用户仍能搜到东西，也知道语义一路没参与。
       let degraded = true
       if (queryVector !== undefined) {
-        degraded = false
-        const pool = vectorPool(query.scopes, query.rooms)
-        const ranked = pool
-          .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
-          .filter(entry => entry.sim >= MIN_COSINE)
-          .sort((a, b) => b.sim - a.sim)
-          .slice(0, RANK_POOL)
-        ranked.forEach((entry, index) => {
-          const add = 1 / (RRF_K + index + 1)
-          const existing = scores.get(entry.row.id)
-          if (existing === undefined) {
-            scores.set(entry.row.id, { score: add, via: 'vec' })
-          } else {
-            scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+        try {
+          const pool = vectorPool(query.scopes, query.rooms)
+          const ranked = pool
+            .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
+            .filter(entry => entry.sim >= MIN_COSINE)
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, RANK_POOL)
+          ranked.forEach((entry, index) => {
+            const add = 1 / (RRF_K + index + 1)
+            const existing = scores.get(entry.row.id)
+            if (existing === undefined) {
+              scores.set(entry.row.id, { score: add, via: 'vec' })
+            } else {
+              scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+            }
+          })
+          degraded = false
+        } catch (error) {
+          if (!isDimensionMismatch(error)) throw error
+          if (!warnedDegradedRead) {
+            warnedDegradedRead = true
+            console.warn(message('store.embedderDimensionMismatch', {
+              expected: storedDim ?? queryVector.length,
+              found: queryVector.length,
+            }))
           }
-        })
+        }
       }
 
       // 排序 boost：RRF 融合分之上乘 recency 与 proof 因子（权重 0 时因子恒 1，退化为纯 RRF）。
