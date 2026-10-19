@@ -23,14 +23,17 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
-import { describeDictionaryProblems, loadMessageDictionary } from './i18n/dictionary-file.ts'
+import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary } from './i18n/dictionary-file.ts'
+import type { LoadedDictionary } from './i18n/dictionary-file.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
+import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
 import { pickLanguage } from './i18n/language.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
-import { createEmbedder } from './embedder/select.ts'
+import { createEmbedder, resolveLocalModel } from './embedder/select.ts'
+import type { LocalModelChoice } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
@@ -44,7 +47,7 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
-import type { ProjectPalaceView, RouteDeps } from './routes.ts'
+import type { ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
 import type { ProjectPalace, WorkspaceRef } from './project/registry.ts'
@@ -512,6 +515,65 @@ function makeSessionResolver(
 }
 
 /**
+ * Снимок обслуживания: чем выбрана модель и из каких файлов это следует.
+ *
+ * Собирается один раз при сборке плагина, потому что все источники — реестр,
+ * оба словаря, разрешённый язык — читаются один раз и дальше не меняются.
+ * Панель получает готовый ответ и ничего не выводит сама: правило выбора модели
+ * должно быть одно, и жить оно должно там, где модель выбирается, а не в отрисовке.
+ * @param input - прочитанные реестр и словари, язык, признак удалённой модели и выбор модели.
+ * @returns JSON-совместимый снимок для `GET registry`.
+ */
+function registrySnapshot(input: {
+  readonly registry: LoadedRegistry
+  readonly language: string
+  readonly remote: boolean
+  readonly model: LocalModelChoice | undefined
+  readonly messages: LoadedDictionary
+  readonly panel: LoadedDictionary
+}): RegistryView {
+  const dictionary = (name: string, loaded: LoadedDictionary): RegistryView['dictionaries'][number] => ({
+    name,
+    files: loaded.files,
+    entries: loaded.entries.size,
+    problems: loaded.problems.map(problem => ({
+      file: problem.file,
+      line: problem.line,
+      kind: problem.kind,
+      detail: problem.detail,
+    })),
+  })
+  return {
+    language: input.language,
+    defaultLanguage: input.registry.defaultLanguage ?? null,
+    remote: input.remote,
+    resolved: input.model === undefined ? null : {
+      id: input.model.id,
+      label: input.model.label ?? null,
+      source: input.model.source,
+      pooling: input.model.pooling,
+      dtype: input.model.dtype,
+    },
+    models: [...input.registry.models.values()].map(row => ({
+      id: row.id,
+      label: row.label ?? null,
+      pooling: row.pooling,
+      dtype: row.dtype,
+      dimensions: row.dimensions ?? null,
+    })),
+    bindings: [...input.registry.bindings].map(([language, model]) => ({ language, model })),
+    files: input.registry.files,
+    problems: input.registry.problems.map(problem => ({
+      file: problem.file,
+      kind: problem.kind,
+      detail: problem.detail,
+    })),
+    dictionaries: [dictionary('messages', input.messages), dictionary('panel', input.panel)],
+    panel: Object.fromEntries(input.panel.entries),
+  }
+}
+
+/**
  * 插件体：预热分库与嵌入器，注册 10 个工具、画像注入、自动摄取与衰减调度。
  * @param ctx - host 上下文。
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
@@ -553,6 +615,28 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       sample: describeRegistryProblems(registry.problems),
     }))
   }
+  // Словарь панели — тот же механизм, другой файл (`i18n/panel.<язык>.txt`): тексты
+  // интерфейса должны правиться без пересборки так же, как тексты сообщений. Панель
+  // забирает его тем же ответом, что и снимок обслуживания, и накладывает поверх
+  // словарей, вшитых в сборку.
+  const panelDictionary = loadPanelDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+  if (panelDictionary.problems.length > 0) {
+    console.warn(message('misc.warnDictionaryProblems', {
+      count: panelDictionary.problems.length,
+      sample: describeDictionaryProblems(panelDictionary.problems),
+    }))
+  }
+  // Снимок обслуживания: что выбрано, по какому правилу и из каких файлов это следует.
+  // Собирается один раз при сборке плагина — реестр и словари читаются один раз и
+  // дальше не меняются, а панель показывает именно это состояние, а не свежий опрос.
+  const registryView = registrySnapshot({
+    registry,
+    language: resolved.language,
+    remote: resolved.embedder.remote !== undefined,
+    model: resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling),
+    messages: dictionary,
+    panel: panelDictionary,
+  })
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
   // (см. src/i18n/patterns.ts, настройка redactWords).
@@ -909,6 +993,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
       language: resolved.language,
+      registry: registryView,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
       jev: { base: resolved.jev, dbDir: resolved.dbDir },

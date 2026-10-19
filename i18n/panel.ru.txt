@@ -1,0 +1,34 @@
+// Словарь панели dsh-engram: русский.
+// Слева — ровно та строка, что стоит в коде (src/client/locales/en.ts), справа — перевод.
+// Формат тот же, что у словаря сообщений (i18n/ru.txt): <слева><TAB><справа>.
+// Этот файл главнее вшитых в сборку текстов: нет строки — берётся вшитый перевод.
+// Пользовательский слой: <каталог данных>/i18n/panel.ru.txt перекрывает этот файл.
+//
+// Первая строка заголовка намеренно отличается от вшитого текста: так видно,
+// что карточка говорит из файла, а не из сборки.
+
+Model and dictionaries	Модель и словари (словарь панели)
+What this palace counts with, and which dictionary files were read	Чем считается содержимое дворца и из каких файлов прочитаны словари
+Chosen model	Выбранная модель
+Chosen by	Чем выбрана
+settings override	переопределением в настройках
+language binding	привязкой языка
+fallback binding (*)	подстановкой «все остальные»
+nothing — no model to run	ничем — модели нет
+remote endpoint (the catalog is not used)	удалённый конец (каталог не используется)
+Model catalog	Каталог моделей
+Language → model	Язык → модель
+Dictionary files	Файлы словарей
+panel	панель
+messages	сообщения
+read from	прочитано из
+lines accepted	принято строк
+complaints	претензии
+none	нет
+Loading…	Читаю…
+Could not read the registry	Не удалось прочитать реестр
+label	метка
+model id	идентификатор модели
+dims	размерность
+pooling · weights	сведение · веса
+package default	умолчание пакета

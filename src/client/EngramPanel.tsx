@@ -2920,6 +2920,168 @@ function ExportMenu({ t, scope, project }: {
   )
 }
 
+/** GET /api/engram/registry 的返回（host 侧 RegistryView，字段名与响应一一对应）。 */
+interface RegistrySnapshot {
+  readonly language: string
+  readonly defaultLanguage: string | null
+  readonly remote: boolean
+  readonly resolved: { readonly id: string; readonly label: string | null; readonly source: string; readonly pooling: string; readonly dtype: string } | null
+  readonly models: readonly { readonly id: string; readonly label: string | null; readonly pooling: string; readonly dtype: string; readonly dimensions: number | null }[]
+  readonly bindings: readonly { readonly language: string; readonly model: string }[]
+  readonly files: readonly string[]
+  readonly problems: readonly { readonly file: string; readonly kind: string; readonly detail: string }[]
+  readonly dictionaries: readonly {
+    readonly name: string
+    readonly files: readonly string[]
+    readonly entries: number
+    readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
+  }[]
+  readonly panel: Readonly<Record<string, string>>
+}
+
+/** 文件全路径只留文件名：卡片里要的是「какой файл», а не «где лежит пакет». */
+function baseName(path: string): string {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return cut < 0 ? path : path.slice(cut + 1)
+}
+
+/**
+ * Обслуживание: чем считается содержимое дворца и откуда взялись слова.
+ *
+ * Карточка намеренно только смотрит: выбор модели и правка словарей — отдельные
+ * операции со своими последствиями (пересборка векторов), и решать их должна
+ * явная форма, а не эта. Здесь видно состояние: какая модель выбрана, по какому
+ * правилу, что лежит в каталоге и какие файлы словарей прочитаны.
+ *
+ * Тексты берутся из словаря панели, пришедшего тем же ответом: он главнее
+ * вшитого в сборку, и это ровно то, ради чего словарь вынесен в файл.
+ */
+function RegistryCard({ t }: { t: T }): React.ReactElement {
+  const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const data = await api<RegistrySnapshot>('registry')
+        if (alive) setSnapshot(data)
+      } catch (cause) {
+        if (alive) setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  // Словарь панели: слева английская строка (как в файле), справа перевод.
+  // Нет файла — карта пуста, и тексты остаются теми, что вшиты в сборку.
+  const panel = snapshot?.panel ?? {}
+  const tt = (key: EngramKey): string => panel[en[key]] ?? t(key)
+
+  if (error !== null) {
+    return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
+  }
+  if (snapshot === null) return <div className={styles.expandLoading}>{tt('registryLoading')}</div>
+
+  const sourceKey: EngramKey = snapshot.resolved === null
+    ? 'registrySourceNone'
+    : snapshot.resolved.source === 'override'
+      ? 'registrySourceOverride'
+      : snapshot.resolved.source === 'binding' ? 'registrySourceBinding' : 'registrySourceFallback'
+  const resolvedLabel = snapshot.resolved === null
+    ? tt('registryNone')
+    : snapshot.resolved.label ?? snapshot.resolved.id
+
+  return (
+    <div>
+      <div className={styles.sectionHead}>
+        <h4 className={styles.sectionTitle}>{tt('registryTitle')}</h4>
+        <span className={styles.sectionHint}>{tt('registryHint')}</span>
+      </div>
+
+      <dl className={styles.regKV}>
+        <dt>{tt('registryResolved')}</dt>
+        <dd>{resolvedLabel}</dd>
+        <dt>{tt('registrySource')}</dt>
+        <dd>{tt(sourceKey)}</dd>
+        <dt>{tt('registryDefaultLanguage')}</dt>
+        <dd>{snapshot.defaultLanguage ?? tt('registryNone')}</dd>
+      </dl>
+      {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
+      {snapshot.resolved !== null && (
+        <p className={styles.regNote}>
+          <span className={styles.regMono}>{snapshot.resolved.id}</span>
+          {' · '}
+          {snapshot.resolved.pooling} · {snapshot.resolved.dtype}
+        </p>
+      )}
+
+      <div className={styles.regGroup}>
+        <span className={styles.regGroupTitle}>{tt('registryModels')}</span>
+        <table className={styles.regTable}>
+          <thead>
+            <tr>
+              <th>{tt('registryColLabel')}</th>
+              <th>{tt('registryColId')}</th>
+              <th>{tt('registryColDims')}</th>
+              <th>{tt('registryColParams')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {snapshot.models.map(row => (
+              <tr key={row.id} className={row.id === snapshot.resolved?.id ? styles.on : undefined}>
+                <td>{row.label ?? tt('registryNone')}</td>
+                <td className={styles.regMono}>{row.id}</td>
+                <td>{row.dimensions ?? tt('registryNone')}</td>
+                <td>{row.pooling} · {row.dtype}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className={styles.regGroup}>
+        <span className={styles.regGroupTitle}>{tt('registryBindings')}</span>
+        <table className={styles.regTable}>
+          <tbody>
+            {snapshot.bindings.map(row => (
+              <tr key={row.language}>
+                <td className={styles.regMono}>{row.language}</td>
+                <td className={styles.regMono}>{row.model}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className={styles.regGroup}>
+        <span className={styles.regGroupTitle}>{tt('registryDictionaries')}</span>
+        {snapshot.dictionaries.map(entry => (
+          <p key={entry.name} className={styles.regNote}>
+            {entry.name === 'panel' ? tt('registryDictionaryPanel') : tt('registryDictionaryMessages')}
+            {' — '}
+            {tt('registryEntries')}: <b>{entry.entries}</b>
+            {entry.files.length > 0 && (
+              <> · {tt('registryFiles')}: <span className={styles.regMono}>{entry.files.map(baseName).join(', ')}</span></>
+            )}
+            {' · '}
+            {tt('registryProblems')}: {entry.problems.length === 0 ? tt('registryNoProblems') : entry.problems.length}
+          </p>
+        ))}
+        {snapshot.problems.length > 0 && (
+          <ul className={styles.regBad}>
+            {snapshot.problems.map((problem, index) => (
+              <li key={`${problem.file}-${String(index)}`}>
+                {baseName(problem.file)}: {problem.kind} — {problem.detail}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
@@ -3607,6 +3769,11 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         <div className={styles.tabPanel}>
           {/* ops tab 是三件工具的容器，不是独立页面：去掉 PageHeader，让每个 sectionHead
               作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
+          <section className={styles.section}>
+            <div className={styles.panelCard}>
+              <RegistryCard t={t} />
+            </div>
+          </section>
           <section className={styles.section}>
             <div className={styles.sectionHead}>
               <h4 className={styles.sectionTitle}>{t('tabBackfill')}</h4>

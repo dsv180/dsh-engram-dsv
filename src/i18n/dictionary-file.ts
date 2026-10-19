@@ -72,8 +72,25 @@ function readDictionary(path: string, problems: DictionaryProblem[]): ParsedDict
  * Чистое чтение: сеть и база не нужны, исключений не бросает.
  */
 export function loadMessageDictionary(sources: DictionarySources): LoadedDictionary {
+  return loadDictionary(sources, `${sources.language}.txt`)
+}
+
+/**
+ * Загрузить словарь панели: то же самое, но другим файлом.
+ *
+ * У половины плагина два разных набора текстов, и сводить их в один файл нельзя:
+ * слева стоит английская строка, а одинаковые английские строки в двух наборах
+ * значат разное. Поэтому набор — это имя файла: серверные сообщения в
+ * `<язык>.txt`, панель — в `panel.<язык>.txt`; формат, слои и правила разбора у
+ * них общие.
+ */
+export function loadPanelDictionary(sources: DictionarySources): LoadedDictionary {
+  return loadDictionary(sources, `panel.${sources.language}.txt`)
+}
+
+/** Прочитать словарь по имени файла: поставка, затем пользовательский слой. */
+function loadDictionary(sources: DictionarySources, name: string): LoadedDictionary {
   const root = sources.packageRoot ?? packageRoot()
-  const name = `${sources.language}.txt`
   const entries = new Map<string, string>()
   const problems: DictionaryProblem[] = []
   const files: string[] = []

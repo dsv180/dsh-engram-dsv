@@ -165,6 +165,57 @@ export interface ProjectPalaceView {
   readonly memories: number | null
 }
 
+/** Неполадка в файле реестра или словаря: где и что именно. */
+export interface RegistryFileProblem {
+  /** Путь к файлу (панель показывает последний сегмент). */
+  readonly file: string
+  readonly kind: string
+  readonly detail: string
+}
+
+/** Строка каталога моделей в том виде, в каком её видит панель. */
+export interface RegistryModelView {
+  readonly id: string
+  /** Короткая метка; у модели без метки — null. */
+  readonly label: string | null
+  readonly pooling: string
+  readonly dtype: string
+  /** Объявленная размерность; у удалённой модели её нет — null. */
+  readonly dimensions: number | null
+}
+
+/** Ответ `GET registry`: чем считается содержимое базы и какими словами оно описано. */
+export interface RegistryView {
+  /** Язык, на котором говорит серверная половина (он же язык прочитанных словарей). */
+  readonly language: string
+  /** Объявленное умолчание пакета; не объявлено — null. */
+  readonly defaultLanguage: string | null
+  /** Выбрана ли удалённая модель: тогда локальная строка не выбирается вовсе. */
+  readonly remote: boolean
+  /** Выбранная локальная модель и правило, по которому она выбрана; нечем выбрать — null. */
+  readonly resolved: {
+    readonly id: string
+    readonly label: string | null
+    readonly source: string
+    readonly pooling: string
+    readonly dtype: string
+  } | null
+  readonly models: readonly RegistryModelView[]
+  readonly bindings: readonly { readonly language: string; readonly model: string }[]
+  /** Прочитанные файлы реестра в порядке наложения. */
+  readonly files: readonly string[]
+  readonly problems: readonly RegistryFileProblem[]
+  /** Словари: серверных сообщений и панели, с числом принятых строк и претензиями. */
+  readonly dictionaries: readonly {
+    readonly name: string
+    readonly files: readonly string[]
+    readonly entries: number
+    readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
+  }[]
+  /** Словарь панели целиком: английская строка → перевод. Пусто — словаря нет. */
+  readonly panel: Readonly<Record<string, string>>
+}
+
 /** 未知项目选择器（路由统一映射为 404）。 */
 class UnknownProjectError extends Error {
   constructor(selector: string) {
@@ -201,6 +252,13 @@ export interface RouteDeps {
   readonly pluginVersion: string
   /** 房间名的显示语言（服务器侧渲染的文本用它取词，如镜像 _index.md）。 */
   readonly language: EngramLanguage
+  /**
+   * Обслуживание: выбранная модель и прочитанные словари.
+   *
+   * Готовый снимок, а не функции: панель показывает состояние на момент запроса,
+   * а собирается оно там, где известны и конфиг, и реестр, и словари (src/index.ts).
+   */
+  readonly registry: RegistryView
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
   readonly history: {
     /** 估算候选会话与轮数（不写库、不调 LLM）。 */
@@ -771,6 +829,13 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'GET' && route === 'version') {
             // 版本握手（审计 F8）：面板比对 client/server 版本，偏斜（客户端已热更、后端进程旧）时挂横幅提示重启。
             json(res, 200, { pluginVersion: deps.pluginVersion })
+            return
+          }
+          if (req.method === 'GET' && route === 'registry') {
+            // Обслуживание: чем считается содержимое базы (выбранная модель, каталог,
+            // привязки) и какими словами оно описано (файлы словарей и их претензии).
+            // Плюс словарь панели целиком — им клиент перекрывает тексты, вшитые в сборку.
+            json(res, 200, deps.registry)
             return
           }
           if (req.method === 'GET' && route === 'models') {
