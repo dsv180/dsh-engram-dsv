@@ -509,13 +509,21 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
    * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
    * 没有可拒绝的东西。
    *
+   * 维度取占多数的那一批，而不是任意一行：库里混进过别的模型的向量时（换过模型、
+   * 从备份恢复过、旧模型的归档残留），任意一行会把整库的维度判给少数派，此后
+   * 正常模型的写入全部被拒，而原因（少数几行异维数据）在错误里看不见。多数派
+   * 保证「这库现在算谁的库」由库里的多数回答；少数派只是被晾在一边，不参与比较。
+   * 表格平局时取较小的维度：写入被拒是响的，静默沿用大维度才是危险的。
+   *
    * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
    * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
    */
-  const storedDimRow = db.prepare(`SELECT LENGTH(embedding) AS bytes FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % 4 = 0
-    UNION ALL SELECT LENGTH(embedding) AS bytes FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % 4 = 0 LIMIT 1`)
-    .get() as unknown as { bytes: number } | undefined
-  let storedDim = storedDimRow === undefined ? undefined : storedDimRow.bytes / Float32Array.BYTES_PER_ELEMENT
+  const vectorDims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+      UNION ALL
+      SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
+    ) GROUP BY dim ORDER BY rows DESC, dim ASC`).all() as unknown as { dim: number; rows: number }[]
+  let storedDim = vectorDims.length === 0 ? undefined : vectorDims[0]!.dim
 
   /** 维度不符导致读取降级时只提醒一次：检索是高频路径，逐次告警会淹掉日志。 */
   let warnedDegradedRead = false

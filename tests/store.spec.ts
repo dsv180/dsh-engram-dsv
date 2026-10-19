@@ -114,6 +114,25 @@ describe('EngramStore (sqlite)', () => {
     expect(same.id).toBeTruthy()
   })
 
+  it('库的维度由多数派向量决定，少量异维残留不定库', async () => {
+    // 三条 384 的记忆，再把最早的一条直接改成 512：这就是换模型后留下的孤儿行的样子
+    // （写入路径拒收异维，所以只有直接写文件才造得出来）。
+    const stray = await store.write({ scope: 'user', kind: 'fact', content: '将来变成孤儿的条目', embedding: new Float32Array(384).fill(0.1) })
+    await store.write({ scope: 'user', kind: 'fact', content: '多数派二', embedding: new Float32Array(384).fill(0.2) })
+    await store.write({ scope: 'user', kind: 'fact', content: '多数派三', embedding: new Float32Array(384).fill(0.3) })
+    await store.close()
+    const raw = new DatabaseSync(join(dir, 'user.db'))
+    raw.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+      .run(new Uint8Array(new Float32Array(512).fill(0.4).buffer), stray.id)
+    raw.close()
+    store = await openEngramStore(join(dir, 'user.db'))
+    // 若库的维度取「随便读到的一行」（第一条正是孤儿行），384 的写入会被误拒。
+    const same = await store.write({ scope: 'user', kind: 'fact', content: '同维度写回', embedding: new Float32Array(384).fill(0.5) })
+    expect(same.id).toBeTruthy()
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '异维写入', embedding: new Float32Array(512).fill(0.5) }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
   it('update 建立 supersedes 链且旧条目退出检索', async () => {
     const old = await store.write({ scope: 'user', kind: 'fact', content: '端口是 3000' })
     const next = await store.update({ id: old.id, scope: 'user', kind: 'fact', content: '端口改为 4000' })
