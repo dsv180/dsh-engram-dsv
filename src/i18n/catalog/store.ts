@@ -54,6 +54,7 @@ export const zh = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试',
+  'store.embedderDimensionMismatch': '嵌入向量维度不一致：库里是 {expected} 维，嵌入器给出 {found} 维。比较与写入直接拒绝，而不是逐维截断——请把模型改回去，或用新模型重建库中向量',
   // —— embedder/select.ts ——
   'store.embedderModelUnresolved': '未能按语言确定本地嵌入模型；检索已降级为纯关键词模式，请检查模型登记表',
 
@@ -114,6 +115,7 @@ export const en = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry',
+  'store.embedderDimensionMismatch': 'embedding dimension mismatch: the store holds {expected}-dimensional vectors, the embedder returned {found}. Comparison and writes are refused instead of being silently truncated — switch the model back, or re-embed the store with the new one',
   // —— embedder/select.ts ——
   'store.embedderModelUnresolved': 'could not resolve a local embedding model for this language; retrieval has degraded to keyword-only mode — check the model registry',
 

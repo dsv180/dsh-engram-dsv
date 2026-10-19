@@ -103,6 +103,17 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits).toHaveLength(0)
   })
 
+  it('维度由第一次写入定下：异维向量拒收，异维查询也拒收', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '第一条带向量的记忆', embedding: new Float32Array(384).fill(0.1) })
+    // 换模型后写进来的向量与库中不可比：拒绝写入，而不是截断之后当成相似。
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '换了模型的向量', embedding: new Float32Array(512).fill(0.1) }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+    await expect(store.nearestNeighbor(new Float32Array(512).fill(0.1)))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+    const same = await store.write({ scope: 'user', kind: 'fact', content: '同维度的写回', embedding: new Float32Array(384).fill(0.1) })
+    expect(same.id).toBeTruthy()
+  })
+
   it('update 建立 supersedes 链且旧条目退出检索', async () => {
     const old = await store.write({ scope: 'user', kind: 'fact', content: '端口是 3000' })
     const next = await store.update({ id: old.id, scope: 'user', kind: 'fact', content: '端口改为 4000' })
