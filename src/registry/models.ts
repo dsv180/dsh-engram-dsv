@@ -6,6 +6,13 @@
  * именам, поэтому добавление или удаление поля не сдвигает соседей, а номер
  * версии формата лежит внутри файла и позволяет понять, что файл старый.
  *
+ * Кроме строк у привязок есть корневое поле `default` — служебное умолчание
+ * пакета: язык, который пакет считает своим. Оно решает, на каком языке плагин
+ * говорит, когда пользователь не выбрал язык сам, поэтому его значение и есть
+ * умолчание выпуска. Поле временное: когда выбор языка перейдёт интерфейсу, оно
+ * станет лишним и его отсутствие вернёт поведение к «auto». У `*` роль другая —
+ * это подстановка на случай, когда для языка нет своей строки.
+ *
  * Разбор не бросает исключений: любая странность становится замечанием, а
  * строка либо принимается, либо пропускается. Пропуск строки каталога не
  * смертелен — пострадает только выбор этой модели; пропуск строки привязок
@@ -24,6 +31,12 @@ const DTYPES: readonly ModelDtype[] = ['q8', 'fp32', 'fp16', 'int8', 'uint8', 'q
 
 /** Код языка в привязках: `*` — все остальные, иначе код вида `zh` или `zh-Hans`. */
 const LANGUAGE_CODE = /^(\*|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$/
+
+/**
+ * Код языка без подстановки: умолчанием пакета `*` быть не может — это не язык,
+ * а строка «для всех остальных».
+ */
+const LANGUAGE_ONLY = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
 
 /**
  * Одна строка каталога моделей.
@@ -57,6 +70,7 @@ export type RegistryIssueKind =
   | 'duplicateId'
   | 'duplicateLanguage'
   | 'unknownModel'
+  | 'unknownLanguage'
 
 /** Замечание к реестру. */
 export interface RegistryIssue {
@@ -76,6 +90,8 @@ export interface ParsedModels {
 export interface ParsedBindings {
   /** Код языка → идентификатор модели. */
   readonly bindings: ReadonlyMap<string, string>
+  /** Объявленное умолчание пакета; поле нечитаемо — undefined. */
+  readonly default: string | undefined
   readonly issues: readonly RegistryIssue[]
 }
 
@@ -138,6 +154,21 @@ function textField(row: Record<string, unknown>, name: string): string | undefin
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
+/**
+ * Умолчание пакета: код языка без подстановки. Нечитаемое поле становится
+ * замечанием и пропускается — тогда язык берётся по системной локали, как до
+ * появления поля.
+ */
+function defaultField(root: Record<string, unknown>, issues: RegistryIssue[]): string | undefined {
+  const value = root.default
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !LANGUAGE_ONLY.test(value)) {
+    issues.push({ kind: 'badField', detail: `default = ${String(value)}` })
+    return undefined
+  }
+  return value
+}
+
 /** Разобрать каталог моделей. */
 export function parseModels(text: string): ParsedModels {
   const issues: RegistryIssue[] = []
@@ -195,10 +226,11 @@ export function parseBindings(text: string): ParsedBindings {
   const issues: RegistryIssue[] = []
   const bindings = new Map<string, string>()
   const root = rootObject(text, issues)
-  if (root === undefined) return { bindings, issues }
+  if (root === undefined) return { bindings, default: undefined, issues }
   checkVersion(root, issues)
+  const fallback = defaultField(root, issues)
   const rows = arrayField(root, 'bindings', issues)
-  if (rows === undefined) return { bindings, issues }
+  if (rows === undefined) return { bindings, default: fallback, issues }
 
   rows.forEach((row, index) => {
     const at = `bindings[${index}]`
@@ -225,7 +257,7 @@ export function parseBindings(text: string): ParsedBindings {
     bindings.set(language, model)
   })
 
-  return { bindings, issues }
+  return { bindings, default: fallback, issues }
 }
 
 /** Сверить привязки с каталогом: привязка на модель, которой нет, не работает. */

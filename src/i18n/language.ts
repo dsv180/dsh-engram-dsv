@@ -47,3 +47,22 @@ export function systemLanguage(): EngramLanguage {
 export function resolveLanguage(setting: LanguageSetting): EngramLanguage {
   return setting === 'auto' ? systemLanguage() : setting
 }
+
+/**
+ * Язык вывода с учётом умолчания пакета.
+ *
+ * Настройка главнее умолчания: её назвал пользователь, и «auto» в ней — тоже его
+ * выбор, а не отсутствие выбора. Умолчание пакета (служебное поле `default`
+ * реестра привязок) главнее системной локали: иначе язык зависел бы от машины,
+ * на которой плагин запущен, а не от того, что объявлено выпуском. Умолчание без
+ * словаря не принимается — показать английские подписи лучше, чем объявленные,
+ * но пустые. Ни настройки, ни умолчания — «auto», то есть язык системы.
+ * @param setting - настройка `language`; undefined, если её не задавали.
+ * @param packaged - объявленное умолчание пакета; undefined, если его нет.
+ * @returns язык вывода; отсутствие поля возвращает поведение к «auto».
+ */
+export function pickLanguage(setting: LanguageSetting | undefined, packaged: string | undefined): EngramLanguage {
+  if (setting !== undefined) return resolveLanguage(setting)
+  if (packaged !== undefined && isEngramLanguage(packaged)) return packaged
+  return resolveLanguage('auto')
+}

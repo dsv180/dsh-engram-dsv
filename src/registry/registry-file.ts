@@ -12,11 +12,18 @@
  * Разбор отделён от чтения (см. ./models): этот модуль знает про диск,
  * `models.ts` — только про формат.
  *
+ * Кроме строк привязок слои несут умолчание пакета (`default`): язык, который
+ * пакет считает своим. Оно складывается так же, как строки, — пользовательский
+ * слой главнее поставки, — но сверяется ещё и со списком языков, для которых у
+ * плагина есть словарь: объявленное умолчание без словаря не исполнится, и об
+ * этом надо сказать, а не молчать.
+ *
  * @module @kenz1117/dsh-engram/registry/registry-file
  */
 
 import { readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { isEngramLanguage } from '../i18n/language.ts'
 import { checkBindingModels, parseBindings, parseModels } from './models.ts'
 import type { ModelRecord, RegistryIssueKind } from './models.ts'
 import { packageRoot } from './root.ts'
@@ -35,6 +42,8 @@ export interface LoadedRegistry {
   readonly models: ReadonlyMap<string, ModelRecord>
   /** Код языка → идентификатор модели; `*` — умолчание для остальных. */
   readonly bindings: ReadonlyMap<string, string>
+  /** Умолчание пакета: язык, на котором плагин говорит, если язык не выбран. */
+  readonly defaultLanguage: string | undefined
   readonly problems: readonly RegistryProblem[]
   /** Прочитанные файлы, в порядке наложения: поставка, затем пользователь. */
   readonly files: readonly string[]
@@ -73,6 +82,8 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
   const files: string[] = []
   const models = new Map<string, ModelRecord>()
   const bindings = new Map<string, string>()
+  let defaultLanguage: string | undefined
+  let defaultFile: string | undefined
 
   const modelsPath = join(root, 'registry', 'models.json')
   const modelsText = readText(modelsPath, problems, true)
@@ -95,6 +106,10 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
     const parsed = parseBindings(text)
     for (const issue of parsed.issues) problems.push({ file: layer.path, kind: issue.kind, detail: issue.detail })
     for (const [language, model] of parsed.bindings) bindings.set(language, model)
+    if (parsed.default !== undefined) {
+      defaultLanguage = parsed.default
+      defaultFile = layer.path
+    }
   }
 
   // Сверка слоёв с каталогом: привязка на модель, которой в каталоге нет, не работает.
@@ -102,7 +117,16 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
     problems.push({ file: join(root, 'registry', 'bindings.json'), kind: issue.kind, detail: issue.detail })
   }
 
-  return { models, bindings, problems, files }
+  // Умолчание без словаря не исполнится — плагин заговорит на языке системы.
+  if (defaultLanguage !== undefined && !isEngramLanguage(defaultLanguage)) {
+    problems.push({
+      file: defaultFile ?? join(root, 'registry', 'bindings.json'),
+      kind: 'unknownLanguage',
+      detail: `default = ${defaultLanguage}`,
+    })
+  }
+
+  return { models, bindings, defaultLanguage, problems, files }
 }
 
 /** Короткая сводка претензий для одного предупреждения. */

@@ -1,5 +1,6 @@
 {
   "formatVersion": 1,
+  "default": "ru",
   "bindings": [
     {
       "language": "zh",

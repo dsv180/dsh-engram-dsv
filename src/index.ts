@@ -26,6 +26,7 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary } from './i18n/dictionary-file.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
+import { pickLanguage } from './i18n/language.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
@@ -516,7 +517,18 @@ function makeSessionResolver(
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
  */
 export function apply(ctx: Context, config: EngramConfig = {}): void {
-  const resolved = resolveConfig(config)
+  const resolvedConfig = resolveConfig(config)
+  // Реестры читаются до языка: умолчание пакета живёт в привязках (см. src/registry),
+  // а от языка уже зависят и словарь, и шаблоны сообщений. Чтение чистое — файлы без
+  // сети, — поэтому порядок ничего не стоит.
+  const registry = loadRegistry({ dbDir: resolvedConfig.dbDir })
+  const language = pickLanguage(config.language, registry.defaultLanguage)
+  // Настройка главнее умолчания, умолчание — главнее системной локали (см.
+  // src/i18n/language.ts): «наш язык» должен зависеть от объявленного выпуска, а не
+  // от машины, на которой плагин запущен.
+  const resolved: ResolvedEngramConfig = language === resolvedConfig.language
+    ? resolvedConfig
+    : { ...resolvedConfig, language }
   // Язык служебных сообщений — один на процесс. Помощник message() зовут десятки
   // функций, и протаскивать язык в каждую было бы куда грубее, чем задать его здесь
   // один раз при сборке плагина (см. src/i18n/messages.ts).
@@ -533,9 +545,8 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     }))
   }
   // Реестры: каталог моделей и привязки «язык → модель» (см. src/registry). Каталог
-  // кладёт поставка, привязки перекрывает слой пользователя. Здесь же читается, а не
-  // при первом поиске: без каталога модель выбрать нечем, и об этом надо сказать сразу.
-  const registry = loadRegistry({ dbDir: resolved.dbDir })
+  // кладёт поставка, привязки перекрывает слой пользователя. Прочитано выше, до языка;
+  // здесь только претензии — в прежнем порядке, после словарных.
   if (registry.problems.length > 0) {
     console.warn(message('misc.warnRegistryProblems', {
       count: registry.problems.length,
