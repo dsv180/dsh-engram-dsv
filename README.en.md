@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/screenshots/hero.png" width="100%" alt="dsh-engram · Memory Palace — a cross-session long-term memory plugin for DeepSeek Harness">
+<img src="docs/screenshots/hero.jpg" width="100%" alt="dsh-engram · Memory Palace — a cross-session long-term memory plugin for DeepSeek Harness">
 
 # dsh-engram · Memory Palace
 

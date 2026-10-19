@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/screenshots/hero.png" width="100%" alt="dsh-engram · 记忆宫殿 — DeepSeek Harness 跨会话长期记忆插件（位置当索引 · 固定路线定顺序 · 骨架长期复用 · 标记独一无二）">
+<img src="docs/screenshots/hero.jpg" width="100%" alt="dsh-engram · 记忆宫殿 — DeepSeek Harness 跨会话长期记忆插件（位置当索引 · 固定路线定顺序 · 骨架长期复用 · 标记独一无二）">
 
 # dsh-engram · 记忆宫殿
 
