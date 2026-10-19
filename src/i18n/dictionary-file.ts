@@ -88,6 +88,25 @@ export function loadPanelDictionary(sources: DictionarySources): LoadedDictionar
   return loadDictionary(sources, `panel.${sources.language}.txt`)
 }
 
+/**
+ * Прочитать один файл словаря как отдельный слой.
+ *
+ * Нужно правке из панели (см. ./dictionary-edit): там важно не «что видно», а «что
+ * лежит именно в этом слое» — иначе сохранение не отличит правку от поставки и
+ * запишет в пользовательский файл весь словарь целиком.
+ * @param path - путь к файлу; отсутствие файла — пустой слой без претензий.
+ * @returns прочитанное: карта, претензии и список файлов (пустой, если файла нет).
+ */
+export function readDictionaryLayer(path: string): LoadedDictionary {
+  const problems: DictionaryProblem[] = []
+  const parsed = readDictionary(path, problems)
+  return {
+    entries: parsed?.entries ?? new Map<string, string>(),
+    problems,
+    files: parsed === undefined ? [] : [path],
+  }
+}
+
 /** Прочитать словарь по имени файла: поставка, затем пользовательский слой. */
 function loadDictionary(sources: DictionarySources, name: string): LoadedDictionary {
   const root = sources.packageRoot ?? packageRoot()

@@ -24,6 +24,10 @@ import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
 import type { EngramLanguage } from './i18n/language.ts'
 import { messageIn } from './i18n/messages.ts'
+import { entriesFromRequest } from './i18n/dictionary-edit.ts'
+import type { DictionarySetView } from './i18n/dictionary-edit.ts'
+import { isDictionarySet } from './i18n/dictionary-terms.ts'
+import type { DictionarySet } from './i18n/dictionary-terms.ts'
 import { createBackup, restoreBackup, BACKUP_SCHEMA_VERSION } from './backup/tar.ts'
 import { runConsolidation } from './consolidation/run.ts'
 import { aggregateTelemetry } from './telemetry/aggregate.ts'
@@ -257,6 +261,21 @@ export interface BaseLabelResult {
 }
 
 /**
+ * Итог правки словаря: сколько строк легло, куда и как набор выглядит после записи.
+ *
+ * Панель получает свежий набор тем же ответом, а не вторым запросом: после
+ * сохранения таблица обязана показывать записанное, и разойтись эти два
+ * представления не должны.
+ */
+export interface DictionarySaveResult {
+  readonly set: DictionarySet
+  readonly file: string
+  readonly written: number
+  readonly bytes: number
+  readonly view: DictionarySetView
+}
+
+/**
  * Ответ `GET registry`: снимок реестра плюс состояние баз.
  *
  * Разделение намеренное: реестр, словари и язык читаются один раз при сборке
@@ -315,10 +334,21 @@ export interface RouteDeps {
   /**
    * Обслуживание: выбранная модель и прочитанные словари.
    *
-   * Готовый снимок, а не функции: панель показывает состояние на момент запроса,
-   * а собирается оно там, где известны и конфиг, и реестр, и словари (src/index.ts).
+   * Функция, а не готовое значение: снимок собирается там, где известны и конфиг,
+   * и реестр, и словари (src/index.ts), а правка словаря меняет его — после неё
+   * панель обязана увидеть новый текст, а не прочитанный при сборке плагина.
    */
-  readonly registry: RegistryView
+  readonly registry: () => RegistryView
+  /**
+   * Правка словарей: прочитать набор терминов и записать пользовательский слой.
+   *
+   * Пишется только пользовательский слой в каталоге данных; поставка не трогается
+   * (см. i18n/dictionary-edit.ts). Чтение отдаёт строки, файлы и претензии разбора.
+   */
+  readonly dictionary: {
+    readonly read: (set: DictionarySet) => DictionarySetView
+    readonly write: (set: DictionarySet, entries: ReadonlyMap<string, string>) => DictionarySaveResult
+  }
   /**
    * Обслуживание: состояние каждой базы дворца. Считается на каждый запрос, а не
    * при сборке плагина: метку меняет кнопка в этой же карточке, и после неё панель
@@ -908,11 +938,38 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Плюс состояние каждой базы — оно считается здесь, а не при сборке плагина.
             const states = await deps.baseStates()
             json(res, 200, {
-              ...deps.registry,
+              ...deps.registry(),
               bases: states.bases,
               pendingBases: states.pendingBases,
               convertAvailable: deps.convertAvailable,
             })
+            return
+          }
+          if (req.method === 'GET' && route === 'dictionary') {
+            // Правка словаря: таблица терминов набора («панель» или «сообщения»).
+            // Чтение отдаёт и строки, и пути слоёв, и претензии разбора: панель
+            // показывает, что именно правится и откуда взят текущий перевод.
+            const set = url.searchParams.get('set') ?? 'panel'
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${set}` })
+              return
+            }
+            json(res, 200, deps.dictionary.read(set))
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary') {
+            // Запись — только в пользовательский слой в каталоге данных: поставка
+            // принадлежит выпуску плагина (см. i18n/dictionary-edit.ts). Тело:
+            // { set, entries: [[английская строка, перевод], ...] } — полное желаемое
+            // состояние слоя, а не список изменений: строка без пары снимает правку.
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const set = body?.['set']
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
+              return
+            }
+            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body?.['entries'])))
             return
           }
           if (req.method === 'POST' && route === 'base-label') {

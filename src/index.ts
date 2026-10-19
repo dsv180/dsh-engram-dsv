@@ -25,6 +25,7 @@ import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
+import { readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
@@ -47,7 +48,7 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
-import type { BaseLabelResult, BaseView, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
+import type { BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
 import { judgeBase, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
@@ -637,14 +638,32 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // она называет метку, которой подписываются базы (`ru-minilm-l12`), и разойтись эти
   // два места не должны.
   const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
-  const registryView = registrySnapshot({
+  /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
+  const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
     registry,
     language: resolved.language,
     remote: resolved.embedder.remote !== undefined,
     model: localModel,
-    messages: dictionary,
-    panel: panelDictionary,
+    messages,
+    panel,
   })
+  let registryView = snapshotView(dictionary, panelDictionary)
+  /**
+   * Перечитать словари и применить их заново.
+   *
+   * Вызывается после правки из панели (см. routes.ts, POST dictionary): файл — это
+   * то, что видит и серверная половина, и панель. Серверные сообщения берут словарь
+   * из модульной переменной (см. ./i18n/messages), панель — из снимка обслуживания,
+   * поэтому обновить нужно оба места, и без перезапуска плагина.
+   * @returns свежий снимок обслуживания.
+   */
+  const reloadDictionaries = (): RegistryView => {
+    const messages = loadMessageDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+    const panel = loadPanelDictionary({ language: resolved.language, dbDir: resolved.dbDir })
+    setMessageDictionary(resolved.language, messages.entries)
+    registryView = snapshotView(messages, panel)
+    return registryView
+  }
   // Объявление схемы данных: какие таблицы несут векторы и по какому условию. Читается
   // один раз — это реестр, а не состояние базы. Без него состояние баз не проверяется:
   // судить о векторах по догадке мы не будем, и об этом скажет карточка.
@@ -969,6 +988,24 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     return { written, failed }
   }
 
+  /**
+   * Правка словарей из панели: чтение набора и запись пользовательского слоя.
+   *
+   * Пишем в каталог данных (`<dbDir>/i18n/<имя>`), а не в пакет: файл поставки
+   * принадлежит выпуску плагина, и правка в нём потерялась бы при первом же
+   * обновлении. После записи словари перечитываются и применяются заново —
+   * серверные сообщения сразу, панель по свежему снимку обслуживания.
+   */
+  const dictionaryDeps: RouteDeps['dictionary'] = {
+    read: set => readDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir }),
+    write: (set, entries): DictionarySaveResult => {
+      const written = writeDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir, entries })
+      // Перечитываем словари до снимка набора: панель должна увидеть то, что записали.
+      reloadDictionaries()
+      return { set, ...written, view: readDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir }) }
+    },
+  }
+
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
   const buildHistoryDeps = (): HistoryBackfillDeps => ({
     source: persistenceService(),
@@ -1096,9 +1133,10 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       dbDir: resolved.dbDir,
       pluginVersion: VERSION,
       language: resolved.language,
-      registry: registryView,
+      registry: () => registryView,
       baseStates,
       writeBaseLabels,
+      dictionary: dictionaryDeps,
       // Пересчёт векторов — этап 2 блока Б: конвертер живёт вне плагина и в карточку
       // ещё не подключён. Пока false — карточка честно называет такие состояния
       // невыполнимыми, а кнопка ничего не делает молча.

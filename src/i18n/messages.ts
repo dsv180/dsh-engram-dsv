@@ -45,6 +45,44 @@ const CATALOG: Readonly<Partial<Record<EngramLanguage, Readonly<Record<string, s
   en: EN,
 }
 
+/**
+ * Обратный указатель «английская строка → ключ»: словарь ключуется текстом, а не
+ * именем ключа (см. ./dictionary), поэтому правке из панели нужен именно он.
+ * При повторе текста побеждает первый ключ.
+ */
+const EN_BY_TEXT = ((): ReadonlyMap<string, string> => {
+  const index = new Map<string, string>()
+  for (const [key, text] of Object.entries(EN)) if (!index.has(text)) index.set(text, key)
+  return index
+})()
+
+/**
+ * Уникальные английские строки всех серверных сообщений — термины словаря.
+ * Порядок — порядок объявления в наборах: он же порядок таблицы правки,
+ * поэтому строки одной области остаются рядом.
+ */
+export function messageVocabulary(): readonly string[] {
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const text of Object.values(EN)) {
+    if (seen.has(text)) continue
+    seen.add(text)
+    list.push(text)
+  }
+  return list
+}
+
+/**
+ * Вшитый перевод английской строки сообщения.
+ * `undefined` — во вшитых наборах перевода нет (у русского его нет вовсе: он
+ * приходит словарём из файла), и текст остаётся английским.
+ */
+export function messageBuiltin(language: EngramLanguage, source: string): string | undefined {
+  const key = EN_BY_TEXT.get(source)
+  if (key === undefined) return undefined
+  return CATALOG[language]?.[key]
+}
+
 let current: EngramLanguage = FALLBACK_LANGUAGE
 
 /**

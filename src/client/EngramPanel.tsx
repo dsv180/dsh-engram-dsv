@@ -7,7 +7,7 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Component, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
@@ -3005,6 +3005,8 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
+  const [dictionaryOpen, setDictionaryOpen] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
@@ -3188,7 +3190,13 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
       </div>
 
       <div className={styles.regGroup}>
-        <span className={styles.regGroupTitle}>{tt('registryDictionaries')}</span>
+        <div className={styles.regGroupHead}>
+          <span className={styles.regGroupTitle}>{tt('registryDictionaries')}</span>
+          <button type="button" className={`${styles.button} ${styles.dictOpen}`}
+            onClick={() => { setDictionaryOpen(true) }}>
+            {tt('dictOpen')}
+          </button>
+        </div>
         {snapshot.dictionaries.map(entry => (
           <p key={entry.name} className={styles.regNote}>
             {entry.name === 'panel' ? tt('registryDictionaryPanel') : tt('registryDictionaryMessages')}
@@ -3211,11 +3219,181 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
           </ul>
         )}
       </div>
+
+      {dictionaryOpen && <DictionaryEditor tt={tt} onClose={() => { setDictionaryOpen(false) }} />}
     </div>
   )
 }
 
-/** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
+/** Наборы словаря: имена те же, что на сервере (см. src/i18n/dictionary-terms.ts). */
+type DictionarySetName = 'panel' | 'messages'
+
+/** Строка таблицы правки (ответ GET /api/engram/dictionary). */
+interface DictionaryRowView {
+  /** Английская строка — она же ключ словаря, поэтому её не правят. */
+  readonly left: string
+  /** Что стоит справа сейчас; пусто — перевода нет. */
+  readonly right: string
+  /** Откуда взят правый столбец: правка, поставка, вшитый набор или ничего. */
+  readonly source: 'user' | 'delivery' | 'builtin' | 'none'
+  /** Значение пользовательского слоя; null — правки нет. */
+  readonly override: string | null
+}
+
+/** Набор словаря, каким его видит таблица: термины, слои файлов и претензии разбора. */
+interface DictionarySetView {
+  readonly set: DictionarySetName
+  readonly language: string
+  readonly rows: readonly DictionaryRowView[]
+  readonly files: { readonly delivery: string, readonly user: string, readonly read: readonly string[] }
+  readonly problems: readonly { readonly file: string, readonly line: number, readonly kind: string, readonly detail: string }[]
+}
+
+/**
+ * Строка таблицы правки: английский термин слева, клетка перевода справа.
+ *
+ * memo — не украшение: терминов больше четырёхсот, и без него правка одной клетки
+ * перерисовывала бы весь список. Сравниваются только значение и признак правки.
+ */
+const DictionaryRow = memo(function DictionaryRow({ left, value, edited, hint, placeholder, onEdit }: {
+  readonly left: string
+  readonly value: string
+  readonly edited: boolean
+  readonly hint: string
+  readonly placeholder: string
+  readonly onEdit: (left: string, next: string) => void
+}): React.ReactElement {
+  return (
+    <label className={`${styles.dictRow} ${edited ? styles.dictRowEdited : ''}`} title={hint}>
+      <span className={styles.dictLeft}>{left}</span>
+      <input className={styles.dictInput} value={value} placeholder={placeholder} spellCheck={false}
+        onChange={event => { onEdit(left, event.target.value) }} />
+    </label>
+  )
+})
+
+/**
+ * Экран правки словаря: перекрывает окно плагина целиком (см. .dictLayer в CSS).
+ *
+ * Слева — английская строка ровно как она стоит в коде: это ключ словаря, поэтому
+ * её показывают, а не правят. Справа — перевод, который видит выбранный язык;
+ * клетки правятся здесь же, а уходят в пользовательский слой файла при сохранении.
+ * Сохранение, отмена и заполнение ИИ ещё не подключены: кнопки стоят на своих
+ * местах и говорят об этом прямо, вместо того чтобы делать вид, что работают.
+ */
+function DictionaryEditor({ tt, onClose }: {
+  readonly tt: (key: EngramKey, params?: Record<string, string | number>) => string
+  readonly onClose: () => void
+}): React.ReactElement {
+  const [set, setSet] = useState<DictionarySetName>('panel')
+  const [view, setView] = useState<DictionarySetView | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  /** Черновик правок: английская строка → значение клетки ('' — снять правку). */
+  const [draft, setDraft] = useState<ReadonlyMap<string, string>>(new Map())
+
+  // Набор перечитывается на каждое переключение: «панель» и «сообщения» — разные
+  // файлы, и общий кэш здесь только запутал бы, чей перевод на экране.
+  useEffect(() => {
+    let alive = true
+    setView(null)
+    setError(null)
+    setDraft(new Map())
+    void (async () => {
+      try {
+        const data = await api<DictionarySetView>(`dictionary?set=${set}`)
+        if (alive) setView(data)
+      } catch (cause) {
+        if (alive) setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    })()
+    return () => { alive = false }
+  }, [set])
+
+  /** Что стоит в клетке: несохранённая правка, иначе значение слоя. */
+  const cell = useCallback((row: DictionaryRowView): string => draft.get(row.left) ?? row.right, [draft])
+
+  const edit = useCallback((left: string, next: string) => {
+    setDraft(current => new Map(current).set(left, next))
+  }, [])
+
+  const rows = useMemo(() => {
+    if (view === null) return []
+    const needle = query.trim().toLowerCase()
+    if (needle === '') return view.rows
+    // Ищем и по термину, и по переводу: чаще всего ищут «где эта надпись».
+    return view.rows.filter(row => row.left.toLowerCase().includes(needle) || cell(row).toLowerCase().includes(needle))
+  }, [view, query, cell])
+
+  const dirty = useMemo(() => {
+    if (view === null) return 0
+    let count = 0
+    for (const row of view.rows) {
+      const edited = draft.get(row.left)
+      if (edited !== undefined && edited !== row.right) count += 1
+    }
+    return count
+  }, [view, draft])
+
+  /** Подпись строки: откуда взят правый столбец (в подсказке, не в колонке). */
+  const hintOf = (source: DictionaryRowView['source']): string => source === 'user'
+    ? tt('dictEdited')
+    : source === 'delivery' ? tt('dictShipped') : source === 'builtin' ? tt('dictBuiltin') : tt('dictNoTranslation')
+
+  return (
+    <div className={styles.dictLayer}>
+      <div className={styles.dictScreen}>
+        <div className={styles.dictMenu}>
+          <button type="button" className={styles.dictBack} onClick={onClose}
+            title={tt('dictBack')} aria-label={tt('dictBack')}>{'←'}</button>
+          <span className={styles.dictTitle}>{tt('dictTitle')}</span>
+          <div className={styles.dictMenuRight}>
+            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+              {tt('dictFillAi')}
+            </button>
+            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+              {tt('dictCancel')}
+            </button>
+            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+              {tt('dictSave')}
+            </button>
+          </div>
+        </div>
+        <div className={styles.dictBar}>
+          {(['panel', 'messages'] as const).map(name => (
+            <button key={name} type="button" className={name === set ? styles.dictSetOn : styles.dictSet}
+              onClick={() => { setSet(name) }}>
+              {name === 'panel' ? tt('dictSetPanel') : tt('dictSetMessages')}
+            </button>
+          ))}
+          <input className={styles.dictFilter} value={query} placeholder={tt('dictFilter')} spellCheck={false}
+            onChange={event => { setQuery(event.target.value) }} />
+          <span className={styles.dictStatus}>
+            {view === null ? tt('dictLoading') : tt('dictRows', { n: view.rows.length })}
+            {dirty > 0 && <> · {tt('dictDirty', { n: dirty })}</>}
+            {view !== null && <> · {tt('dictTarget')} <span className={styles.regMono}>{view.files.user}</span></>}
+            {' · '}{tt('dictNotWired')}
+          </span>
+        </div>
+        <div className={styles.dictBody}>
+          <p className={styles.regNote}>{tt('dictHint', { file: view?.files.user ?? '' })}</p>
+          {error !== null
+            ? <p className={styles.regBad}>{tt('dictFailed', { error })}</p>
+            : view === null
+              ? <p className={styles.regNote}>{tt('dictLoading')}</p>
+              : rows.length === 0
+                ? <p className={styles.regNote}>{tt('dictNoRows')}</p>
+                : rows.map(row => (
+                  <DictionaryRow key={row.left} left={row.left} value={cell(row)} hint={hintOf(row.source)}
+                    placeholder={row.source === 'none' ? tt('dictNoTranslation') : ''}
+                    edited={draft.get(row.left) !== undefined && draft.get(row.left) !== row.right}
+                    onEdit={edit} />
+                ))}
+        </div>
+      </div>
+    </div>
+  )
+}
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
   readonly workspaces?: WorkspacesLike | undefined

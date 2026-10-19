@@ -786,3 +786,32 @@ select.input { padding-right: 28px; appearance: none; }
 .regBad { margin: 4px 0 0; padding-left: 18px; color: var(--dsw-alias-state-error-primary); font-size: var(--fs-micro); line-height: 1.5; }
 /* Обслуживание: ряд с одной кнопкой действия — описание стоит строкой выше. */
 .regActions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+/* Обслуживание: заголовок группы с кнопкой справа («Словарь >» открывает правку). */
+.regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
+.dictOpen { margin-left: auto; }
+
+/* ---------- Правка словаря: экран поверх окна плагина ----------
+   .dictLayer — sticky-прослойка нулевой высоты в точке прокрутки (как .drawerLayer):
+   экран встаёт там, где человек сейчас смотрит, и не уезжает вместе с длинной
+   страницей. z-index выше .panelSticky (40): перекрывается и полоса вкладок. */
+.dictLayer { position: sticky; top: 0; height: 0; z-index: 50; }
+.dictScreen { position: absolute; top: 0; left: 0; right: 0; height: 100vh; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); animation: scrimIn var(--dur-base) var(--ease-spring) both; }
+.dictMenu { display: flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.dictTitle { margin: 0 auto 0 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dictMenuRight { display: flex; align-items: center; gap: var(--space-2); }
+.dictBack { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); background: transparent; color: var(--dsw-alias-label-primary); font-size: 15px; line-height: 1; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
+.dictBack:hover { background: var(--dsw-alias-bg-layer-1); }
+.dictBar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex: 0 0 auto; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.dictSet, .dictSetOn { height: 24px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-body); line-height: 1; cursor: pointer; }
+.dictSetOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.dictFilter { flex: 0 1 260px; height: 24px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); }
+.dictFilter:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); }
+.dictStatus { margin-left: auto; display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.dictBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-4) var(--space-6); }
+.dictRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: center; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 70%, transparent); }
+.dictRow:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, transparent); }
+.dictLeft { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.dictInput { width: 100%; box-sizing: border-box; height: 26px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); }
+.dictInput:hover { border-color: var(--dsw-alias-border-l2); }
+.dictInput:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); background: var(--dsw-alias-bg-layer-1); }
+.dictRowEdited .dictInput { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); }
