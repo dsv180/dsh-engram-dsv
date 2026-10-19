@@ -53,6 +53,7 @@ export type RegistryIssueKind =
   | 'badJson'
   | 'badShape'
   | 'badField'
+  | 'futureVersion'
   | 'duplicateId'
   | 'duplicateLanguage'
   | 'unknownModel'
@@ -95,6 +96,28 @@ function rootObject(text: string, issues: RegistryIssue[]): Record<string, unkno
   return value as Record<string, unknown>
 }
 
+/** Номер версии формата, который понимает этот код. */
+const SUPPORTED_FORMAT_VERSION = 1
+
+/**
+ * Сверить номер версии формата внутри файла.
+ *
+ * Файл новее кода означает, что его писал более новый плагин: читать его
+ * наугад опаснее, чем сказать об этом. Отсутствие номера ошибкой не считается —
+ * файл без номера считается первой версией.
+ */
+function checkVersion(root: Record<string, unknown>, issues: RegistryIssue[]): void {
+  const value = root.formatVersion
+  if (value === undefined) return
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    issues.push({ kind: 'badField', detail: `formatVersion = ${String(value)}` })
+    return
+  }
+  if (value > SUPPORTED_FORMAT_VERSION) {
+    issues.push({ kind: 'futureVersion', detail: `formatVersion ${value} > ${SUPPORTED_FORMAT_VERSION}` })
+  }
+}
+
 /** Поле-массив внутри корневого объекта. */
 function arrayField(
   root: Record<string, unknown>,
@@ -121,6 +144,7 @@ export function parseModels(text: string): ParsedModels {
   const models = new Map<string, ModelRecord>()
   const root = rootObject(text, issues)
   if (root === undefined) return { models, issues }
+  checkVersion(root, issues)
   const rows = arrayField(root, 'models', issues)
   if (rows === undefined) return { models, issues }
 
@@ -172,6 +196,7 @@ export function parseBindings(text: string): ParsedBindings {
   const bindings = new Map<string, string>()
   const root = rootObject(text, issues)
   if (root === undefined) return { bindings, issues }
+  checkVersion(root, issues)
   const rows = arrayField(root, 'bindings', issues)
   if (rows === undefined) return { bindings, issues }
 
