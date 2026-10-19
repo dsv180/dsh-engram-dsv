@@ -2945,6 +2945,11 @@ function baseName(path: string): string {
   return cut < 0 ? path : path.slice(cut + 1)
 }
 
+/** Имя модели для человека: метка каталога, а полный идентификатор — по наведению. */
+function modelLabel(snapshot: RegistrySnapshot, id: string): string {
+  return snapshot.models.find(row => row.id === id)?.label ?? id
+}
+
 /**
  * Обслуживание: чем считается содержимое дворца и откуда взялись слова.
  *
@@ -3047,7 +3052,7 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
             {snapshot.bindings.map(row => (
               <tr key={row.language}>
                 <td className={styles.regMono}>{row.language}</td>
-                <td className={styles.regMono}>{row.model}</td>
+                <td className={styles.regMono} title={row.model}>{modelLabel(snapshot, row.model)}</td>
               </tr>
             ))}
           </tbody>

@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isEngramLanguage, pickLanguage, systemLanguage } from '../src/i18n/language.ts'
-import { parseBindings, parseModels } from '../src/registry/models.ts'
+import { resolveLocalModel } from '../src/embedder/select.ts'
+import { bindingLabel, parseBindings, parseModels } from '../src/registry/models.ts'
+import type { LoadedRegistry } from '../src/registry/registry-file.ts'
 import { loadRegistry } from '../src/registry/registry-file.ts'
 import { packageRoot } from '../src/registry/root.ts'
 
@@ -149,5 +151,37 @@ describe('каталог поставки: метки уникальны и по
     expect(loaded.problems).toEqual([])
     expect(labels.every(label => label !== undefined && label.length <= 24)).toBe(true)
     expect(new Set(labels).size).toBe(labels.length)
+  })
+})
+
+describe('метка базы: язык и имя модели', () => {
+  /** Реестр из одной многоязычной модели, привязанной подстановкой `*`. */
+  function starRegistry(): LoadedRegistry {
+    return {
+      models: new Map([[
+        'Xenova/m',
+        { id: 'Xenova/m', label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384 },
+      ]]),
+      bindings: new Map([['*', 'Xenova/m']]),
+      defaultLanguage: 'ru',
+      problems: [],
+      files: [],
+    }
+  }
+
+  it('одна модель — разные метки у разных языков: язык берётся из привязки, а не из модели', () => {
+    const registry = starRegistry()
+    expect(resolveLocalModel(registry, 'ru', undefined, undefined)?.label).toBe('ru-minilm-l12')
+    expect(resolveLocalModel(registry, 'en', undefined, undefined)?.label).toBe('en-minilm-l12')
+    expect(resolveLocalModel(registry, 'zh', undefined, undefined)?.label).toBe('zh-minilm-l12')
+  })
+
+  it('у модели вне каталога метки нет: имени неоткуда взять', () => {
+    const registry = starRegistry()
+    expect(resolveLocalModel(registry, 'ru', 'Xenova/unknown', undefined)?.label).toBeUndefined()
+  })
+
+  it('собирается одной строкой', () => {
+    expect(bindingLabel('zh', 'bge-small-zh')).toBe('zh-bge-small-zh')
   })
 })

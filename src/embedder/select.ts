@@ -13,6 +13,7 @@
 
 import type { ResolvedEngramConfig } from '../config.ts'
 import { message } from '../i18n/messages.ts'
+import { bindingLabel } from '../registry/models.ts'
 import type { LoadedRegistry } from '../registry/registry-file.ts'
 import { EngramError } from '../types.ts'
 import type { EngramEmbedder } from './interface.ts'
@@ -56,7 +57,10 @@ export type ModelSource = 'override' | 'binding' | 'fallback'
  * заменяет его: ядро по-прежнему получает то, чем строится эмбеддер.
  */
 export interface LocalModelChoice extends LocalModelSpec {
-  /** Метка модели из каталога; у модели вне каталога метки нет. */
+  /**
+   * Метка базы: код языка и имя модели, `ru-minilm-l12`; у модели вне каталога
+   * метки нет — её имени неоткуда взять (см. `bindingLabel`).
+   */
   readonly label: string | undefined
   readonly source: ModelSource
 }
@@ -93,7 +97,7 @@ export function resolveLocalModel(
   }
   return {
     id: row.id,
-    label: row.label,
+    label: bindingLabel(language, row.label),
     source,
     pooling: poolingOverride ?? row.pooling,
     dtype: row.dtype,
