@@ -825,8 +825,13 @@ select.input { padding-right: 28px; appearance: none; }
 .regNote { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
 .regNote b { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
 .regBad { margin: 4px 0 0; padding-left: 18px; color: var(--dsw-alias-state-error-primary); font-size: var(--fs-micro); line-height: 1.5; }
-/* Обслуживание: ряд с одной кнопкой действия — описание стоит строкой выше. */
-.regActions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+/* Обслуживание: ряд с кнопкой действия — описание стоит справа от неё: кнопка
+   читается вместе с описанием как одна фраза «Выполнить → что именно будет сделано». */
+.regActions { display: flex; align-items: center; gap: 0; margin-top: var(--space-3); }
+/* Отступ от кнопки равен её высоте (28px): описание стоит «на одном дыхании» с кнопкой. */
+.regActionNote { margin-left: 28px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
+/* Обслуживание: предохранитель — отдельной строкой над кнопкой. */
+.regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); }
 /* Обслуживание: заголовок группы с кнопкой справа («Словарь >» открывает правку). */
 .regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
 .dictOpen { margin-left: auto; }

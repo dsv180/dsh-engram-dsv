@@ -3062,6 +3062,11 @@ function RegistryCard({ t, overlayHost }: {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /**
+   * Временный предохранитель от конвертации баз (решение 20.10): пока он отмечен,
+   * кнопка «Выполнить» нажимается, но не делает ничего. Убирается к концу работ.
+   */
+  const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseGuard', 'off', ['on', 'off'])
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
   const toast = useToast()
@@ -3089,14 +3094,11 @@ function RegistryCard({ t, overlayHost }: {
   }
   if (snapshot === null) return <div className={styles.expandLoading}>{tt('registryLoading')}</div>
 
-  const sourceKey: EngramKey = snapshot.resolved === null
-    ? 'registrySourceNone'
-    : snapshot.resolved.source === 'override'
-      ? 'registrySourceOverride'
-      : snapshot.resolved.source === 'binding' ? 'registrySourceBinding' : 'registrySourceFallback'
   const resolvedLabel = snapshot.resolved === null
     ? tt('registryNone')
     : snapshot.resolved.label ?? snapshot.resolved.id
+  /** Язык, которым дворец реально считает: сегодня это серверный ключ `language`. */
+  const palaceLanguage = snapshot.language.toUpperCase()
 
   // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
   // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
@@ -3107,7 +3109,13 @@ function RegistryCard({ t, overlayHost }: {
     ? 'convert'
     : actions.includes('repair') ? 'repair' : actions.includes('write-label') ? 'write-label' : 'none'
 
+  const actionText = todo === 'write-label'
+    ? tt('baseActionWriteLabel', { label: snapshot.bases[0]?.targetLabel ?? '' })
+    : todo === 'convert' ? tt('baseActionConvert') : todo === 'repair' ? tt('baseActionRepair') : tt('baseActionNone')
+
   const run = (): void => {
+    // Предохранитель: кнопка нажимается, но не делает ничего, пока его не снимут.
+    if (guard === 'on') return
     setBusy(true)
     void api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
       'base-label',
@@ -3134,11 +3142,13 @@ function RegistryCard({ t, overlayHost }: {
 
       <dl className={styles.regKV}>
         <dt>{tt('registryResolved')}</dt>
-        <dd>{resolvedLabel}</dd>
-        <dt>{tt('registrySource')}</dt>
-        <dd>{tt(sourceKey)}</dd>
-        <dt>{tt('registryDefaultLanguage')}</dt>
-        <dd>{snapshot.defaultLanguage ?? tt('registryNone')}</dd>
+        <dd>
+          {resolvedLabel}
+          {' · '}
+          <span className={styles.regMono}>
+            {tt('registryModelLocale')} — {palaceLanguage} — {tt('registryPalaceLanguage')}
+          </span>
+        </dd>
       </dl>
       {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
       {snapshot.resolved !== null && (
@@ -3188,17 +3198,22 @@ function RegistryCard({ t, overlayHost }: {
             ))}
           </ul>
         )}
-        <p className={styles.regNote}>
-          {todo === 'write-label'
-            ? tt('baseActionWriteLabel', { label: snapshot.bases[0]?.targetLabel ?? '' })
-            : todo === 'convert' ? tt('baseActionConvert') : todo === 'repair' ? tt('baseActionRepair') : tt('baseActionNone')}
-          {snapshot.pendingBases > 0 && <> · {tt('basePending', { n: snapshot.pendingBases })}</>}
-        </p>
+        {snapshot.pendingBases > 0 && (
+          <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
+        )}
+        <label className={styles.regGuard}>
+          <input type="checkbox" checked={guard === 'on'}
+            onChange={event => { setGuard(event.target.checked ? 'on' : 'off') }} />
+          <span>{tt('baseGuard')}</span>
+        </label>
         <div className={styles.regActions}>
           <button type="button" className={`${styles.button} ${styles.primary}`}
             disabled={busy || todo !== 'write-label'} onClick={run}>
             {busy ? tt('baseRunBusy') : tt('baseRun')}
           </button>
+          {/* Текст действия стоит справа от кнопки на её высоте: кнопка читается
+              вместе с ним как одна фраза «Выполнить → что именно будет сделано». */}
+          <span className={styles.regActionNote}>{actionText}</span>
         </div>
       </div>
 

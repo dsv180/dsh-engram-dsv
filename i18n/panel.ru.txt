@@ -9,12 +9,7 @@
 
 Model and dictionaries	Модель и словари (словарь панели)
 What this palace counts with, and which dictionary files were read	Чем считается содержимое дворца и из каких файлов прочитаны словари
-Chosen model	Выбранная модель
-Chosen by	Чем выбрана
-settings override	переопределением в настройках
-language binding	привязкой языка
-fallback binding (*)	подстановкой «все остальные»
-nothing — no model to run	ничем — модели нет
+Embedding model:	Модель эмбеддингов:
 remote endpoint (the catalog is not used)	удалённый конец (каталог не используется)
 Model catalog	Каталог моделей
 Language → model	Язык → модель
@@ -31,7 +26,8 @@ label	метка
 model id	идентификатор модели
 dims	размерность
 pooling · weights	сведение · веса
-package default	умолчание пакета
+model locale	выбранная локаль модели
+palace language	язык Дворца памяти
 Palace bases	Базы дворца
 What each base stands on, and what the button will do	На чём стоит каждая база и что сделает кнопка
 base	база
@@ -50,6 +46,7 @@ records without a vector	записи без вектора
 not checked	не проверено
 Run	Выполнить
 Writing…	Пишу…
+Temporary guard against base conversion	Временный предохранитель от конвертации баз
 The base is in order. Nothing to do.	База в порядке, действие не требуется.
 The base label {label} will be written.	Будет записана метка базы {label}.
 The vectors will be recomputed — not wired up yet (stage 2 of block B).	Будет выполнен пересчёт векторов — пока не подключён (этап 2 блока Б).
