@@ -7,7 +7,7 @@
  * @module @kenz1117/dsh-engram/client/EngramPanel
  */
 
-import { Component, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Component, Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
@@ -19,7 +19,7 @@ import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
 // поэтому в клиентскую сборку не тянется ни модель, ни её клиент.
-import { FILL_BATCH, splitDictionaryPatch } from '../i18n/dictionary-limits.ts'
+import { splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
@@ -3335,6 +3335,32 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
   const [fill, setFill] = useState<{ readonly done: number, readonly total: number } | null>(null)
   /** Просьба остановить заполнение: проверяется перед каждой партией. */
   const stopFill = useRef(false)
+  /**
+   * Рамка, которую кроет экран: видимая область панели, а не весь клиент.
+   *
+   * Полноэкранный слой (`inset: 0`) заезжал на верхнюю полосу приложения — над панелью
+   * у неё своё меню, и заголовок «Словарь» печатался прямо поверх него. Якорь оверлея
+   * лежит началом `.panelRoot`, а тот сам является скроллером: его рамка не меняется
+   * при прокрутке и всегда равна тому, что видно от панели. Отсюда и берём прямоугольник.
+   */
+  const [frame, setFrame] = useState<{ readonly top: number, readonly left: number, readonly width: number, readonly height: number } | null>(null)
+  useLayoutEffect(() => {
+    const anchor = host.current?.parentElement ?? null
+    if (anchor === null) return undefined
+    const measure = (): void => {
+      const box = anchor.getBoundingClientRect()
+      setFrame({ top: box.top, left: box.left, width: box.width, height: box.height })
+    }
+    // useLayoutEffect — до первой отрисовки: слой не успевает мигнуть на весь клиент.
+    measure()
+    window.addEventListener('resize', measure)
+    const observer = new ResizeObserver(measure)
+    observer.observe(anchor)
+    return () => {
+      window.removeEventListener('resize', measure)
+      observer.disconnect()
+    }
+  }, [host])
 
   // Набор перечитывается на каждое переключение: «панель» и «сообщения» — разные
   // файлы, и общий кэш здесь только запутал бы, чей перевод на экране. Заодно
@@ -3465,14 +3491,18 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
     setFill({ done: 0, total: terms.length })
     void (async () => {
       let filled = 0
+      let sent = 0
       let failure: string | null = null
-      for (let index = 0; index < terms.length; index += FILL_BATCH) {
+      // Партии режет общий с сервером предел — по числу терминов и по длине строк: вывод
+      // модели растёт вместе со входом, и одна большая партия упиралась в предел вывода,
+      // теряя ответ целиком (сорок длинных подсказок набора «сообщения»).
+      for (const batch of splitFillBatch(terms)) {
         if (stopFill.current) break
         try {
           const answer = await api<DictionaryFillAnswer>('dictionary-fill', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ set, terms: terms.slice(index, index + FILL_BATCH) }),
+            body: JSON.stringify({ set, terms: batch }),
           })
           // Набор переключили, пока партия ехала: её переводы уже чужого словаря.
           if (stopFill.current) break
@@ -3491,7 +3521,8 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
           failure = cause instanceof Error ? cause.message : String(cause)
           break
         }
-        setFill({ done: Math.min(index + FILL_BATCH, terms.length), total: terms.length })
+        sent += batch.length
+        setFill({ done: sent, total: terms.length })
       }
       stopFill.current = true
       setFill(null)
@@ -3510,7 +3541,10 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
   // место якоря не важно, важна лишь чужая область наложения. Якорь ещё не смонтирован —
   // рисуем на месте, без портала: нажатие никогда не должно оставаться без ответа.
   const screen = (
-    <div className={styles.dictScreen}>
+    <div className={styles.dictScreen}
+      style={frame === null ? undefined : {
+        top: frame.top, left: frame.left, width: frame.width, height: frame.height, right: 'auto', bottom: 'auto',
+      }}>
       <div className={styles.dictMenu}>
         <button type="button" className={styles.dictBack} onClick={back}
           title={tt('dictBack')} aria-label={tt('dictBack')}>{'←'}</button>
@@ -3988,6 +4022,9 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       </div>
       </div>
 
+      {/* Тело вкладки: единственная прокручиваемая область панели. Меню выше в прокрутке
+          не участвует, поэтому содержимое физически не может оказаться над ним. */}
+      <div className={styles.panelBody}>
       <ViewErrorBoundary key={activeTab} retryLabel={t('retry')} hintLabel={t('viewCrashed')}>
       {activeTab === 'library' && (
         <div className={styles.tabPanel}>
@@ -4294,6 +4331,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
         </div>
       )}
       </ViewErrorBoundary>
+      </div>
 
       {/* Toast 叠层（右上角，position:fixed 脱离 panel 容器）。 */}
       {toast.viewport}

@@ -41,7 +41,10 @@ beforeEach(() => {
 afterEach(async () => {
   await context?.fiber?.dispose()
   context = undefined
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  // maxRetries/retryDelay — не украшение: на Windows каталог только что закрытой базы
+  // отдаёт ENOTEMPTY, пока файловый хэндл отпускается асинхронно. Без повторов проверка
+  // падала не на утверждении, а на уборке, и это выглядело как настоящая поломка.
+  if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   root = undefined
   vi.unstubAllGlobals()
   vi.restoreAllMocks()

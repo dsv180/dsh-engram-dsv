@@ -26,8 +26,8 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
 import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
-import { FILL_MAX_TOKENS, FILL_TIMEOUT_MS } from './i18n/dictionary-limits.ts'
-import { fillBatch, fillPrompt, parseFillAnswer } from './i18n/dictionary-ai.ts'
+import { FILL_MAX_TOKENS, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
+import { answerSnippet, fillBatch, fillPrompt, parseFillAnswer } from './i18n/dictionary-ai.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
@@ -1028,25 +1028,60 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       return { set, provider: route?.provider ?? '', model: route?.model ?? '', translations: [] }
     }
     if (route === undefined) throw new EngramError('DICTIONARY_FILL_NO_ROUTE', message('llm.dictionaryFillNoRoute'))
-    const prompt = fillPrompt(terms, resolved.language)
-    void openStore('user')
-      .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
-        route, set, language: resolved.language, terms, maxTokens: FILL_MAX_TOKENS,
-      })))
-      .catch(() => { /* аудит не должен ломать заполнение */ })
-    const text = await streamText(ctx, {
-      route,
-      system: prompt.system,
-      userText: prompt.userText,
-      // Своей сессии у панели нет: пустой id — как у исторического бэкфилла (см. buildHistoryDeps).
-      sessionId: '',
-      maxTokens: FILL_MAX_TOKENS,
-      purpose: 'engram-dictionary-fill',
-      signal: AbortSignal.timeout(FILL_TIMEOUT_MS),
-    })
-    const translations = parseFillAnswer(text, terms)
+    // Партия режется по числу и по длине строк (`splitFillBatch`): вывод модели растёт вместе
+    // со входом, а предел вывода один на ответ — сорок длинных подсказок упирались в него и
+    // теряли ответ целиком. Режем здесь, а не только в панели: тогда любой вызывающий получает
+    // переводы на всё, что спросил.
+    const translations: (readonly [string, string])[] = []
+    let emptyAnswer: string | undefined
+    for (const batch of splitFillBatch(terms)) {
+      const prompt = fillPrompt(batch, resolved.language)
+      void openStore('user')
+        .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
+          route, set, language: resolved.language, terms: batch, maxTokens: FILL_MAX_TOKENS,
+        })))
+        .catch(() => { /* аудит не должен ломать заполнение */ })
+      let text: string
+      try {
+        text = await streamText(ctx, {
+          route,
+          system: prompt.system,
+          userText: prompt.userText,
+          // Своей сессии у панели нет: пустой id — как у исторического бэкфилла (см. buildHistoryDeps).
+          sessionId: '',
+          maxTokens: FILL_MAX_TOKENS,
+          purpose: 'engram-dictionary-fill',
+          signal: AbortSignal.timeout(FILL_TIMEOUT_MS),
+        })
+      } catch (error) {
+        // Ответ оборвался на пределе вывода: целые пары из начала ответа спасаем (ошибка
+        // предела приносит недосказанный текст, см. llm/client.ts), остальное — наверх.
+        const partial = (error as { partialText?: string }).partialText
+        const salvaged = partial === undefined ? [] : parseFillAnswer(partial, batch)
+        if (salvaged.length === 0) throw error
+        translations.push(...salvaged)
+        continue
+      }
+      // Ответ модели пишется в журнал: без него «переводов нет» не разобрать, а обещание
+      // «что видел пользователь — то и записано» иначе не выполняется. Срез — чтобы журнал
+      // не пух от многострочных подсказок.
+      void openStore('user')
+        .then(store => store.audit('dictionary-fill-answer', 'AUX', answerSnippet(text, 2000)))
+        .catch(() => { /* аудит не должен ломать заполнение */ })
+      const parsed = parseFillAnswer(text, batch)
+      // Партия без переводов — не повод терять остальные: строки, которые модель пропустила,
+      // повторно спросит следующее нажатие (в пустые клетки пишется только оно).
+      if (parsed.length === 0) {
+        emptyAnswer ??= text
+        continue
+      }
+      translations.push(...parsed)
+    }
     if (translations.length === 0) {
-      throw new EngramError('DICTIONARY_FILL_EMPTY', message('llm.dictionaryFillEmptyAnswer'))
+      // В сообщении — срез ответа: без него «модель не дала переводов» не разобрать.
+      throw new EngramError('DICTIONARY_FILL_EMPTY', message('llm.dictionaryFillEmptyAnswer', {
+        snippet: answerSnippet(emptyAnswer ?? ''),
+      }))
     }
     return { set, provider: route.provider, model: route.model, translations }
   }

@@ -14,7 +14,6 @@
  * @module @kenz1117/dsh-engram/i18n/dictionary-ai
  */
 
-import { parseJsonArray } from '../llm/client.ts'
 import type { EngramLanguage } from './language.ts'
 import { message } from './messages.ts'
 import { EngramError } from '../types.ts'
@@ -57,33 +56,128 @@ export function fillPrompt(terms: readonly string[], language: EngramLanguage): 
   }
 }
 
-/** Вырезать JSON-объект из ответа: тот же приём, что у `parseJsonArray`, но для карты. */
-function parseJsonObject(text: string): Record<string, unknown> | undefined {
+/** Кусок текста между первой открывающей и последней закрывающей скобкой: проза вокруг не мешает. */
+function jsonSlice(text: string, open: string, close: string): string | undefined {
+  const start = text.indexOf(open)
+  const end = text.lastIndexOf(close)
+  if (start < 0 || end <= start) return undefined
+  return text.slice(start, end + 1)
+}
+
+/** Разобранные JSON-значения ответа: массив и/или объект — что в нём оказалось. */
+function jsonValues(text: string): unknown[] {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text)
   const candidate = (fenced?.[1] ?? text).trim()
-  const start = candidate.indexOf('{')
-  const end = candidate.lastIndexOf('}')
-  if (start < 0 || end <= start) return undefined
-  try {
-    const parsed: unknown = JSON.parse(candidate.slice(start, end + 1))
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined
-  } catch {
-    return undefined
+  const values: unknown[] = []
+  for (const [open, close] of [['[', ']'], ['{', '}']] as const) {
+    const slice = jsonSlice(candidate, open, close)
+    if (slice === undefined) continue
+    try {
+      const parsed: unknown = JSON.parse(slice)
+      if (typeof parsed === 'object' && parsed !== null) values.push(parsed)
+    } catch {
+      // Кусок не разобрался (проза со скобкой, обрыв на пределе вывода) — пробуем другой.
+    }
   }
+  return values
+}
+
+/**
+ * Законченные скобочные отрезки текста — на любой глубине, включая вложенные.
+ *
+ * Нужны, когда ответ оборван на пределе вывода: целиком он не парсится (нет последней
+ * скобки), а готовые пары внутри уже есть. Баланс скобок считается с учётом строк,
+ * поэтому скобка внутри перевода отрезок не рвёт.
+ * @param text - ответ модели.
+ * @returns значения всех отрезков, которые разобрались как JSON.
+ */
+function completeSegments(text: string): unknown[] {
+  const out: unknown[] = []
+  const stack: string[] = []
+  const starts: number[] = []
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') { inString = true; continue }
+    if (char === '[' || char === '{') {
+      stack.push(char === '[' ? ']' : '}')
+      starts.push(index)
+      continue
+    }
+    if (char !== ']' && char !== '}') continue
+    if (stack.length === 0 || stack[stack.length - 1] !== char) {
+      // Проза со скобкой: баланс потерян, всё накопленное — уже не пара.
+      stack.length = 0
+      starts.length = 0
+      continue
+    }
+    stack.pop()
+    const start = starts.pop()
+    if (start === undefined) continue
+    try {
+      out.push(JSON.parse(text.slice(start, index + 1)))
+    } catch {
+      // Внутри не JSON (проза или оборванная строка) — отрезок не наш.
+    }
+  }
+  return out
+}
+
+/** Пара из двух строк: массив `["english", "перевод"]` или объект с двумя значениями. */
+function pairOf(value: unknown): readonly [unknown, unknown] | undefined {
+  if (Array.isArray(value)) return value.length === 2 ? [value[0], value[1]] : undefined
+  if (typeof value !== 'object' || value === null) return undefined
+  const strings = Object.values(value)
+  return strings.length === 2 ? [strings[0], strings[1]] : undefined
+}
+
+/**
+ * Пары, которые можно спасти из ответа любой формы.
+ *
+ * Сюда попадает то, чего не взял основной разбор: оборванный массив пар (`[["a","b"],
+ * ["c","d"],["e` — внешние скобки не закрылись) и оборванная карта (`{"a":"б","c":`).
+ * Строки карты восстанавливаются через JSON.parse по самой записи, поэтому escape-
+ * последовательности разбираются так же, как в целом ответе.
+ * @param text - ответ модели.
+ * @returns найденные пары в порядке текста; пригодность проверяет вызывающий.
+ */
+function salvagePairs(text: string): readonly (readonly [unknown, unknown])[] {
+  const out: (readonly [unknown, unknown])[] = []
+  for (const value of completeSegments(text)) {
+    const pair = pairOf(value)
+    if (pair !== undefined) out.push(pair)
+  }
+  const entry = /"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+  for (let match = entry.exec(text); match !== null; match = entry.exec(text)) {
+    const left = match[1]
+    const right = match[2]
+    if (left === undefined || right === undefined) continue
+    try {
+      out.push([JSON.parse(`"${left}"`), JSON.parse(`"${right}"`)])
+    } catch {
+      // Битая escape-последовательность: такую строку не восстановить.
+    }
+  }
+  return out
 }
 
 /**
  * Разобрать ответ модели в пары «строка → перевод».
  *
- * Принимаются оба вида ответа: массив пар (`[["English","перевод"]]`) и объект-карта
- * (`{"English":"перевод"}`) — модель отвечает то так, то так, и терять из-за формы
- * весь ответ незачем. Отбрасывается всё, что нельзя положить в словарь: строки,
- * которых не спрашивали (модель любит добавлять своё), повтор (побеждает первый),
- * пустой перевод и перевод, совпавший с английским текстом — последнее значит
- * «перевести не удалось», и записывать это как перевод нельзя: тогда «уже переведено»
- * не отличить от «перевода нет».
+ * Форма ответа не наша забота: инструкция просит массив пар, но модель отвечает и картой,
+ * и списком переводов по порядку, и объектами со своими именами полей («term/translation»,
+ * «source/target»). Терять из-за формы весь ответ нельзя — человек нажал «Заполнить ИИ»
+ * и ждёт переводов, а не объяснений. Поэтому принимается любой из этих видов, а решение
+ * о пригодности пары одно и то же: строка должна быть из запроса, перевод непустой и не
+ * равный английскому тексту (совпадение значит «перевести не удалось», и записывать его
+ * как перевод нельзя — тогда «уже переведено» не отличить от «перевода нет»).
  * @param text - ответ модели.
  * @param terms - то, что спрашивали: ответ вне списка не принимается.
  * @returns пары в порядке ответа модели.
@@ -102,21 +196,65 @@ export function parseFillAnswer(text: string, terms: readonly string[]): readonl
     out.push([left, value])
   }
 
-  const parsed = parseJsonArray(text)
-  if (parsed !== undefined) {
-    for (const item of parsed) {
-      if (Array.isArray(item)) accept(item[0], item[1])
-      else if (typeof item === 'object' && item !== null) {
-        const pair = item as { left?: unknown, right?: unknown, term?: unknown, translation?: unknown }
-        accept(pair.left ?? pair.term, pair.right ?? pair.translation)
-      }
-    }
-    if (out.length > 0) return out
+  /** Список переводов по порядку запроса: модель отвечает и так, без левых строк. */
+  const byOrder = (list: readonly unknown[]): void => {
+    if (list.length !== terms.length || !list.every(item => typeof item === 'string')) return
+    list.forEach((item, index) => accept(terms[index], item))
   }
 
-  const map = parseJsonObject(text)
-  if (map !== undefined) for (const [left, right] of Object.entries(map)) accept(left, right)
+  /** Карта: ключ — английская строка (или обёртка с массивом переводов внутри). */
+  const fromRecord = (record: Record<string, unknown>, depth: number): void => {
+    for (const [left, right] of Object.entries(record)) {
+      if (typeof right === 'string') { accept(left, right); continue }
+      if (Array.isArray(right)) { byOrder(right); continue }
+      if (depth > 0 && typeof right === 'object' && right !== null) {
+        fromRecord(right as Record<string, unknown>, depth - 1)
+      }
+    }
+  }
+
+  /**
+   * Объект вместо пары: имена полей не угадываем — берём ту строку, которая совпала
+   * со спрошенной. Так принимается и `{"term": "...", "translation": "..."}`, и
+   * `{"source": "...", "target": "..."}`, и `{"English string": "перевод"}`.
+   */
+  const fromItem = (item: Record<string, unknown>): void => {
+    const strings = Object.values(item).filter((value): value is string => typeof value === 'string')
+    if (strings.length === 2) {
+      const [first, second] = strings as [string, string]
+      if (asked.has(first) && !asked.has(second)) accept(first, second)
+      else if (asked.has(second) && !asked.has(first)) accept(second, first)
+      return
+    }
+    if (strings.length === 1) {
+      const only = Object.entries(item)[0]
+      if (only !== undefined && typeof only[1] === 'string') accept(only[0], only[1])
+    }
+  }
+
+  for (const value of jsonValues(text)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (Array.isArray(item)) accept(item[0], item[1])
+        else if (typeof item === 'object' && item !== null) fromItem(item as Record<string, unknown>)
+      }
+      // Одна пара без внешнего массива: `["English", "перевод"]`.
+      if (out.length === 0 && value.length === 2) accept(value[0], value[1])
+      if (out.length === 0) byOrder(value)
+      continue
+    }
+    fromRecord(value as Record<string, unknown>, 1)
+  }
+  // Оборванный ответ: целиком он не разобрался, но готовые пары в тексте есть — берём их.
+  // Порядок здесь уже не важен, повторно принятое отсекает `seen`.
+  for (const [left, right] of salvagePairs(text)) accept(left, right)
   return out
+}
+
+/** Короткий срез ответа для сообщения об ошибке: без него «переводов нет» — тупик. */
+export function answerSnippet(text: string, limit = 200): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
 }
 
 /**

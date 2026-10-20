@@ -46,7 +46,7 @@ export const zh = {
   'llm.dictionaryFillSystem': '把开发者工具的界面字符串翻译成 {language}。\n你会收到一个英文 JSON 字符串数组。只输出一个由二元数组组成的 JSON 数组：[原样给出的英文字符串, 它的 {language} 译文]。\n左侧字符串必须与给出的一模一样（标点、空格、大小写都不改）。\n占位符（如 {name}）保持原样，不要翻译也不要移动。\n译文尽量简短，长度接近原文——这是界面标签，不是句子。\n字符串本身已是 {language} 时原样返回；没有可翻译的就省略该对。\n不要输出注释、解释或 Markdown，只输出 JSON 数组。',
   'llm.dictionaryFillTooMany': 'dsh-engram: 词典填充一次请求的术语过多（{n} 个，最多 {max} 个）',
   'llm.dictionaryFillNoRoute': 'dsh-engram: 词典填充不知道调用哪个模型——请在部署配置里指定 routeOverride',
-  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: 词典填充：模型没有给出可用的译文',
+  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: 词典填充：模型没有给出可用的译文——回答：{snippet}',
 
   // ---- Ошибки вспомогательного вызова (llm/client) ----
   'llm.finishMaxTokens': 'dsh-engram: 辅助调用输出达到 maxTokens 上限',
@@ -92,7 +92,7 @@ export const en = {
   'llm.dictionaryFillSystem': 'Translate the interface strings of a developer tool into {language}.\nYou get a JSON array of English strings. Output only one JSON array of two-element arrays: [the English string exactly as given, its {language} translation].\nKeep the left string byte for byte as given — punctuation, spacing and case unchanged.\nKeep placeholders such as {name} as they are: do not translate or move them.\nPrefer short labels: keep the translation close to the original in length.\nWhen a string is already in {language}, return it unchanged; when there is nothing to translate, omit the pair.\nOutput no comments, no explanations and no Markdown — only the JSON array.',
   'llm.dictionaryFillTooMany': 'dsh-engram: dictionary fill got too many terms in one request ({n}, at most {max})',
   'llm.dictionaryFillNoRoute': 'dsh-engram: dictionary fill has no model to call — set routeOverride in the deployment config',
-  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: dictionary fill: the model returned no usable translations',
+  'llm.dictionaryFillEmptyAnswer': 'dsh-engram: dictionary fill: the model returned no usable translations — answer: {snippet}',
 
   // ---- Auxiliary-call errors (llm/client) ----
   'llm.finishMaxTokens': 'dsh-engram: auxiliary call output reached the maxTokens limit',
