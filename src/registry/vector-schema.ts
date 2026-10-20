@@ -12,6 +12,11 @@
  * поле вектора выводится — это единственное поле типа BLOB в строке таблицы.
  * Ведение файла — автору (см. план, блок Б, Б.10).
  *
+ * У каждой таблицы есть классификация `role`: `user` — несёт пользовательские
+ * векторы и участвует в конвертации; `service` — служебная (например, FTS-тени),
+ * в обработку не идёт. Служебные таблицы перечислены в файле как наглядный пример
+ * того, что обходчик схемы пропускает помеченное без анализа содержимого.
+ *
  * @module @kenz1117/dsh-engram/registry/vector-schema
  */
 
@@ -62,9 +67,17 @@ function specOf(table: string, entry: unknown, file: string, problems: RegistryP
     problems.push({ file, kind: 'badShape', detail: `${table}: строка таблицы не объект` })
     return undefined
   }
-  const row = entry as { properties?: { vector?: { text?: unknown; where?: unknown } }, fields?: Record<string, unknown> }
+  const row = entry as { role?: unknown, properties?: { vector?: { text?: unknown; where?: unknown } }, fields?: Record<string, unknown> }
+  // Служебная таблица помечена role: service — не несёт векторы, в обработку не идёт.
+  if (row.role === 'service') return undefined
   const vector = row.properties?.vector
-  if (vector === undefined) return undefined
+  if (vector === undefined) {
+    // user-таблица без объявления вектора — претензия, а не молчаливый пропуск.
+    if (row.role === 'user') {
+      problems.push({ file, kind: 'badField', detail: `${table}: role: user, но нет properties.vector` })
+    }
+    return undefined
+  }
   const text = vector.text
   if (typeof text !== 'string' || text === '') {
     problems.push({ file, kind: 'badField', detail: `${table}: properties.vector.text не назван` })

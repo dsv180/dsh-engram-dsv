@@ -3,6 +3,7 @@
   "schemaVersion": 13,
   "tables": {
     "nodes": {
+      "role": "user",
       "properties": {
         "vector": {
           "text": "content",
@@ -36,6 +37,7 @@
       }
     },
     "observations": {
+      "role": "user",
       "properties": {
         "vector": {
           "text": "belief",
@@ -54,6 +56,24 @@
         "updated_at": "INTEGER",
         "last_validated_at": "INTEGER"
       }
+    },
+    "nodes_fts": {
+      "role": "service"
+    },
+    "nodes_fts_config": {
+      "role": "service"
+    },
+    "nodes_fts_content": {
+      "role": "service"
+    },
+    "nodes_fts_data": {
+      "role": "service"
+    },
+    "nodes_fts_docsize": {
+      "role": "service"
+    },
+    "nodes_fts_idx": {
+      "role": "service"
     }
   }
 }
