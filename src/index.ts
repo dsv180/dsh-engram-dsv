@@ -27,7 +27,7 @@ import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary,
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
 import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
 import { PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
-import { FILL_MAX_TOKENS, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
+import { FILL_MAX_TOKENS, FILL_SPLIT_DEPTH, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
 import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from './i18n/dictionary-ai.ts'
 import type { FillPair } from './i18n/dictionary-ai.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
@@ -1292,7 +1292,17 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     // переводы на всё, что спросил.
     const translations: (readonly [string, string])[] = []
     let emptyAnswer: string | undefined
-    for (const batch of splitFillBatch(terms)) {
+    /**
+     * Перевести одну партию; упёрлись в предел вывода — делим партию и пробуем снова.
+     *
+     * Обрыв на пределе вывода — не ошибка словаря, а слишком длинное рассуждение модели:
+     * живой прогон 21.10 дал партию из 21 строки, где рассуждение съело весь потолок и
+     * ни одна пара не дописалась. Раньше такая партия останавливала всё заполнение
+     * («модель достигла предела»), и человек видел недоделанный словарь. Половина партии
+     * просит вдвое меньше вывода, поэтому повтор почти всегда проходит; глубина — два
+     * деления, дальше это уже отдельная строка, и упорство там бесполезно.
+     */
+    const fillOne = async (batch: readonly string[], depth: number): Promise<void> => {
       const prompt = fillPrompt(batch, resolved.language, glossary)
       void openStore('user')
         .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
@@ -1313,12 +1323,20 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         })
       } catch (error) {
         // Ответ оборвался на пределе вывода: целые пары из начала ответа спасаем (ошибка
-        // предела приносит недосказанный текст, см. llm/client.ts), остальное — наверх.
+        // предела приносит недосказанный текст, см. llm/client.ts).
         const partial = (error as { partialText?: string }).partialText
         const salvaged = partial === undefined ? [] : parseFillAnswer(partial, batch)
-        if (salvaged.length === 0) throw error
-        translations.push(...salvaged)
-        continue
+        if (salvaged.length > 0) {
+          translations.push(...salvaged)
+          return
+        }
+        if (depth < FILL_SPLIT_DEPTH && batch.length > 1) {
+          const half = Math.ceil(batch.length / 2)
+          await fillOne(batch.slice(0, half), depth + 1)
+          await fillOne(batch.slice(half), depth + 1)
+          return
+        }
+        throw error
       }
       // Ответ модели пишется в журнал: без него «переводов нет» не разобрать, а обещание
       // «что видел пользователь — то и записано» иначе не выполняется. Срез — чтобы журнал
@@ -1327,11 +1345,16 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         .then(store => store.audit('dictionary-fill-answer', 'AUX', answerSnippet(text, 2000)))
         .catch(() => { /* аудит не должен ломать заполнение */ })
       const parsed = parseFillAnswer(text, batch)
-      // Партия без переводов — не повод терять остальные: строки, которые модель пропустила,
-      // повторно спросит следующее нажатие (в пустые клетки пишется только оно).
+      // Партия без переводов — та же история, что обрыв: модель не справилась с объёмом.
       if (parsed.length === 0) {
+        if (depth < FILL_SPLIT_DEPTH && batch.length > 1) {
+          const half = Math.ceil(batch.length / 2)
+          await fillOne(batch.slice(0, half), depth + 1)
+          await fillOne(batch.slice(half), depth + 1)
+          return
+        }
         emptyAnswer ??= text
-        continue
+        return
       }
       translations.push(...parsed)
       // Принятые пары становятся словарём для следующих партий: понятие, названное в
@@ -1341,6 +1364,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         ...translations.map(([left, right]) => ({ left, right })),
       ])
     }
+    // Партия режется по числу и по длине строк (`splitFillBatch`): вывод модели растёт вместе
+    // со входом, а предел вывода один на ответ — сорок длинных подсказок упирались в него и
+    // теряли ответ целиком. Режем здесь, а не только в панели: тогда любой вызывающий получает
+    // переводы на всё, что спросил.
+    for (const batch of splitFillBatch(terms)) await fillOne(batch, 0)
     if (translations.length === 0) {
       // В сообщении — срез ответа: без него «модель не дала переводов» не разобрать.
       throw new EngramError('DICTIONARY_FILL_EMPTY', message('llm.dictionaryFillEmptyAnswer', {
