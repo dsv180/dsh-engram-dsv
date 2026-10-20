@@ -38,6 +38,16 @@ const PANEL_PACKS: Readonly<Partial<Record<EngramLanguage, Readonly<Record<strin
   zh: panelZh,
 }
 
+/**
+ * Языки, чьи тексты панели вшиты в сборку клиента.
+ *
+ * Их словарь приходит кодом (`ctx.locale.register`), а не файлом: `fr` и любой
+ * следующий язык приходят файлом `<dbDir>/i18n/panel.<код>.txt` и объявляются хосту
+ * при запуске (см. src/client/index.ts). Список — здесь, чтобы сервер и панель
+ * считали вшитыми одни и те же языки и не спорили о том, чей словарь главнее.
+ */
+export const PANEL_BUILTIN_LANGUAGES: readonly EngramLanguage[] = ['zh', 'en', 'ru']
+
 /** Уникальные строки в порядке первого появления: словарь ключуется текстом. */
 function unique(values: readonly string[]): readonly string[] {
   const seen = new Set<string>()

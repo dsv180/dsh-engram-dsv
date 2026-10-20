@@ -190,3 +190,48 @@ describe('метка базы: язык и имя модели', () => {
     expect(bindingLabel('zh', 'bge-small-zh')).toBe('zh-bge-small-zh')
   })
 })
+
+describe('реестр языков: слой пользователя рядом с данными', () => {
+  /** Корни с объявленным списком языков в поставке и, если дан, в слое пользователя. */
+  async function makeLanguageRoots(delivery: string, user?: string): Promise<{ packageRoot: string; dbDir: string }> {
+    const roots = await makeRoots('{"default":"ru","bindings":[{"language":"*","model":"m-zh"}]}')
+    await writeFile(join(roots.packageRoot, 'registry', 'languages.json'), delivery)
+    if (user !== undefined) {
+      await mkdir(join(roots.dbDir, 'registry'), { recursive: true })
+      await writeFile(join(roots.dbDir, 'registry', 'languages.json'), user)
+    }
+    return roots
+  }
+
+  it('язык из слоя пользователя появляется в списке рядом с поставкой', async () => {
+    // Новый язык приходит файлом словаря в тот же каталог данных; без строки в реестре
+    // сервер знал бы код, а список выбора дворца и интерфейса — нет.
+    const roots = await makeLanguageRoots(
+      JSON.stringify({ languages: [{ code: 'zh', label: '中文', builtin: true }, { code: 'ru', label: 'Русский', builtin: false }] }),
+      JSON.stringify({ languages: [{ code: 'fr', label: 'Français', builtin: false }] }),
+    )
+    const loaded = loadRegistry(roots)
+    expect(loaded.languages.map(row => row.code)).toEqual(['zh', 'ru', 'fr'])
+    expect(loaded.languages[2]).toMatchObject({ label: 'Français', builtin: false })
+    expect(loaded.problems).toEqual([])
+  })
+
+  it('строка пользователя заменяет строку с тем же кодом, а не удваивает её', async () => {
+    const roots = await makeLanguageRoots(
+      JSON.stringify({ languages: [{ code: 'ru', label: 'ru', builtin: false }] }),
+      JSON.stringify({ languages: [{ code: 'ru', label: 'Русский', builtin: false }] }),
+    )
+    const loaded = loadRegistry(roots)
+    expect(loaded.languages).toEqual([{ code: 'ru', label: 'Русский', builtin: false }])
+  })
+
+  it('испорченный файл пользователя не отменяет список поставки', async () => {
+    const roots = await makeLanguageRoots(
+      JSON.stringify({ languages: [{ code: 'zh', label: '中文', builtin: true }] }),
+      '{"languages": "не массив"}',
+    )
+    const loaded = loadRegistry(roots)
+    expect(loaded.languages.map(row => row.code)).toEqual(['zh'])
+    expect(loaded.problems.map(problem => problem.kind)).toContain('badShape')
+  })
+})

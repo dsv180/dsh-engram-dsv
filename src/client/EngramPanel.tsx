@@ -2328,6 +2328,32 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
 type PalaceAskChoice = string
 
 /**
+ * Пояснение к окну первого запуска — сразу на трёх языках, одно под другим.
+ *
+ * Язык интерфейса в этот момент ещё не выбран человеком (его выбирают как раз здесь),
+ * поэтому объяснение не подчиняется языку панели: показываем все три языка, на которых
+ * плагин говорит со дня поставки. Берём тексты из вшитых наборов (`locales/*.ts`), а не
+ * переписываем их здесь: одна и та же фраза не должна жить в двух местах.
+ */
+const PALACE_ASK_PARTS: readonly string[] = [zh.palaceAskBody, en.palaceAskBody, ru.palaceAskBody]
+
+/**
+ * Обещание для тех, чьего языка у дворца ещё нет, — тоже на трёх языках.
+ *
+ * Оно относится только к выбору «другой язык»: человеку с нашей локалью этот текст
+ * ничего не объясняет, а тому, чья локаль не наша, — объясняет весь его путь (язык
+ * запишется настоящим кодом, служебные надписи будут английскими, инструкция для
+ * агента лежит в плагине). Показывать его на языке интерфейса нельзя: этим людям наш
+ * язык как раз и не родной, поэтому текст идёт теми же тремя частями, что и пояснение.
+ */
+const PALACE_FALLBACK_PARTS: readonly string[] = [zh.palaceAskFallback, en.palaceAskFallback, ru.palaceAskFallback]
+
+/** Подставить код языка в часть обещания: `{language}` — единственная подстановка там. */
+function withLanguage(part: string, code: string): string {
+  return part.split('{language}').join(code)
+}
+
+/**
  * Язык дворца в панели: решение принимается по диалогам, а окно нужно только там,
  * где решать нечем или где языки разошлись (решение 21.10).
  *
@@ -2502,7 +2528,15 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
           </button>
         </header>
         <div className={`${styles.drawerBody} ${styles.palaceAskBody}`}>
-          <p className={styles.regNote}>{body}</p>
+          {/* Расхождение языков — не первый запуск: там объясняется конкретная пара
+              языков, и переводить это на три языка сразу незачем. */}
+          {mismatch
+            ? <p className={styles.regNote}>{body}</p>
+            : (
+              <div className={styles.palaceAskText}>
+                {PALACE_ASK_PARTS.map(part => <p key={part} className={styles.regNote}>{part}</p>)}
+              </div>
+            )}
           <div className={styles.palaceChoiceList} role="radiogroup" aria-label={title}>
             {choices.map(value => (
               <label key={value} className={choice === value ? `${styles.palaceChoice} ${styles.palaceChoiceOn}` : styles.palaceChoice}>
@@ -2519,13 +2553,15 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
             ))}
           </div>
           {choice === 'other'
-            ? (
-              <p className={styles.palaceAskHint}>
-                {otherCode === null
-                  ? t('palaceAskNoCode')
-                  : t('palaceAskFallback', { language: otherCode.toUpperCase() })}
-              </p>
-            )
+            ? (otherCode === null
+              ? <p className={styles.palaceAskHint}>{t('palaceAskNoCode')}</p>
+              : (
+                <div className={styles.palaceAskText}>
+                  {PALACE_FALLBACK_PARTS.map(part => (
+                    <p key={part} className={styles.palaceAskHint}>{withLanguage(part, otherCode.toUpperCase())}</p>
+                  ))}
+                </div>
+              ))
             : null}
           {dryRun === true ? (
             <div className={styles.regGroup}>
@@ -4047,7 +4083,7 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
         <div className={styles.dictMenuRight}>
           <button type="button" className={styles.button}
             disabled={view === null || busy === 'save' || (fill === null && fillable.length === 0)}
-            title={fill !== null ? tt('dictFillStop') : fillable.length === 0 ? tt('dictFillHint') : undefined}
+            title={fill !== null ? tt('dictFillStop') : fillable.length === 0 ? tt('dictFillHint') : tt('dictFillAiHint')}
             onClick={fillAi}>
             {fill !== null ? tt('dictFillStop') : tt('dictFillAi')}
           </button>

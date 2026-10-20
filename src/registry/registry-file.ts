@@ -120,8 +120,12 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
     }
   }
 
-  // Языки дворца: файл поставки, а без него — встроенный набор. Пользовательского
-  // слоя здесь нет: какие языки знает плагин — свойство поставки, а не машины.
+  // Языки дворца: файл поставки, а без него — встроенный набор. Слой пользователя
+  // лежит рядом с данными (`<dbDir>/registry/languages.json`) и главнее поставки:
+  // новый язык приходит словарём в тот же каталог, и без своей строки в реестре он
+  // остался бы языком без имени — сервер бы его знал, а список выбора нет.
+  // Строка пользователя заменяет строку с тем же кодом и добавляется, если кода в
+  // поставке нет; файл может объявлять один язык, а не весь список.
   const languagesPath = join(root, 'registry', 'languages.json')
   const languagesText = readText(languagesPath, problems, false)
   let languages: readonly LanguageRecord[]
@@ -133,6 +137,21 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
   } else {
     // Файла нет — плагин не должен остаться без языков: берём встроенный набор.
     languages = parseLanguages('').languages
+  }
+  const userLanguagesPath = join(sources.dbDir, 'registry', 'languages.json')
+  const userLanguagesText = readText(userLanguagesPath, problems, false)
+  if (userLanguagesText !== undefined) {
+    files.push(userLanguagesPath)
+    const parsed = parseLanguages(userLanguagesText)
+    for (const issue of parsed.issues) problems.push({ file: userLanguagesPath, kind: issue.kind, detail: issue.detail })
+    // Испорченный файл пользователя не сливается со списком поставки: разбор тогда
+    // отдаёт встроенный набор, и «язык из файла» превратился бы в три чужих языка.
+    // Ошибка уже записана выше — список остаётся тем, что объявила поставка.
+    if (parsed.issues.length === 0) {
+      const merged = new Map(languages.map(record => [record.code, record]))
+      for (const record of parsed.languages) merged.set(record.code, record)
+      languages = [...merged.values()]
+    }
   }
 
   // Сверка слоёв с каталогом: привязка на модель, которой в каталоге нет, не работает.

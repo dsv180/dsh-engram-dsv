@@ -776,6 +776,12 @@ select.input { padding-right: 28px; appearance: none; }
 .palaceChoiceName { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); }
 .palaceChoiceNote { margin-left: auto; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .palaceAskHint { margin: 0 0 var(--space-2); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.45; }
+/* Пояснение первого запуска на трёх языках: части идут одна под другой, и разделяет их
+   двойной межстрочный интервал — строка здесь 1.55 на кегле 14px, значит 3.1em.
+   Промежуток задан сеткой, а не отступами абзацев: у абзацев своя роль (примечание,
+   подсказка), и их собственный отступ занят другим смыслом. */
+.palaceAskText { display: grid; gap: 3.1em; font-size: 14px; line-height: 1.55; margin: 0 0 var(--space-3); }
+.palaceAskText > p { margin: 0; }
 /* Окно первого старта читают, чтобы понять формулировки, а не пробегают глазами:
    пояснения и подписи крупнее (14px вместо 11–12) и полным контрастом. Мелкий серый
    текст на светлой подложке в этом окне не читался. */

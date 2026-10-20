@@ -12,7 +12,7 @@
  * выдуманная строка проверяла бы не тот механизм, который работает в жизни.
  */
 import { describe, expect, it } from 'vitest'
-import { answerSnippet, fillBatch, fillPrompt, parseFillAnswer } from '../src/i18n/dictionary-ai.ts'
+import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from '../src/i18n/dictionary-ai.ts'
 import { FILL_REQUEST_MAX, splitFillBatch } from '../src/i18n/dictionary-limits.ts'
 import { messageVocabulary } from '../src/i18n/messages.ts'
 
@@ -115,6 +115,41 @@ describe('ответ модели принимается только приго
 
   it('проза со скобками пар не выдумывает', () => {
     expect(parseFillAnswer('Не могу [перевести] {это}', [FIRST])).toEqual([])
+  })
+})
+
+describe('словарь устоявшихся терминов едет вместе с партией', () => {
+  it('в запросе названы обе части: что переводить и что уже принято', () => {
+    // Раньше уходил голый массив строк, и в соседних партиях одно понятие получало
+    // разные переводы. Теперь у каждой части есть имя, и двусмысленности в запросе нет.
+    const prompt = fillPrompt([FIRST], 'ru', [[SECOND, 'Второй перевод']])
+    const payload = JSON.parse(prompt.userText) as { strings: string[], glossary: [string, string][] }
+    expect(payload.strings).toEqual([FIRST])
+    expect(payload.glossary).toEqual([[SECOND, 'Второй перевод']])
+  })
+
+  it('без словаря запрос всё равно разбирается: пустой список, а не пропущенный ключ', () => {
+    const payload = JSON.parse(fillPrompt([FIRST], 'ru').userText) as { glossary: unknown[] }
+    expect(payload.glossary).toEqual([])
+  })
+
+  it('в словарь берутся только принятые пары: пустое, английское и многострочное — нет', () => {
+    const rows = [
+      { left: 'B', right: 'Б' },
+      { left: 'A', right: '  ' },
+      { left: 'C', right: 'C' },
+      { left: 'multi\nline', right: 'многострочный' },
+      { left: 'D', right: 'Г' },
+    ]
+    // Порядок — по длине английской строки: понятие живёт в короткой подписи.
+    expect(glossaryPairs(rows).map(pair => pair[0])).toEqual(['B', 'D'])
+  })
+
+  it('пределы словаря соблюдаются: и по числу пар, и по длине', () => {
+    const rows = Array.from({ length: 10 }, (_item, index) => ({ left: `term ${String(index)}`, right: `термин ${String(index)}` }))
+    expect(glossaryPairs(rows, 3).length).toBe(3)
+    // Длинные строки не помещаются в предел — словарь не растёт сверх него.
+    expect(glossaryPairs(rows, 10, 20).length).toBe(1)
   })
 })
 

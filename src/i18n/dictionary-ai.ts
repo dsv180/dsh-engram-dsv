@@ -39,21 +39,78 @@ export interface FillPrompt {
 export type FillPair = readonly [string, string]
 
 /**
+ * Сколько принятых пар уходит модели как словарь терминов.
+ *
+ * Словарь — это подсказка о том, что уже принято, а не второй запрос: два десятка
+ * строк хватает, чтобы модель держала одни и те же слова в соседних партиях, и мало,
+ * чтобы запрос вырос вдвое.
+ */
+export const GLOSSARY_MAX_PAIRS = 20
+
+/** Предел длины словаря терминов: он едет в том же запросе, что и партия. */
+export const GLOSSARY_MAX_CHARS = 900
+
+/**
+ * Словарь устоявшихся терминов для запроса.
+ *
+ * Собирается из того, что в наборе уже переведено: при повторном заполнении это
+ * переводы поставки, при первом проходе по новому языку — переводы прошлых партий.
+ * Модель получает их как «уже принято» и не выбирает для того же понятия другое слово
+ * в следующей партии. Берутся короткие строки: понятие живёт в подписи, а не в
+ * многострочной подсказке.
+ * @param rows - строки набора с уже непустым правым столбцом.
+ * @param limit - предел числа пар.
+ * @param maxChars - предел суммы символов пары.
+ * @returns пары в порядке возрастания длины английской строки.
+ */
+export function glossaryPairs(
+  rows: readonly { readonly left: string, readonly right: string }[],
+  limit: number = GLOSSARY_MAX_PAIRS,
+  maxChars: number = GLOSSARY_MAX_CHARS,
+): readonly FillPair[] {
+  const ready = rows
+    .filter(row => row.right.trim() !== '' && row.right.trim() !== row.left.trim())
+    .filter(row => !row.left.includes('\n') && !row.right.includes('\n'))
+    .slice()
+    .sort((a, b) => a.left.length - b.left.length)
+  const pairs: FillPair[] = []
+  let size = 0
+  for (const row of ready) {
+    if (pairs.length >= limit) break
+    const chars = row.left.length + row.right.length + 6
+    if (pairs.length > 0 && size + chars > maxChars) break
+    pairs.push([row.left, row.right])
+    size += chars
+  }
+  return pairs
+}
+
+/**
  * Запрос на перевод партии терминов.
  *
  * Требования к ответу перечислены в инструкции явно: слева — строка байт в байт как
  * дана (иначе перевод не с чем сопоставить), подстановки `{имя}` остаются как есть
  * (панель подставляет их потом), ответ — только JSON-массив пар.
+ *
+ * Данные уходят объектом с двумя ключами, а не голым массивом: `strings` — то, что
+ * надо перевести, `glossary` — уже принятые пары. Голый массив оставлял модели только
+ * один источник слов, и в соседних партиях одно понятие получало разные переводы;
+ * ключи называют роль каждой части, поэтому двусмысленности в запросе нет.
  * @param terms - английские строки набора.
  * @param language - язык, на который переводим.
- * @returns системная инструкция и JSON-массив терминов.
+ * @param glossary - уже принятые пары (см. `glossaryPairs`); пусто — словаря нет.
+ * @returns системная инструкция и JSON-объект с терминами и словарём.
  */
-export function fillPrompt(terms: readonly string[], language: EngramLanguage): FillPrompt {
+export function fillPrompt(
+  terms: readonly string[],
+  language: EngramLanguage,
+  glossary: readonly FillPair[] = [],
+): FillPrompt {
   // Языка вне вшитой таблицы имён может не быть — тогда называем его кодом.
   const name = LANGUAGE_NAMES[language] ?? language
   return {
     system: message('llm.dictionaryFillSystem', { language: name }),
-    userText: JSON.stringify(terms, null, 1),
+    userText: JSON.stringify({ strings: terms, glossary }, null, 1),
   }
 }
 

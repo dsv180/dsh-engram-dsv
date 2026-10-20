@@ -502,7 +502,7 @@ export type EngramKey =
   | 'dictCancel'
   | 'dictSave'
   | 'dictFillAi'
-  | 'dictNotWired'
+  | 'dictFillAiHint'
   | 'dictFilter'
   | 'dictHint'
   | 'dictDirty'

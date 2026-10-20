@@ -26,8 +26,10 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
 import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
+import { PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
 import { FILL_MAX_TOKENS, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
-import { answerSnippet, fillBatch, fillPrompt, parseFillAnswer } from './i18n/dictionary-ai.ts'
+import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from './i18n/dictionary-ai.ts'
+import type { FillPair } from './i18n/dictionary-ai.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
@@ -1267,6 +1269,12 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
    * настроек главнее модели текущей сессии (панель — не сессия, своего маршрута у неё
    * нет). Запрос модели пишется в op_log тем же способом, что у соседей: обещание
    * «что видел пользователь — то и записано» не должно зависеть от того, откуда вызов.
+   *
+   * Вместе с партией уходит словарь уже принятых переводов (`glossaryPairs`): без него
+   * модель в каждой следующей партии выбирала для того же понятия другое слово, и
+   * словарь переставал быть словарём. Словарь пополняется принятыми парами по ходу
+   * прохода, поэтому первый проход по новому языку держит терминологию так же, как
+   * повторное заполнение по готовому набору.
    */
   const dictionaryFillDeps: RouteDeps['dictionaryFill'] = async (set, rawTerms) => {
     const terms = fillBatch(rawTerms)
@@ -1275,6 +1283,9 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       return { set, provider: route?.provider ?? '', model: route?.model ?? '', translations: [] }
     }
     if (route === undefined) throw new EngramError('DICTIONARY_FILL_NO_ROUTE', message('llm.dictionaryFillNoRoute'))
+    const sources = { set, language: resolved.language, dbDir: resolved.dbDir }
+    const known = readDictionarySet(sources).rows
+    let glossary: readonly FillPair[] = glossaryPairs(known)
     // Партия режется по числу и по длине строк (`splitFillBatch`): вывод модели растёт вместе
     // со входом, а предел вывода один на ответ — сорок длинных подсказок упирались в него и
     // теряли ответ целиком. Режем здесь, а не только в панели: тогда любой вызывающий получает
@@ -1282,7 +1293,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     const translations: (readonly [string, string])[] = []
     let emptyAnswer: string | undefined
     for (const batch of splitFillBatch(terms)) {
-      const prompt = fillPrompt(batch, resolved.language)
+      const prompt = fillPrompt(batch, resolved.language, glossary)
       void openStore('user')
         .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
           route, set, language: resolved.language, terms: batch, maxTokens: FILL_MAX_TOKENS,
@@ -1323,6 +1334,12 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         continue
       }
       translations.push(...parsed)
+      // Принятые пары становятся словарём для следующих партий: понятие, названное в
+      // одной партии, называется тем же словом и в следующей.
+      glossary = glossaryPairs([
+        ...known,
+        ...translations.map(([left, right]) => ({ left, right })),
+      ])
     }
     if (translations.length === 0) {
       // В сообщении — срез ответа: без него «модель не дала переводов» не разобрать.
@@ -1332,6 +1349,26 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     }
     return { set, provider: route.provider, model: route.model, translations }
   }
+
+  /**
+   * Языки интерфейса, которые приходят словарём из файла.
+   *
+   * Хост знает только те языки, которые ему объявили плагины, поэтому язык, добавленный
+   * файлом реестра и словарём, без этой строки оставался бы в списке выбора дворца и
+   * отсутствовал в списке языков интерфейса. Сюда попадают только языки без вшитого
+   * набора панели: у `zh`, `en` и `ru` словарь приходит кодом клиента, и второй слой
+   * из файла спорил бы с ним, а не дополнял.
+   */
+  const localePacksDeps: RouteDeps['localePacks'] = () => registry.languages
+    .filter(row => !PANEL_BUILTIN_LANGUAGES.includes(row.code))
+    .map(row => ({
+      code: row.code,
+      label: row.label,
+      entries: Object.fromEntries(loadPanelDictionary({ language: row.code, dbDir: resolved.dbDir }).entries),
+    }))
+    // Язык без единого слова не объявляем: пустой словарь превратил бы переключатель
+    // в пункт, который ничего не меняет, — человек решил бы, что язык не сработал.
+    .filter(pack => Object.keys(pack.entries).length > 0)
 
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
   const buildHistoryDeps = (): HistoryBackfillDeps => ({
@@ -1471,6 +1508,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       },
       dictionary: dictionaryDeps,
       dictionaryFill: dictionaryFillDeps,
+      localePacks: localePacksDeps,
       convertAvailable: true,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
