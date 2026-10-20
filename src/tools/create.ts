@@ -4,7 +4,7 @@
  * @module @kenz1117/dsh-engram/tools/create
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -16,8 +16,9 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
+import { embedImportedRecords, parseImportData, parseMarkdownExport } from '../store/import.ts'
 import { parseEntityMentions } from '../ingest/hook.ts'
-import type { EngramKind, EngramScope, EntityId, EntityMention, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
+import type { EngramKind, EngramScope, EntityId, EntityMention, ExportData, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
 import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
@@ -268,8 +269,8 @@ async function rewriteQueries(deps: ToolDeps, exec: ToolRunContext, query: strin
 }
 
 /**
- * 构造 20 个工具定义（engram_save/search/facts/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
- * stats/export/distill/examine/neighbors/audit_forgotten/tour/ingest_history/profile_edit）。
+ * 构造 21 个工具定义（engram_save/search/facts/assess/timeline/episode_timeline/update/forget/report/review/review_queue/
+ * stats/export/import/distill/examine/neighbors/audit_forgotten/tour/ingest_history/profile_edit）。
  * @param baseDeps - 分库打开器、嵌入器、辅助 LLM、导出目录。
  * @returns 可直接 register 的工具定义数组（execute 已绑定会话 cwd 的项目宫殿路由）。
  */
@@ -1580,6 +1581,106 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
+  const importTool = defineTool({
+    name: 'engram_import',
+    description: message('tool.importDescription'),
+    parameters: {
+      path: { type: 'string', description: message('tool.importPathDescription') },
+      scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.importScopeDescription') },
+      format: { type: 'string', enum: ['json', 'markdown'], description: message('tool.importFormatDescription') },
+      dryRun: { type: 'boolean', description: message('tool.importDryRunDescription') },
+      keepDuplicates: { type: 'boolean', description: message('tool.importKeepDuplicatesDescription') },
+      selectedIds: { type: 'array', items: { type: 'string' }, description: message('tool.importSelectedIdsDescription') },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args) {
+      const input = args as {
+        path?: unknown
+        scope?: unknown
+        format?: unknown
+        dryRun?: unknown
+        keepDuplicates?: unknown
+        selectedIds?: unknown
+      }
+      if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error(message('tool.importPathRequired'))
+      const scope = scopeOf(input.scope, 'user')
+      // 格式：显式 format 优先；缺省按扩展名识别（.md/.markdown → markdown，其余 JSON）。
+      const markdown = input.format === 'markdown' || (input.format === undefined && /\.(?:md|markdown)$/i.test(input.path))
+      // 文件读取错误原样带路径抛出；解析/校验错误带首条问题字段——迁移场景用户要能自己定位坏文件。
+      let text: string
+      try {
+        text = await readFile(input.path, 'utf8')
+      } catch (error) {
+        throw new Error(message('tool.importReadFailed', { path: input.path, error: error instanceof Error ? error.message : String(error) }))
+      }
+      let data: ExportData
+      if (markdown) {
+        const parsedMarkdown = parseMarkdownExport(text, scope)
+        if (typeof parsedMarkdown === 'string') throw new Error(message('tool.importInvalidPayload', { error: parsedMarkdown }))
+        data = parsedMarkdown.data
+      } else {
+        let raw: unknown
+        try {
+          raw = JSON.parse(text)
+        } catch (error) {
+          throw new Error(message('tool.importReadFailed', { path: input.path, error: error instanceof Error ? error.message : String(error) }))
+        }
+        const parsed = parseImportData(raw)
+        if (typeof parsed === 'string') throw new Error(message('tool.importInvalidPayload', { error: parsed }))
+        data = parsed
+      }
+      const store = await deps.openStore(scope)
+      if (input.dryRun === true) {
+        const preview = await store.importPreview(data)
+        const fresh = preview.entries.filter(e => e.classification === 'new').length
+        const dup = preview.entries.filter(e => e.classification === 'duplicate').length
+        return {
+          text: preview.entries.length === 0
+            ? message('tool.importEmpty')
+            : message('tool.importPreviewDone', {
+              total: preview.entries.length,
+              fresh,
+              dup,
+              conflict: preview.entries.length - fresh - dup,
+              edges: preview.edgesTotal,
+              dangling: preview.edgesDangling,
+              entitiesNew: preview.entitiesNew,
+              entitiesMerged: preview.entitiesMerged,
+            }),
+        }
+      }
+      const result = await store.importData(data, {
+        ...(Array.isArray(input.selectedIds)
+          ? { selectedIds: input.selectedIds.filter((v): v is string => typeof v === 'string').map(id => asMemoryId(id)) }
+          : {}),
+        ...(input.keepDuplicates === true ? { keepDuplicates: true } : {}),
+      })
+      // 就地补嵌入：导出格式不携带向量，导入后按批嵌入并回填；嵌入器不可用或单批失败只计数不中断。
+      const embedded = await embedImportedRecords(store, await deps.embedder, result.importedIds)
+      return {
+        text: result.imported === 0
+          ? message('tool.importNothing', {
+            dup: result.skippedDuplicates,
+            conflict: result.conflicts,
+          })
+          : message('tool.importDone', {
+            imported: result.imported,
+            embedded,
+            pending: result.imported - embedded,
+            dup: result.skippedDuplicates,
+            conflict: result.conflicts,
+            edges: result.edgesLinked,
+            dangling: result.edgesDangling,
+            entitiesNew: result.entitiesNew,
+            entitiesMerged: result.entitiesMerged,
+          }),
+      }
+    },
+  })
+
   const distill = defineTool({
     name: 'engram_distill',
     description: message('tool.distillDescription'),
@@ -1940,7 +2041,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     },
   })
 
-  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, distill, reflect, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
+  const tools = [save, search, factsTool, assess, timeline, episodeTimeline, update, forget, report, reviewQueue, review, stats, exportTool, importTool, distill, reflect, examine, neighborsTool, tour, auditForgotten, ingestHistory, profileEdit]
   // 执行前把该会话的 cwd 放进 ALS 上下文：project scope 的分库解析据此归属（并发会话互不串味）。
   return tools.map(tool => ({
     ...tool,

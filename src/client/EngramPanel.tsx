@@ -51,6 +51,7 @@ const ICONS = {
   folder: <><path d="M3 7 L9 7 L11 5 L21 5 L21 17 L3 17 Z" /></>,
   refresh: <><path d="M3 12a9 9 0 0115-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 01-15 6.7L3 16" /><path d="M3 21v-5h5" /></>,
   export: <><path d="M12 15V4" /><path d="M8 8l4-4 4 4" /><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" /></>,
+  import: <><path d="M12 4v11" /><path d="M8 12l4 4 4-4" /><path d="M4 18v1a2 2 0 002 2h12a2 2 0 002-2v-1" /></>,
   clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   brand: <><path d="M12 2 L14.5 9 L22 9.5 L16 14.5 L18 22 L12 17.5 L6 22 L8 14.5 L2 9.5 L9.5 9 Z" /></>,
 } as const
@@ -2877,15 +2878,46 @@ function JevObservationsCard({ t, toast }: { t: T; toast: ToastController }): Re
   )
 }
 
+/** 导入预览条目与汇总（POST /api/engram/import dryRun=true 的响应形状）。 */
+interface ImportEntryView {
+  readonly id: string
+  readonly kind: string
+  readonly status: string
+  readonly content: string
+  readonly classification: 'new' | 'duplicate' | 'conflict'
+  readonly duplicateOf?: string
+}
+interface ImportPreviewView {
+  readonly entries: readonly ImportEntryView[]
+  readonly edgesTotal: number
+  readonly edgesDangling: number
+  readonly entitiesNew: number
+  readonly entitiesMerged: number
+  /** markdown 导出文件带脱敏标记时置位（内容为截断预览，导入得到的是预览文本）。 */
+  readonly redacted?: boolean
+}
+interface ImportResultView {
+  readonly imported: number
+  readonly embedded: number
+  readonly skippedDuplicates: number
+  readonly conflicts: number
+  readonly edgesLinked: number
+  readonly edgesDangling: number
+}
+
 /** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。
- *  链接是浏览器直连的 GET（不走 api()），故这里显式拼接项目宫殿选择器。 */
-function ExportMenu({ t, scope, project }: {
+ *  MD/JSON 是浏览器直连的 GET 下载（attachment 头，不走 api()）；镜像目录曾用 <a href> 直跳，
+ *  但该路由返回裸 JSON，宿主 webview 顶层导航到它会把面板带崩（实机报告）——改为 fetch + toast。
+ *  project 宫殿选择器在直连链接里手工拼接，fetch 路径由 api() 代管。 */
+function ExportMenu({ t, scope, project, toast }: {
   t: T
   scope: 'user' | 'project' | 'shared'
   /** 项目宫殿选择器：仅在 project 作用域拼接（null = 服务端走进程默认库）。 */
   project: string | null
+  toast: ToastController
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
+  const [mirrorBusy, setMirrorBusy] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -2896,11 +2928,19 @@ function ExportMenu({ t, scope, project }: {
     return () => { window.removeEventListener('mousedown', handler) }
   }, [open])
   const projectQuery = scope === 'project' && project !== null ? `&project=${encodeURIComponent(project)}` : ''
-  const options: Array<{ label: string; hint: string; href: string }> = [
-    { label: t('exportMd'), hint: t('exportMdHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=markdown` },
-    { label: t('exportJson'), hint: t('exportJsonHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=json` },
-    { label: t('exportMirror'), hint: t('exportMirrorHint'), href: `/api/engram/mirror?scope=${scope}${projectQuery}` },
-  ]
+  const exportMirror = async (): Promise<void> => {
+    if (mirrorBusy) return
+    setMirrorBusy(true)
+    try {
+      const report = await api<{ rootDir: string; fileCount: number; memoryCount: number }>(`mirror?scope=${scope}${projectQuery}`)
+      toast.push('success', t('mirrorExportDone', { path: report.rootDir, files: report.fileCount, records: report.memoryCount }))
+      setOpen(false)
+    } catch (error) {
+      toast.push('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setMirrorBusy(false)
+    }
+  }
   return (
     <div className={styles.exportWrap} ref={wrapRef}>
       <button type="button" className={styles.button} aria-haspopup="menu" aria-expanded={open}
@@ -2911,13 +2951,23 @@ function ExportMenu({ t, scope, project }: {
       </button>
       {open && (
         <div className={styles.exportMenu} role="menu">
-          {options.map(option => (
-            <a key={option.href} role="menuitem" className={styles.exportItem} href={option.href}
-              onClick={() => { setOpen(false) }}>
-              <span className={styles.exportItemLabel}>{option.label}</span>
-              <span className={styles.exportItemHint}>{option.hint}</span>
-            </a>
-          ))}
+          <a role="menuitem" className={styles.exportItem}
+            href={`/api/engram/export?scope=${scope}${projectQuery}&format=markdown`}
+            onClick={() => { setOpen(false) }}>
+            <span className={styles.exportItemLabel}>{t('exportMd')}</span>
+            <span className={styles.exportItemHint}>{t('exportMdHint')}</span>
+          </a>
+          <a role="menuitem" className={styles.exportItem}
+            href={`/api/engram/export?scope=${scope}${projectQuery}&format=json`}
+            onClick={() => { setOpen(false) }}>
+            <span className={styles.exportItemLabel}>{t('exportJson')}</span>
+            <span className={styles.exportItemHint}>{t('exportJsonHint')}</span>
+          </a>
+          <button type="button" role="menuitem" className={styles.exportItem} disabled={mirrorBusy}
+            onClick={() => { void exportMirror() }}>
+            <span className={styles.exportItemLabel}>{t('exportMirror')}</span>
+            <span className={styles.exportItemHint}>{mirrorBusy ? t('importImporting') : t('exportMirrorHint')}</span>
+          </button>
         </div>
       )}
     </div>
@@ -3596,6 +3646,206 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
   const hostNode = host.current
   return hostNode === null ? screen : createPortal(screen, hostNode)
 }
+
+/** 导入按钮：与导出同款的独立下拉（置于导出前），两项显式格式入口。
+ *  JSON 走 engram_export format=json 的无损回路；Markdown 走服务端回解析（有损，补缺省字段）。
+ *  两段式：选文件 → 预览抽屉逐条勾选 → 确认导入（#33：迁移/合并都要先看清再写入）。 */
+function ImportButton({ t, scope, toast, onImported }: {
+  t: T
+  scope: 'user' | 'project' | 'shared'
+  toast: ToastController
+  /** 导入提交成功后的回调（父组件刷新统计与列表）。 */
+  onImported: () => void
+}): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  const [pendingFormat, setPendingFormat] = useState<'json' | 'markdown'>('json')
+  const [preview, setPreview] = useState<ImportPreviewView | null>(null)
+  // dryRun 响应只带分类，不带原始记录；正式提交要原样回传完整 data，故把解析结果存到 state。
+  const [previewSource, setPreviewSource] = useState<unknown>(null)
+  const [previewFormat, setPreviewFormat] = useState<'json' | 'markdown'>('json')
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [keepDuplicates, setKeepDuplicates] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: MouseEvent): void => {
+      if (wrapRef.current === null || !wrapRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    window.addEventListener('mousedown', handler)
+    return () => { window.removeEventListener('mousedown', handler) }
+  }, [open])
+  const classLabels: Record<ImportEntryView['classification'], string> = {
+    new: t('importClass_new'),
+    duplicate: t('importClass_duplicate'),
+    conflict: t('importClass_conflict'),
+  }
+  const pick = (format: 'json' | 'markdown'): void => {
+    setOpen(false)
+    setPendingFormat(format)
+    fileRef.current?.click()
+  }
+  const handleFile = async (file: File): Promise<void> => {
+    // 格式以扩展名为准（菜单项的 accept 只是过滤器）：.md/.markdown 走服务端解析，其余按 JSON。
+    const markdown = /\.(?:md|markdown)$/i.test(file.name)
+    let data: unknown
+    if (markdown) {
+      data = await file.text()
+    } else {
+      try {
+        data = JSON.parse(await file.text())
+      } catch (error) {
+        toast.push('error', t('importReadFailed', { error: error instanceof Error ? error.message : String(error) }))
+        return
+      }
+    }
+    const format = markdown ? 'markdown' : 'json'
+    try {
+      const response = await api<{ preview: ImportPreviewView }>('import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data, format, scope, dryRun: true }),
+      })
+      setPreview(response.preview)
+      setPreviewSource(data)
+      setPreviewFormat(format)
+      setSelected(new Set(response.preview.entries.filter(entry => entry.classification === 'new').map(entry => entry.id)))
+      setKeepDuplicates(false)
+    } catch (error) {
+      toast.push('error', t('importInvalidPayload', { error: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+  const commit = async (): Promise<void> => {
+    if (preview === null || busy) return
+    setBusy(true)
+    try {
+      const result = await api<ImportResultView>('import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: previewSource, format: previewFormat, scope, selectedIds: [...selected], keepDuplicates }),
+      })
+      setPreview(null)
+      toast.push(result.imported === 0 ? 'info' : 'success', t('importDone', {
+        imported: result.imported,
+        embedded: result.embedded,
+        edges: result.edgesLinked,
+        dangling: result.edgesDangling,
+      }))
+      if (result.imported > 0) onImported()
+    } catch (error) {
+      toast.push('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className={styles.exportWrap} ref={wrapRef}>
+      <button type="button" className={styles.button} aria-haspopup="menu" aria-expanded={open}
+        title={t('import')} aria-label={t('import')}
+        onClick={() => { setOpen(value => !value) }}>
+        <Icon name="import" className={styles.brandIcon} />
+        <span className={styles.exportCaret} aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div className={styles.exportMenu} role="menu">
+          <button type="button" role="menuitem" className={styles.exportItem} onClick={() => { pick('json') }}>
+            <span className={styles.exportItemLabel}>{t('importJson')}</span>
+            <span className={styles.exportItemHint}>{t('importJsonHint')}</span>
+          </button>
+          <button type="button" role="menuitem" className={styles.exportItem} onClick={() => { pick('markdown') }}>
+            <span className={styles.exportItemLabel}>{t('importMd')}</span>
+            <span className={styles.exportItemHint}>{t('importMdHint')}</span>
+          </button>
+        </div>
+      )}
+      <input ref={fileRef} type="file"
+        accept={pendingFormat === 'markdown' ? '.md,.markdown,text/markdown' : '.json,application/json'}
+        style={{ display: 'none' }}
+        aria-label={t('importFilePick')}
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (file !== undefined) void handleFile(file)
+        }} />
+      {preview !== null && (
+        <div className={styles.importLayer} role="dialog" aria-label={t('importTitle')}>
+          <div className={styles.importScrim} onClick={() => { if (!busy) setPreview(null) }} />
+          <div className={styles.drawer}>
+            <header className={styles.drawerHead}>
+              <div className={styles.drawerTitle}>
+                <h3>{t('importTitle')}</h3>
+              </div>
+              <button type="button" className={styles.drawerClose} aria-label={t('drawerClose')}
+                disabled={busy}
+                onClick={() => { setPreview(null) }}>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </header>
+            <div className={styles.drawerBody}>
+              <p className={styles.importSummary}>{t('importSummary', {
+                total: preview.entries.length,
+                fresh: preview.entries.filter(entry => entry.classification === 'new').length,
+                dup: preview.entries.filter(entry => entry.classification === 'duplicate').length,
+                conflict: preview.entries.filter(entry => entry.classification === 'conflict').length,
+                edges: preview.edgesTotal,
+                dangling: preview.edgesDangling,
+                entitiesNew: preview.entitiesNew,
+                entitiesMerged: preview.entitiesMerged,
+              })}</p>
+              {preview.redacted === true && (
+                <p className={styles.importRedactedNotice}>{t('importRedactedNotice')}</p>
+              )}
+              <ul className={styles.importList}>
+                {preview.entries.map(entry => {
+                  const eligible = entry.classification === 'new' || (keepDuplicates && entry.classification === 'duplicate' && entry.id !== entry.duplicateOf)
+                  return (
+                    <li key={entry.id} className={styles.importRow}>
+                      <label className={`${styles.importRowMain} ${eligible ? '' : styles.importRowDisabled}`}>
+                        <input type="checkbox" disabled={!eligible || busy}
+                          checked={eligible && selected.has(entry.id)}
+                          onChange={(event) => {
+                            setSelected(previous => {
+                              const next = new Set(previous)
+                              if (event.target.checked) next.add(entry.id)
+                              else next.delete(entry.id)
+                              return next
+                            })
+                          }} />
+                        <span className={`${styles.importBadge} ${styles[`importBadge_${entry.classification}`]}`}>
+                          {classLabels[entry.classification]}
+                        </span>
+                        <span className={styles.importContent}>{entry.content}</span>
+                      </label>
+                    </li>
+                  )
+                })}
+              </ul>
+              <label className={styles.importKeepRow}>
+                <input type="checkbox" checked={keepDuplicates} disabled={busy}
+                  onChange={(event) => { setKeepDuplicates(event.target.checked) }} />
+                {t('importKeepDuplicates')}
+              </label>
+            </div>
+            <footer className={styles.importFooter}>
+              <button type="button" className={styles.button} disabled={busy}
+                onClick={() => { setPreview(null) }}>
+                {t('cancel')}
+              </button>
+              <button type="button" className={`${styles.button} ${styles.importPrimary}`} disabled={busy || selected.size === 0}
+                onClick={() => { void commit() }}>
+                {busy ? t('importImporting') : t('importConfirm', { n: selected.size })}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+/** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
   readonly workspaces?: WorkspacesLike | undefined
@@ -3946,7 +4196,8 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             <option value="en">English</option>
             <option value="ru">Русский</option>
           </SelectField>
-          <ExportMenu t={t} scope={scope} project={projectSelector} />
+          <ImportButton t={t} scope={scope} toast={toast} onImported={() => { reload(); refreshDue() }} />
+          <ExportMenu t={t} scope={scope} project={projectSelector} toast={toast} />
         </div>
       </div>
 

@@ -8,7 +8,7 @@ import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, EpisodeTimelineQuery, EpisodeTimelineResult, ExportData,
   FactListFilter, FactListResult, FactRecord, FactWriteInput,
-  ForgettingTombstone, ForgottenAuditRow, ListFilter, ListResult,
+  ForgettingTombstone, ForgottenAuditRow, ImportOptions, ImportPreview, ImportResult, ListFilter, ListResult,
   MemoryId, MemoryOutcome, MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord,
   ObservationWriteInput, OperationLogRow, ProfileBlock, ProfileBlockVersion,
   ReviewGrade, ReviewView, SearchQuery, SearchResult, Slot, StoreStats, TimelineQuery, UpdateInput, WriteInput,
@@ -127,6 +127,24 @@ export interface EngramStore {
   stats(): Promise<StoreStats>
   /** 全库导出（任意状态条目 + 全部边），数据可携带。 */
   exportAll(): Promise<ExportData>
+  /**
+   * 导入预览：对导出数据逐条分类（不写库）。分类规则：id 已存在且内容全等 → duplicate；
+   * id 已存在但内容不同 → conflict；id 空闲但内容与库内某条全等 → duplicate；
+   * 其余 → new。边按「端点 ∈ 库内 ∪ 导入集」计悬挂数；实体按 id 计新建/合并数。
+   */
+  importPreview(data: ExportData): Promise<ImportPreview>
+  /**
+   * 导入：写库版 importPreview 的分类规则。new 直接导入（保留导出侧 id 与全部字段，向量置空）；
+   * duplicate 默认跳过（keepDuplicates=true 且 id 空闲时放行）；conflict 一律跳过并计数。
+   * 边只连双端可落地的（幂等 upsert），悬挂边丢弃计数；实体按 id 合并（别名并集）。
+   * 全程单事务，op_log 记一条 'import' BATCH。
+   */
+  importData(data: ExportData, options?: ImportOptions): Promise<ImportResult>
+  /**
+   * 批量回填既有条目的向量（导入后补嵌入、存量修复共用原语）。
+   * 只更新已存在行；返回实际更新条数。
+   */
+  attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number>
   /** 衰减：满足条件的 active 条目转 archived，返回归档数量。 */
   decay(options: DecayOptions): Promise<number>
   /** 矛盾候选：与给定向量余弦 ≥ 0.88 的同库 active 条目（调用方裁决后用 linkEdge 建边）。 */

@@ -11,8 +11,10 @@ import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ListFilter, MemoryRecord, ObservationStatus, ReviewGrade } from './types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ExportData, ListFilter, MemoryRecord, ObservationStatus, ReviewGrade } from './types.ts'
+import { asMemoryId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
+import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
@@ -789,14 +791,64 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             res.end(body)
             return
           }
+          if (req.method === 'POST' && route === 'import') {
+            // 面板导入（#33）：body = { data, scope?, format?: 'json'|'markdown', dryRun?, keepDuplicates?, selectedIds? }。
+            // format=markdown 时 data 是导出 MD 原文（有损恢复，见 parseMarkdownExport）；dryRun=true 只分类不写库。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const bodyObj = typeof body === 'object' && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {}
+            const scope = scopeOf(typeof bodyObj.scope === 'string' ? bodyObj.scope : null, 'user')
+            let data: ExportData
+            let redacted = false
+            if (bodyObj.format === 'markdown') {
+              if (typeof bodyObj.data !== 'string') {
+                json(res, 400, { error: messageIn(deps.language, 'misc.importInvalidPayload', { error: 'format=markdown 需要 data 为导出 Markdown 文本' }) })
+                return
+              }
+              const parsedMarkdown = parseMarkdownExport(bodyObj.data, scope)
+              if (typeof parsedMarkdown === 'string') {
+                json(res, 400, { error: messageIn(deps.language, 'misc.importInvalidPayload', { error: parsedMarkdown }) })
+                return
+              }
+              data = parsedMarkdown.data
+              redacted = parsedMarkdown.redacted
+            } else {
+              const parsed = parseImportData(bodyObj.data)
+              if (typeof parsed === 'string') {
+                json(res, 400, { error: messageIn(deps.language, 'misc.importInvalidPayload', { error: parsed }) })
+                return
+              }
+              data = parsed
+            }
+            const store = await storeFor(scope)
+            if (bodyObj.dryRun === true) {
+              json(res, 200, { preview: await store.importPreview(data), ...(redacted ? { redacted: true } : {}) })
+              return
+            }
+            const result = await store.importData(data, {
+              ...(Array.isArray(bodyObj.selectedIds)
+                ? { selectedIds: bodyObj.selectedIds.filter((v): v is string => typeof v === 'string').map(id => asMemoryId(id)) }
+                : {}),
+              ...(bodyObj.keepDuplicates === true ? { keepDuplicates: true } : {}),
+            })
+            const embedder = deps.embedder === undefined ? undefined : await deps.embedder
+            const embedded = await embedImportedRecords(store, embedder, result.importedIds)
+            json(res, 200, { ...result, embedded })
+            return
+          }
           if (req.method === 'GET' && route === 'mirror') {
-            // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮直接 GET）。
+            // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮 fetch 调用）。
+            // attachment 头兜底：即使被当 URL 直开也走下载而不是 webview 顶层导航（实机报告导航会把面板带崩）。
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const data = await (await storeFor(scope)).exportAll()
             const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
             const mirrorRoot = join(deps.mirrorDir, scope, stamp)
             const report = await writeMirror(mirrorRoot, data, deps.language)
-            json(res, 200, { ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length })
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-disposition': `attachment; filename="mirror-${scope}-${stamp}.json"`,
+            })
+            res.end(JSON.stringify({ ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length }))
             return
           }
           if (req.method === 'GET' && route === 'health') {
