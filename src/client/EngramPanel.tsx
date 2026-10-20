@@ -2902,14 +2902,18 @@ interface ImportResultView {
 }
 
 /** 导出下拉：把三种格式（Markdown / JSON / 镜像目录）合并成一个按钮 + 弹出列表。
- *  链接是浏览器直连的 GET（不走 api()），故这里显式拼接项目宫殿选择器。 */
-function ExportMenu({ t, scope, project }: {
+ *  MD/JSON 是浏览器直连的 GET 下载（attachment 头，不走 api()）；镜像目录曾用 <a href> 直跳，
+ *  但该路由返回裸 JSON，宿主 webview 顶层导航到它会把面板带崩（实机报告）——改为 fetch + toast。
+ *  project 宫殿选择器在直连链接里手工拼接，fetch 路径由 api() 代管。 */
+function ExportMenu({ t, scope, project, toast }: {
   t: T
   scope: 'user' | 'project' | 'shared'
   /** 项目宫殿选择器：仅在 project 作用域拼接（null = 服务端走进程默认库）。 */
   project: string | null
+  toast: ToastController
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
+  const [mirrorBusy, setMirrorBusy] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (!open) return
@@ -2920,11 +2924,19 @@ function ExportMenu({ t, scope, project }: {
     return () => { window.removeEventListener('mousedown', handler) }
   }, [open])
   const projectQuery = scope === 'project' && project !== null ? `&project=${encodeURIComponent(project)}` : ''
-  const options: Array<{ label: string; hint: string; href: string }> = [
-    { label: t('exportMd'), hint: t('exportMdHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=markdown` },
-    { label: t('exportJson'), hint: t('exportJsonHint'), href: `/api/engram/export?scope=${scope}${projectQuery}&format=json` },
-    { label: t('exportMirror'), hint: t('exportMirrorHint'), href: `/api/engram/mirror?scope=${scope}${projectQuery}` },
-  ]
+  const exportMirror = async (): Promise<void> => {
+    if (mirrorBusy) return
+    setMirrorBusy(true)
+    try {
+      const report = await api<{ rootDir: string; fileCount: number; memoryCount: number }>(`mirror?scope=${scope}${projectQuery}`)
+      toast.push('success', t('mirrorExportDone', { path: report.rootDir, files: report.fileCount, records: report.memoryCount }))
+      setOpen(false)
+    } catch (error) {
+      toast.push('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setMirrorBusy(false)
+    }
+  }
   return (
     <div className={styles.exportWrap} ref={wrapRef}>
       <button type="button" className={styles.button} aria-haspopup="menu" aria-expanded={open}
@@ -2935,22 +2947,32 @@ function ExportMenu({ t, scope, project }: {
       </button>
       {open && (
         <div className={styles.exportMenu} role="menu">
-          {options.map(option => (
-            <a key={option.href} role="menuitem" className={styles.exportItem} href={option.href}
-              onClick={() => { setOpen(false) }}>
-              <span className={styles.exportItemLabel}>{option.label}</span>
-              <span className={styles.exportItemHint}>{option.hint}</span>
-            </a>
-          ))}
+          <a role="menuitem" className={styles.exportItem}
+            href={`/api/engram/export?scope=${scope}${projectQuery}&format=markdown`}
+            onClick={() => { setOpen(false) }}>
+            <span className={styles.exportItemLabel}>{t('exportMd')}</span>
+            <span className={styles.exportItemHint}>{t('exportMdHint')}</span>
+          </a>
+          <a role="menuitem" className={styles.exportItem}
+            href={`/api/engram/export?scope=${scope}${projectQuery}&format=json`}
+            onClick={() => { setOpen(false) }}>
+            <span className={styles.exportItemLabel}>{t('exportJson')}</span>
+            <span className={styles.exportItemHint}>{t('exportJsonHint')}</span>
+          </a>
+          <button type="button" role="menuitem" className={styles.exportItem} disabled={mirrorBusy}
+            onClick={() => { void exportMirror() }}>
+            <span className={styles.exportItemLabel}>{t('exportMirror')}</span>
+            <span className={styles.exportItemHint}>{mirrorBusy ? t('importImporting') : t('exportMirrorHint')}</span>
+          </button>
         </div>
       )}
     </div>
   )
 }
 
-/** 导入按钮：独立于导出下拉的前置入口（样式对齐导出图标按钮）。
- *  支持 JSON（engram_export format=json 的产物）与导出 Markdown（服务端解析回 records+edges）。
- *  走 预览勾选 → 确认导入 两段式（#33：迁移/合并都要先看清再写入）。 */
+/** 导入按钮：与导出同款的独立下拉（置于导出前），两项显式格式入口。
+ *  JSON 走 engram_export format=json 的无损回路；Markdown 走服务端回解析（有损，补缺省字段）。
+ *  两段式：选文件 → 预览抽屉逐条勾选 → 确认导入（#33：迁移/合并都要先看清再写入）。 */
 function ImportButton({ t, scope, toast, onImported }: {
   t: T
   scope: 'user' | 'project' | 'shared'
@@ -2958,6 +2980,8 @@ function ImportButton({ t, scope, toast, onImported }: {
   /** 导入提交成功后的回调（父组件刷新统计与列表）。 */
   onImported: () => void
 }): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  const [pendingFormat, setPendingFormat] = useState<'json' | 'markdown'>('json')
   const [preview, setPreview] = useState<ImportPreviewView | null>(null)
   // dryRun 响应只带分类，不带原始记录；正式提交要原样回传完整 data，故把解析结果存到 state。
   const [previewSource, setPreviewSource] = useState<unknown>(null)
@@ -2965,14 +2989,28 @@ function ImportButton({ t, scope, toast, onImported }: {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [keepDuplicates, setKeepDuplicates] = useState(false)
   const [busy, setBusy] = useState(false)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: MouseEvent): void => {
+      if (wrapRef.current === null || !wrapRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    window.addEventListener('mousedown', handler)
+    return () => { window.removeEventListener('mousedown', handler) }
+  }, [open])
   const classLabels: Record<ImportEntryView['classification'], string> = {
     new: t('importClass_new'),
     duplicate: t('importClass_duplicate'),
     conflict: t('importClass_conflict'),
   }
+  const pick = (format: 'json' | 'markdown'): void => {
+    setOpen(false)
+    setPendingFormat(format)
+    fileRef.current?.click()
+  }
   const handleFile = async (file: File): Promise<void> => {
-    // 按扩展名分流：.md/.markdown 走服务端 markdown 解析，其余按 JSON（客户端先验语法）。
+    // 格式以扩展名为准（菜单项的 accept 只是过滤器）：.md/.markdown 走服务端解析，其余按 JSON。
     const markdown = /\.(?:md|markdown)$/i.test(file.name)
     let data: unknown
     if (markdown) {
@@ -3025,12 +3063,28 @@ function ImportButton({ t, scope, toast, onImported }: {
     }
   }
   return (
-    <>
-      <button type="button" className={styles.button} title={t('import')} aria-label={t('import')}
-        onClick={() => { fileRef.current?.click() }}>
+    <div className={styles.exportWrap} ref={wrapRef}>
+      <button type="button" className={styles.button} aria-haspopup="menu" aria-expanded={open}
+        title={t('import')} aria-label={t('import')}
+        onClick={() => { setOpen(value => !value) }}>
         <Icon name="import" className={styles.brandIcon} />
+        <span className={styles.exportCaret} aria-hidden="true">▾</span>
       </button>
-      <input ref={fileRef} type="file" accept=".json,.md,.markdown,application/json,text/markdown" style={{ display: 'none' }}
+      {open && (
+        <div className={styles.exportMenu} role="menu">
+          <button type="button" role="menuitem" className={styles.exportItem} onClick={() => { pick('json') }}>
+            <span className={styles.exportItemLabel}>{t('importJson')}</span>
+            <span className={styles.exportItemHint}>{t('importJsonHint')}</span>
+          </button>
+          <button type="button" role="menuitem" className={styles.exportItem} onClick={() => { pick('markdown') }}>
+            <span className={styles.exportItemLabel}>{t('importMd')}</span>
+            <span className={styles.exportItemHint}>{t('importMdHint')}</span>
+          </button>
+        </div>
+      )}
+      <input ref={fileRef} type="file"
+        accept={pendingFormat === 'markdown' ? '.md,.markdown,text/markdown' : '.json,application/json'}
+        style={{ display: 'none' }}
         aria-label={t('importFilePick')}
         onChange={(event) => {
           const file = event.target.files?.[0]
@@ -3111,10 +3165,9 @@ function ImportButton({ t, scope, toast, onImported }: {
           </div>
         </div>
       )}
-    </>
+    </div>
   )
 }
-
 /** EngramSection 的 props：渲染器给的 t（locale 席位）+ 可选取用的宿主服务。 */
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
@@ -3454,7 +3507,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
             <option value="ru">Русский</option>
           </SelectField>
           <ImportButton t={t} scope={scope} toast={toast} onImported={() => { reload(); refreshDue() }} />
-          <ExportMenu t={t} scope={scope} project={projectSelector} />
+          <ExportMenu t={t} scope={scope} project={projectSelector} toast={toast} />
         </div>
       </div>
 

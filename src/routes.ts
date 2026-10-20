@@ -656,13 +656,18 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             return
           }
           if (req.method === 'GET' && route === 'mirror') {
-            // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮直接 GET）。
+            // 镜像导出：与 engram_export format=markdown-mirror 同语义，HTTP 路由版（面板「导出镜像」按钮 fetch 调用）。
+            // attachment 头兜底：即使被当 URL 直开也走下载而不是 webview 顶层导航（实机报告导航会把面板带崩）。
             const scope = scopeOf(url.searchParams.get('scope'), 'user')
             const data = await (await storeFor(scope)).exportAll()
             const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
             const mirrorRoot = join(deps.mirrorDir, scope, stamp)
             const report = await writeMirror(mirrorRoot, data, deps.language)
-            json(res, 200, { ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length })
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-disposition': `attachment; filename="mirror-${scope}-${stamp}.json"`,
+            })
+            res.end(JSON.stringify({ ...report, scope, memoryCount: data.records.length, edgeCount: data.edges.length }))
             return
           }
           if (req.method === 'GET' && route === 'health') {
