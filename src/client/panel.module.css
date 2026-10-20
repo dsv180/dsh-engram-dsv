@@ -776,6 +776,15 @@ select.input { padding-right: 28px; appearance: none; }
 .palaceChoiceName { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); }
 .palaceChoiceNote { margin-left: auto; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
 .palaceAskHint { margin: 0 0 var(--space-2); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.45; }
+/* Окно первого старта читают, чтобы понять формулировки, а не пробегают глазами:
+   пояснения и подписи крупнее (14px вместо 11–12) и полным контрастом. Мелкий серый
+   текст на светлой подложке в этом окне не читался. */
+.palaceAskBody .regNote,
+.palaceAskBody .palaceAskHint,
+.palaceAskBody .palaceChoiceName,
+.palaceAskBody .regGroupTitle { font-size: 14px; color: var(--dsw-alias-label-primary); line-height: 1.55; }
+.palaceAskBody .palaceChoiceNote { font-size: var(--fs-body); color: var(--dsw-alias-label-secondary); }
+.palaceAskBody .palaceChoice { padding: 10px var(--space-3); }
 /* Сообщение «дворец настроился сам»: окно не нужно, но человек должен видеть, на что. */
 .palaceNote { position: fixed; left: 24px; bottom: 24px; z-index: 55; max-width: min(420px, calc(100vw - 48px)); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); line-height: 1.5; box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .55); }
 

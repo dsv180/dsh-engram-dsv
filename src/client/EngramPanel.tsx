@@ -2426,6 +2426,14 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
     return () => { cancelled = true }
   }, [])
   if (palace === null || closed) return null
+  /**
+   * Закрыть окно.
+   *
+   * В проверке окно держит панель (`panelTest`), поэтому закрытие сообщается наружу.
+   * Без этого панель считала проверку открытой, а окно уже закрылось, — и повторное
+   * нажатие «Тест панели» ничего не делало.
+   */
+  const close = (): void => { setClosed(true); onClose?.() }
   // Опора есть: дворец настроился сам — говорим, на что, и ничего не спрашиваем.
   if (palace.state === 'auto') {
     const note = (
@@ -2460,8 +2468,7 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
     // Проверка ничего не пишет: показываем, что было бы выбрано, и закрываемся.
     if (dryRun === true) {
       toast?.push('success', t('panelTestDone', { language: language.toUpperCase() }))
-      setClosed(true)
-      onClose?.()
+      close()
       return
     }
     setPending(true)
@@ -2481,20 +2488,20 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   const choices: readonly PalaceAskChoice[] = [...languages.map(row => row.code), 'other']
   const screen = (
     <div className={styles.importLayer} role="dialog" aria-modal="true" aria-label={title}>
-      <div className={styles.importScrim} onClick={() => { if (!pending) setClosed(true) }} />
+      <div className={styles.importScrim} onClick={() => { if (!pending) close() }} />
       <div className={styles.drawer}>
         <header className={styles.drawerHead}>
           <div className={styles.drawerTitle}>
             <h3>{title}</h3>
           </div>
           <button type="button" className={styles.drawerClose} aria-label={t('drawerClose')}
-            disabled={pending} onClick={() => { setClosed(true) }}>
+            disabled={pending} onClick={close}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
             </svg>
           </button>
         </header>
-        <div className={styles.drawerBody}>
+        <div className={`${styles.drawerBody} ${styles.palaceAskBody}`}>
           <p className={styles.regNote}>{body}</p>
           <div className={styles.palaceChoiceList} role="radiogroup" aria-label={title}>
             {choices.map(value => (
@@ -2539,7 +2546,7 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
           {failed === null ? null : <p className={styles.regNote}>{t('loadFailed', { msg: failed })}</p>}
           <div className={styles.modalFoot}>
             <button type="button" className={styles.button} disabled={pending}
-              onClick={() => { setClosed(true) }}>{t('palaceAskLater')}</button>
+              onClick={close}>{t('palaceAskLater')}</button>
             <button type="button" className={`${styles.button} ${styles.primary}`}
               disabled={pending || choice === null || saved !== null} onClick={submit}>
               {pending ? t('palaceAskSaving') : t('palaceAskContinue')}
@@ -3561,7 +3568,8 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
         <h4 className={styles.sectionTitle}>{tt('registryTitle')}</h4>
         <span className={styles.sectionHint}>{tt('registryHint')}</span>
         {onTestPanel === undefined ? null : (
-          <button type="button" className={styles.button} onClick={onTestPanel}>{tt('panelTestOpen')}</button>
+          <button type="button" className={`${styles.button} ${styles.sectionAction}`}
+            onClick={onTestPanel}>{tt('panelTestOpen')}</button>
         )}
       </div>
 
