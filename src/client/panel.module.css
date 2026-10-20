@@ -639,6 +639,9 @@ select.input { padding-right: 28px; appearance: none; }
 .toastSuccess { border-left: 3px solid color-mix(in srgb, var(--dsw-alias-state-success-primary, #2da44e) 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2da44e) 6%, var(--dsw-alias-bg-layer-1)); }
 .toastError { border-left: 3px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, var(--dsw-alias-bg-layer-1)); }
 .toastWarning { border-left: 3px solid color-mix(in srgb, #d4a017 80%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, #d4a017 6%, var(--dsw-alias-bg-layer-1)); }
+/* «Сброс»: пастельно-розовый. Красный был бы неверен — ничего не сломалось,
+   просто время вышло. Розовый читается как событие, а не как ошибка. */
+.toastReset { border-left: 3px solid color-mix(in srgb, #e59ab8 85%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, #f3c6d9 12%, var(--dsw-alias-bg-layer-1)); }
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(8px) scale(0.98); }
   to   { opacity: 1; transform: none; }

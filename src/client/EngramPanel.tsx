@@ -2341,18 +2341,54 @@ type PalaceAskChoice = (typeof PALACE_LANGUAGES)[number] | 'other'
  * идёт по инструкции для агента (В.08). Предустановка — локаль Windows, а если её
  * среди наших трёх нет, то «другой язык», а не английский под видом «вашего».
  */
-function PalaceLanguageAsk({ t, overlayHost }: {
+function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   t: T
   readonly overlayHost: { readonly current: HTMLDivElement | null }
+  /** Проверка окна без записи: язык дворца не меняется, конфигурация не трогается. */
+  readonly dryRun?: boolean
+  /** Куда сообщать о сбросе (нужен только в проверке). */
+  readonly toast?: ToastController
+  /** Закрыть проверку снаружи (окно проверки живёт, пока его держит панель). */
+  readonly onClose?: () => void
 }): React.ReactElement | null {
   const [palace, setPalace] = useState<RegistrySnapshot['palace']>(null)
+  /** Предохранитель: пока снят — идёт отсчёт окна. */
+  const [guard, setGuard] = useState(true)
+  const [left, setLeft] = useState(GUARD_SECONDS)
   const [suggested, setSuggested] = useState<PalaceAskChoice | null>(null)
   const [choice, setChoice] = useState<PalaceAskChoice | null>(null)
   const [pending, setPending] = useState(false)
   const [saved, setSaved] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [closed, setClosed] = useState(false)
+  // Проверка: окно открывается независимо от состояния дворца и ничего не читает
+  // из конфигурации. Локаль берём ту же, что и в жизни, — иначе проверка показывала
+  // бы не тот язык, который человек увидит на первом старте.
   useEffect(() => {
+    if (dryRun !== true) return
+    const machine = ((): string => {
+      try { return (Intl.DateTimeFormat().resolvedOptions().locale.split('-')[0] ?? '').toLowerCase() } catch { return '' }
+    })()
+    setPalace({ setting: null, source: 'test', conflict: false, machine, dialogue: null, bases: null, state: 'ask' })
+    const supported = PALACE_LANGUAGES.find(language => language === machine)
+    setSuggested(supported ?? 'other')
+    setChoice(supported ?? 'other')
+  }, [dryRun])
+  // Отсчёт окна — свойство формы, а не фоновая задача: сняли предохранитель — пошло,
+  // поставили обратно — обнулилось. На нуле предохранитель встаёт сам.
+  useEffect(() => {
+    if (guard) return
+    if (left <= 0) {
+      setGuard(true)
+      setLeft(GUARD_SECONDS)
+      toast?.push('reset', t('guardReset'))
+      return
+    }
+    const id = setTimeout(() => { setLeft(left - 1) }, 1000)
+    return () => { clearTimeout(id) }
+  }, [guard, left, toast, t])
+  useEffect(() => {
+    if (dryRun === true) return
     let cancelled = false
     api<RegistrySnapshot>('registry')
       // palace !== null значит «определять было что, а решения нет»: настройка всё ещё auto.
@@ -2393,6 +2429,13 @@ function PalaceLanguageAsk({ t, overlayHost }: {
     // «Другой язык» ставит дворцу английский: это единственный честный выбор, пока
     // языка нет среди наших трёх, а инструкция для агента объясняет остальное (В.08).
     const language = choice === 'other' ? 'en' : choice
+    // Проверка ничего не пишет: показываем, что было бы выбрано, и закрываемся.
+    if (dryRun === true) {
+      toast?.push('success', t('panelTestDone', { language: language.toUpperCase() }))
+      setClosed(true)
+      onClose?.()
+      return
+    }
     setPending(true)
     api<{ ok: boolean, language: string, error?: string }>('palace-language', {
       method: 'POST',
@@ -2439,6 +2482,21 @@ function PalaceLanguageAsk({ t, overlayHost }: {
             ))}
           </div>
           {choice === 'other' ? <p className={styles.palaceAskHint}>{t('palaceAskFallback')}</p> : null}
+          {dryRun === true ? (
+            <div className={styles.regGroup}>
+              <span className={styles.regGroupTitle}>{t('panelTestTitle')}</span>
+              <label className={styles.regNote}>
+                <input type="checkbox" checked={guard}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                    setGuard(next)
+                    setLeft(GUARD_SECONDS)
+                  }} />
+                {' '}
+                {guard ? t('guardArmed') : t('guardDisarmed', { seconds: left })}
+              </label>
+            </div>
+          ) : null}
           {saved === null ? null : <p className={styles.regNote}>{t('palaceAskSaved', { language: saved })}</p>}
           {failed === null ? null : <p className={styles.regNote}>{t('loadFailed', { msg: failed })}</p>}
           <div className={styles.modalFoot}>
@@ -3255,6 +3313,15 @@ interface RegistrySnapshot {
  */
 const PALACE_LANGUAGES = ['zh', 'en', 'ru'] as const
 
+/**
+ * Окно предохранителя в проверке, секунды.
+ *
+ * В работе длина будет настройкой (`palaceChangeWindowSec`), а не константой;
+ * здесь пока прототип — проверяем сам механизм: сняли предохранитель, пошёл
+ * отсчёт, на нуле он встал обратно.
+ */
+const GUARD_SECONDS = 30
+
 /** 文件全路径只留文件名：卡片里要的是「какой файл», а не «где лежит пакет». */
 function baseName(path: string): string {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
@@ -3292,10 +3359,12 @@ const BASE_STATE_KEY: Readonly<Record<string, EngramKey>> = {
  * Тексты берутся из вшитых словарей панели (locales/*.ts): в них уже есть все
  * ключи обслуживания, и они переключаются вместе с языком панели.
  */
-function RegistryCard({ t, overlayHost }: {
+function RegistryCard({ t, overlayHost, onTestPanel }: {
   readonly t: T
   /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
   readonly overlayHost: { readonly current: HTMLDivElement | null }
+  /** Открыть проверку окна первого запуска — без записи и без смены языка дворца. */
+  readonly onTestPanel?: () => void
 }): React.ReactElement {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -3426,6 +3495,9 @@ function RegistryCard({ t, overlayHost }: {
       <div className={styles.sectionHead}>
         <h4 className={styles.sectionTitle}>{tt('registryTitle')}</h4>
         <span className={styles.sectionHint}>{tt('registryHint')}</span>
+        {onTestPanel === undefined ? null : (
+          <button type="button" className={styles.button} onClick={onTestPanel}>{tt('panelTestOpen')}</button>
+        )}
       </div>
 
       <dl className={styles.regKV}>
@@ -4163,6 +4235,8 @@ export type EngramSectionProps = PropsLocale<typeof NS> & {
 /** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成；面板级语言覆盖在组件内 shadow 之）。 */
 export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
+  /** Открыта ли проверка окна первого запуска: она ничего не записывает. */
+  const [panelTest, setPanelTest] = useState(false)
   /** Куда порталом рисуется полноэкранный оверлей панели (правка словаря). */
   const overlayHost = useRef<HTMLDivElement | null>(null)
   /** Язык панели: по умолчанию следует за хостом (lang = hostLang, реактивно к hostT).
@@ -4410,7 +4484,10 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       {/* Первый старт: окно выбора языка дворца. Живёт здесь, а не на вкладке «Сегодня»:
           вопрос о языке — не содержимое вкладки, а то, что человек должен увидеть,
           на какой бы вкладке ни открыл панель. */}
-      <PalaceLanguageAsk t={t} overlayHost={overlayHost} />
+      {panelTest
+        ? <PalaceLanguageAsk t={t} overlayHost={overlayHost} dryRun toast={toast}
+            onClose={() => { setPanelTest(false) }} />
+        : <PalaceLanguageAsk t={t} overlayHost={overlayHost} />}
       {versionMismatch !== null && (
         <div className={styles.versionBanner} role="status">
           {t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch })}
@@ -4862,7 +4939,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
           <section className={styles.section}>
             <div className={styles.panelCard}>
-              <RegistryCard t={t} overlayHost={overlayHost} />
+              <RegistryCard t={t} overlayHost={overlayHost} onTestPanel={() => { setPanelTest(true) }} />
             </div>
           </section>
           <section className={styles.section}>
