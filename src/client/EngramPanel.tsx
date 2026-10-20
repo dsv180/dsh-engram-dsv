@@ -3608,10 +3608,15 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   const toast = useToast()
   /** Куда порталом рисуется полноэкранный оверлей панели (правка словаря). */
   const overlayHost = useRef<HTMLDivElement | null>(null)
-  /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN」段控强制覆盖。 */
-  /** Язык панели по умолчанию — тот, чей словарь совпал с выводом хоста (ru — внешний язык). */
+  /** Язык панели: по умолчанию следует за хостом (lang = hostLang, реактивно к hostT).
+   *  Селектор «中 | EN | RU» — ручной override: персистится «library.langMode» = manual
+   *  и «library.lang» = выбранный. Вернуться к авто (следовать за хостом) — только
+   *  сбросить «library.langMode» (либо добавить пункт «авто» в селектор). */
   const hostLang: PanelLang = hostT('scopeUser') === zh.scopeUser ? 'zh' : hostT('scopeUser') === ru.scopeUser ? 'ru' : 'en'
-  const [lang, setLang] = usePersistedState<PanelLang>('library.lang', hostLang, ['zh', 'en', 'ru'])
+  const [langMode, setLangMode] = usePersistedState<'auto' | 'manual'>('library.langMode', 'auto', ['auto', 'manual'])
+  const [langOverride, setLangOverride] = usePersistedState<PanelLang>('library.lang', hostLang, ['zh', 'en', 'ru'])
+  const lang: PanelLang = langMode === 'manual' ? langOverride : hostLang
+  const setLang = (next: PanelLang): void => { setLangMode('manual'); setLangOverride(next) }
   const t = useMemo<T>(() => makeT(lang), [lang])
   /** 全局 scope（持久化）：Header 三宫格是唯一切换器，驱动今日速览、各视图卡片、陈展列表与导出。 */
   const [scope, setScope] = usePersistedState<'user' | 'project' | 'shared'>('library.scope', 'user', ['user', 'project', 'shared'])
