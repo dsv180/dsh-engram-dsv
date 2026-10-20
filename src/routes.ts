@@ -6,6 +6,7 @@
  * @module @kenz1117/dsh-engram/routes
  */
 
+import { existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -117,6 +118,29 @@ function scopeOf(raw: string | null, fallback: EngramScope): EngramScope {
   return fallback
 }
 
+/**
+ * Какие записи op_log — не журнал, а состояние.
+ *
+ * Ключи повторной загрузки (`ingest-*`) и очередь отложенных записей (`reflect-pending`) читаются
+ * обратно при следующем старте: удалить их — значит заставить загрузчик заново
+ * разбирать ходы, которые уже разобраны. Всё остальное в op_log — только след
+ * истории, его очистка ничего не ломает.
+ */
+export const LOG_KEEP_OPS: readonly string[] = ['ingest-done', 'ingest-pending', 'ingest-skip', 'ingest-nothing', 'reflect-pending']
+
+/** Размер базы на диске вместе с WAL/SHM — для индикации «сколько занимает журнал». */
+function dbFileBytes(path: string): number {
+  let total = 0
+  for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      if (existsSync(candidate)) total += statSync(candidate).size
+    } catch {
+      // Недоступный файл не учитываем: размер — индикация, а не отчётность.
+    }
+  }
+  return total
+}
+
 /** 宽松取数：数字与数字字符串都接受，其余返回 undefined（回退配置默认）。 */
 function toNumber(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -207,6 +231,30 @@ export interface RegistryView {
     readonly setting: string | null
     readonly source: string
     readonly conflict: boolean
+    /**
+     * Локаль машины как есть («ru», «fr», пустая строка — не прочитать).
+     *
+     * Нужна панели первого старта: она подставляет этот язык в выбор, а если такого
+     * языка у дворца нет — предлагает выбор «другой язык» с инструкцией (решение 21.10).
+     * Это сырая локаль, а не наш язык: сводить её к zh/en/ru здесь нельзя, иначе
+     * французу предложили бы английский как «его» язык.
+     */
+    readonly machine: string
+    /**
+     * Язык, на котором человек ведёт диалог в этой сессии; null — реплик ещё не было
+     * (журналы не читаются, кроме текущей сессии).
+     */
+    readonly dialogue: string | null
+    /**
+     * Язык, на котором стоят базы по своим меткам; null — метки нет ни у одной базы,
+     * `mixed` — базы подписаны разными языками.
+     */
+    readonly bases: string | null
+    /**
+     * Что происходит (решение 21.10): `auto` — дворец настраивается сам на язык диалогов;
+     * `ask` — опоры нет, спрашиваем; `mismatch` — диалоги и базы на разных языках.
+     */
+    readonly state: string
   } | null
   /** Объявленное умолчание пакета; не объявлено — null. */
   readonly defaultLanguage: string | null
@@ -426,6 +474,11 @@ export interface RouteDeps {
    * должна увидеть новое состояние.
    */
   readonly baseStates: () => Promise<{ readonly bases: readonly BaseView[], readonly pendingBases: number }>
+  /**
+   * Язык дворца глазами панели: считается на каждый запрос, потому что язык диалога
+   * появляется посреди работы, а метку базы меняет кнопка в соседней карточке (21.10).
+   */
+  readonly palaceLanguage: (bases: readonly BaseView[]) => RegistryView['palace']
   /** Обслуживание: поставить метку модели во все базы, которым она нужна. */
   readonly writeBaseLabels: () => Promise<BaseLabelResult>
   /** Обслуживание: пересчитать векторы базам, которые стоят не на целевой модели. */
@@ -714,6 +767,54 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 createdAt: record.createdAt,
                 ...(record.slot === undefined ? {} : { slot: record.slot }),
               })),
+            })
+            return
+          }
+          // Журнал дворца — наш собственный: таблица op_log в базах дворца, а не файл
+          // хост-сессии. Поэтому у него есть путь, размер и кнопка очистки; журналы
+          // хост-сессий (dsh) мы не читаем и не трогаем вовсе.
+          if ((req.method === 'GET' && route === 'log-info') || (req.method === 'POST' && route === 'log-clear')) {
+            const clear = req.method === 'POST'
+            if (clear) {
+              if (!guardWrite(req, res)) return
+              const body = await readJsonBody(req)
+              adoptBodySelector(body)
+            }
+            // Собираем только существующие базы: ожидание панели не должно создавать пустышки.
+            const targets: { scope: EngramScope; store: EngramStore; path: string }[] = []
+            for (const [scope, file] of [['user', 'user.db'], ['shared', 'shared.db']] as const) {
+              const path = join(deps.dbDir, file)
+              if (!existsSync(path)) continue
+              targets.push({ scope, store: await deps.openStore(scope), path })
+            }
+            const opened = await deps.projects.open(selectorRef.value)
+            if (opened !== undefined) {
+              targets.push({ scope: 'project', store: opened.store, path: join(deps.dbDir, opened.project.dbName) })
+            }
+            const parts: Record<string, unknown>[] = []
+            for (const target of targets) {
+              const cleared = clear ? await target.store.clearLog(LOG_KEEP_OPS) : undefined
+              const size = await target.store.logSize()
+              parts.push({
+                scope: target.scope,
+                path: target.path,
+                fileBytes: dbFileBytes(target.path),
+                rows: size.rows,
+                bytes: size.bytes,
+                ...(cleared === undefined ? {} : { deleted: cleared.deleted, vacuumed: cleared.vacuumed }),
+              })
+            }
+            const sum = (key: string): number => parts.reduce((total, part) => total + Number(part[key] ?? 0), 0)
+            json(res, 200, {
+              dir: deps.dbDir,
+              keepOps: LOG_KEEP_OPS,
+              parts,
+              totals: {
+                fileBytes: sum('fileBytes'),
+                rows: sum('rows'),
+                bytes: sum('bytes'),
+                ...(clear ? { deleted: sum('deleted') } : {}),
+              },
             })
             return
           }
@@ -1070,6 +1171,9 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const states = await deps.baseStates()
             json(res, 200, {
               ...deps.registry(),
+              // Язык дворца пересчитывается здесь вместе с базами: и то и другое меняется
+              // на ходу, а снимок из сборки плагина этого не знает.
+              palace: deps.palaceLanguage(states.bases),
               bases: states.bases,
               pendingBases: states.pendingBases,
               convertAvailable: deps.convertAvailable,

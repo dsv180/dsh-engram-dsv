@@ -257,6 +257,21 @@ function collectTexts(events: readonly SessionEventLike[], includeAssistant: boo
   return { texts, minSeq }
 }
 
+/**
+ * Реплики человека из событий текущей сессии — те же, что идут в摄取, без вставок
+ * плагина (см. `collectTexts`).
+ *
+ * Нужны языку дворца: по ним видно, на каком языке человек ведёт диалог. Это единственный
+ * дешёвый источник — события текущей сессии уже в памяти процесса. Журналы сессий,
+ * в том числе прошлых, по-прежнему не читаются (решение 20.10): журнал читается целиком
+ * и стоит сотни мегабайт кучи.
+ * @param events - события текущей сессии.
+ * @returns Реплики человека в порядке появления.
+ */
+export function userTexts(events: readonly SessionEventLike[]): string[] {
+  return collectTexts(events, false).texts
+}
+
 /** 摄取切片模式：previous = 上一轮（新轮第一步触发）；last = 末轮到日志末尾（session/disposed 触发）；number = 指定轮次（pending 重放）。 */
 export type IngestSlice = 'previous' | 'last' | number
 

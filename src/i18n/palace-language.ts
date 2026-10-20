@@ -42,6 +42,14 @@ export interface LanguageDecision {
   readonly source: LanguageSource
   /** Сигналы среды разошлись, перевешивающего диалога нет — решает пользователь. */
   readonly conflict: boolean
+  /**
+   * Решение опирается на сильнейший источник — диалог, а не на среду.
+   *
+   * Только такое решение дворец записывает сам: локаль машины и preference интерфейса
+   * слишком слабы, чтобы молча назначить язык дворца (он держит модель, инструкции и
+   * язык новых записей). Нет опоры — спрашиваем человека в панели (В.02).
+   */
+  readonly grounded: boolean
   /** Все собранные сигналы, в порядке веса. */
   readonly signals: readonly LanguageSignal[]
 }
@@ -110,6 +118,32 @@ export function dominantLanguage(texts: readonly string[]): { language: EngramLa
 }
 
 /**
+ * Что делать с языком дворца — три случая, названные в решении 21.10.
+ *
+ * `auto` — опора есть и спорить не о чем: диалоги идут на нашем языке, базы на нём же
+ * или их ещё нет, — дворец настраивается сам. `ask` — реплик человека не было, опоры
+ * нет: спрашиваем в окне. `mismatch` — диалоги на одном языке, базы на другом: это
+ * расхождение, его тоже решает человек в том же окне.
+ */
+export type PalaceCase = 'auto' | 'ask' | 'mismatch'
+
+/**
+ * Случай языка дворца по двум наблюдениям.
+ *
+ * Базы без метки (`null`) не считаются ни согласием, ни расхождением: спорить с ними
+ * не о чем, а «нет метки» — отдельное состояние карточки обслуживания (Б.01), не язык.
+ * Базы на разных языках (`mixed`) — расхождение: одна установка не может жить на двух
+ * языках одновременно.
+ * @param dialogue - язык диалогов; null — реплик ещё не было.
+ * @param bases - язык баз по меткам; null — метки нет ни у одной, `mixed` — разные.
+ * @returns Случай из трёх.
+ */
+export function palaceCase(dialogue: EngramLanguage | null, bases: EngramLanguage | 'mixed' | null): PalaceCase {
+  if (dialogue === null) return 'ask'
+  return bases === null || bases === dialogue ? 'auto' : 'mismatch'
+}
+
+/**
  * Решить язык дворца по собранным сигналам.
  *
  * Правило простое и повторяет план: побеждает старший по весу. Расхождением (`conflict`)
@@ -133,12 +167,19 @@ export function decideLanguage(
     && new Set(environment.map(signal => signal.language)).size > 1
   const winner = ranked[0]
   if (winner !== undefined) {
-    return { language: winner.language, source: winner.source, conflict, signals: ranked }
+    return {
+      language: winner.language,
+      source: winner.source,
+      conflict,
+      grounded: !conflict && winner.source === 'dialogue',
+      signals: ranked,
+    }
   }
   return {
     language: FALLBACK_LANGUAGE,
     source: 'fallback',
     conflict,
+    grounded: false,
     signals: options.allowFallback === false ? [] : [{ source: 'fallback', language: FALLBACK_LANGUAGE }],
   }
 }

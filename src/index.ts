@@ -31,7 +31,8 @@ import { answerSnippet, fillBatch, fillPrompt, parseFillAnswer } from './i18n/di
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
-import { pickLanguage } from './i18n/language.ts'
+import { ENGRAM_LANGUAGES, pickLanguage } from './i18n/language.ts'
+import { dominantLanguage, palaceCase } from './i18n/palace-language.ts'
 import { collectLanguageSignals } from './language-signals.ts'
 import { interfacePreference, writePalaceLanguage, writePalaceLanguageWithRetry, type SettingsServiceView } from './settings-bridge.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
@@ -40,7 +41,7 @@ import { roomLabel } from './i18n/rooms.ts'
 import { createEmbedder, resolveLocalModel } from './embedder/select.ts'
 import type { LocalModelChoice } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
-import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
+import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests, userTexts } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
 import type {
   HistoryBackfillDeps, HistoryBackfillRules, HistoryEstimate, HistoryLogSource, HistoryRunProgress, HistoryRunResult,
@@ -280,11 +281,17 @@ async function preStep(
   embedder: Promise<EngramEmbedder | undefined>,
   state: { pendingReplayed: boolean; lastProfileAgent: string | null; lastProfileHash: string | null; lastProfileCompactions: number | null; lastAssessReminder: string | null; route: LlmRoute | undefined },
   logRequest: (data: IngestRequestEventData) => void,
+  onDialogueLanguage: (language: EngramLanguage) => void,
   { agent, step, turn, signal }: { agent: Agent; step: number; turn: number; signal: AbortSignal },
   next: () => Promise<PreStepDecision>,
 ): Promise<PreStepDecision> {
   const decision = await next()
   if (decision.kind === 'reject') return decision
+  // Язык дворца смотрит на диалоги (решение 21.10): реплики человека лежат в событиях
+  // текущей сессии — для этого не нужно читать журналы, которые стоят сотни мегабайт.
+  // Реплик может ещё не быть (первый ход) — тогда сигнала просто нет.
+  const observed = dominantLanguage(userTexts(agent.session.snapshotEvents() as unknown as readonly SessionEventLike[]))
+  if (observed !== undefined) onDialogueLanguage(observed.language)
   // 记录当前会话在用的路由：历史回填优先复用它——历史日志里的 provider/model 是当年的，
   // 在当前环境可能已不可用（如换过提供商），用当前模型才跑得通。
   if (step === 1) {
@@ -586,6 +593,29 @@ function registrySnapshot(input: {
   }
 }
 
+/**
+ * Язык, на котором стоят базы дворца, — по меткам (`ru-minilm-l12` → `ru`).
+ *
+ * Метка — единственное место, где записано, «чья это база» (Б.02). Метки нет ни у одной
+ * базы — `null`: сверять нечего, спорить не о чем. Базы подписаны разными языками —
+ * `mixed`: в одной установке две базы на разных языках это тоже расхождение, а не
+ * «какая-нибудь из них подойдёт».
+ * @param bases - состояния баз из карточки обслуживания.
+ * @returns Язык баз, `mixed` либо `null`.
+ */
+function basesLanguage(bases: readonly BaseView[]): EngramLanguage | 'mixed' | null {
+  const found = new Set<EngramLanguage>()
+  for (const base of bases) {
+    const label = base.label
+    if (label === null) continue
+    const language = ENGRAM_LANGUAGES.find(code => label.startsWith(`${code}-`))
+    if (language !== undefined) found.add(language)
+  }
+  if (found.size === 0) return null
+  const [first] = [...found]
+  return found.size === 1 && first !== undefined ? first : 'mixed'
+}
+
 /** Хостовый сервис настроек: живёт отдельно от плагина и может отсутствовать. */
 function settingsOf(ctx: Context): SettingsServiceView | undefined {
   return ctx.get('settings' as never) as SettingsServiceView | undefined
@@ -671,7 +701,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // Запись решения — отдельным тиком, когда фибер уже поднялся: правка конфигурации
   // на стартующем фибере пошла бы обычным путём (перемонтирование посреди apply),
   // а на живом идёт volatile-путём — значение меняется на ходу, плагин не грузится заново.
-  if (determination !== undefined && !determination.decision.conflict) {
+  // Записываем сами только то решение, у которого есть опора — голос диалога.
+  // Локаль машины и preference интерфейса для этого слишком слабы: язык дворца держит
+  // модель, инструкции и язык новых записей, поэтому в остальных случаях спрашиваем
+  // человека в панели (В.02), а до ответа считаем по тем же слабым сигналам.
+  if (determination !== undefined && determination.decision.grounded) {
     const decided = determination.decision.language
     ctx.effect(() => {
       const timer = setTimeout(() => { persistPalaceLanguage(ctx, decided) }, 0)
@@ -722,16 +756,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
   /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
   /**
-   * Язык дворца в том виде, в каком его увидит панель: что решили и на чём основано.
-   * null — решать было нечего (язык пришёл из настройки).
+   * Язык дворца в снимке обслуживания. Здесь всегда null: язык диалога появляется
+   * посреди работы, поэтому снимок панели собирается на каждый запрос (`palaceView`),
+   * а это — заготовка для остальных чтений снимка.
    */
-  const palaceLanguageView = determination === undefined
-    ? null
-    : {
-      setting: resolved.languageSetting ?? null,
-      source: determination.decision.source,
-      conflict: determination.decision.conflict,
-    }
+  const palaceLanguageView: RegistryView['palace'] = null
   const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
     registry,
     language: resolved.language,
@@ -1064,6 +1093,71 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   }
 
   /**
+   * Что замечено о языке дворца в этой сессии: язык диалога и принято ли уже решение.
+   *
+   * Живёт в процессе, а не в базе: язык диалога — наблюдение над текущей сессией,
+   * и после перезапуска его заново даст первая же реплика человека.
+   */
+  const dialogueWatch = { language: undefined as EngramLanguage | undefined, decided: false }
+
+  /**
+   * Дворец выставляет язык сам, когда опора — диалог (решение 21.10, случаи 1–2):
+   * диалоги есть, базы или нет, или они на том же языке — тогда просто настраиваемся
+   * на язык диалогов и не о чем рассуждать. Спрашиваем человека только когда опоры нет
+   * (`ask`) или базы стоят на другом языке (`mismatch`) — это дело окна в панели.
+   *
+   * Записываем один раз за процесс: если язык уже пришёл из настройки, наблюдение
+   * только запоминается для панели, а конфигурация не трогается.
+   * @param language - язык, на котором говорит человек.
+   */
+  const observeDialogueLanguage = (language: EngramLanguage): void => {
+    dialogueWatch.language = language
+    if (dialogueWatch.decided) return
+    dialogueWatch.decided = true
+    if (languageSetting !== undefined && languageSetting !== 'auto') return
+    void (async () => {
+      const { bases } = await baseStates()
+      const standing = basesLanguage(bases)
+      // Базы на другом языке — не наше решение: это расхождение, его показывает окно.
+      if (standing !== null && standing !== language) return
+      const reason = await writePalaceLanguageWithRetry({
+        settings: () => settingsOf(ctx),
+        language,
+        attempts: PALACE_WRITE_ATTEMPTS,
+        delayMs: PALACE_WRITE_DELAY_MS,
+      })
+      if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
+    })().catch((error: unknown) => {
+      console.warn('dsh-engram: palace language persistence failed', error)
+    })
+  }
+
+  /**
+   * Язык дворца глазами панели: на чём основано решение и какой случай из трёх (21.10).
+   *
+   * Считается на каждый запрос, а не при сборке плагина: язык диалога появляется
+   * посреди работы, а метку базы меняет кнопка в соседней карточке.
+   * @param bases - состояния баз на момент запроса.
+   * @returns Снимок для панели либо null, когда решать нечего.
+   */
+  const palaceLanguageState = (bases: readonly BaseView[]): RegistryView['palace'] => {
+    // Язык пришёл из настройки — решать нечего, окно не нужно.
+    if (languageSetting !== undefined && languageSetting !== 'auto') return null
+    const dialogue = dialogueWatch.language ?? null
+    const standing = basesLanguage(bases)
+    const state = palaceCase(dialogue, standing)
+    return {
+      setting: resolved.languageSetting ?? null,
+      source: determination?.decision.source ?? 'fallback',
+      conflict: determination?.decision.conflict ?? false,
+      machine: determination?.machine ?? '',
+      dialogue,
+      bases: standing,
+      state,
+    }
+  }
+
+  /**
    * Поставить метку модели всем базам, которым она нужна.
    *
    * Пишем ровно одну строку в `meta` и только туда (решение 20.10): ни размерности,
@@ -1378,6 +1472,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       language: resolved.language,
       registry: () => registryView,
       baseStates,
+      palaceLanguage: palaceLanguageState,
       writeBaseLabels,
       convertBases,
       writePalaceLanguage: async (language: string) => {
@@ -1402,7 +1497,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   })
 
   if (resolved.injectProfile || resolved.ingest !== 'off') {
-    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, payload, next), { prepend: true })
+    ctx.on('agent/pre-step', (payload, next) => preStep(ctx, openStore, openStoreForProjectCwd, resolved, embedder, preStepState, logIngestRequest, observeDialogueLanguage, payload, next), { prepend: true })
   }
 
   // 会话结束即释放该会话的证据批次（进程内注册表，避免长驻进程累积）。

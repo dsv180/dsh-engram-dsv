@@ -28,18 +28,30 @@ export function isEngramLanguage(value: string): value is EngramLanguage {
 }
 
 /**
+ * Локаль системы как есть, без сведения к поддерживаемым языкам: «fr-FR» → «fr».
+ *
+ * Нужна там, где важно не «каким словарём мы располагаем», а на каком языке человек
+ * на самом деле работает: панель первого старта подставляет язык локали в выбор,
+ * а если такого языка у дворца нет — предлагает отдельный выбор «другой язык»
+ * (решение 21.10). Здесь ничего не подменяется умолчанием: пустая строка значит
+ * «прочитать не удалось», и вызывающий решает сам.
+ */
+export function systemLocaleBase(): string {
+  try {
+    const tag = Intl.DateTimeFormat().resolvedOptions().locale
+    return (tag.split('-')[0] ?? '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Язык системы. Берётся из Intl: «ru-RU» → «ru».
  * Язык без словаря сводится к языку по умолчанию: показывать пустые подписи хуже,
  * чем показать английские.
  */
 export function systemLanguage(): EngramLanguage {
-  let tag = ''
-  try {
-    tag = Intl.DateTimeFormat().resolvedOptions().locale
-  } catch {
-    return FALLBACK_LANGUAGE
-  }
-  const base = (tag.split('-')[0] ?? '').toLowerCase()
+  const base = systemLocaleBase()
   return isEngramLanguage(base) ? base : FALLBACK_LANGUAGE
 }
 

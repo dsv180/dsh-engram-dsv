@@ -360,6 +360,37 @@ async function api<T>(path: string, init?: RequestInit, forceProject = false): P
   return parsed
 }
 
+/** Размер в человеческом виде: журнал показывает «сколько занимает на диске». */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(Math.max(0, Math.round(bytes)))} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+/** Одна база дворца в отчёте о журнале (GET/POST /api/engram/log-info|log-clear). */
+interface LogStoragePart {
+  readonly scope: string
+  /** Абсолютный путь файла базы. */
+  readonly path: string
+  /** Размер файла вместе с WAL/SHM. */
+  readonly fileBytes: number
+  /** Строк в op_log. */
+  readonly rows: number
+  /** Байт текста записей журнала. */
+  readonly bytes: number
+  /** Только в ответе на очистку: сколько строк удалено. */
+  readonly deleted?: number
+  /** Сжался ли файл после очистки (VACUUM). */
+  readonly vacuumed?: boolean
+}
+
+/** Отчёт о журнале: где лежит, сколько занимает, сколько в нём строк. */
+interface LogStorageInfo {
+  readonly dir: string
+  readonly parts: readonly LogStoragePart[]
+  readonly totals: { readonly fileBytes: number; readonly rows: number; readonly bytes: number; readonly deleted?: number }
+}
+
 /** host 项目宫殿清单的行（GET /api/engram/workspaces）。 */
 interface EngramProjectItem {
   readonly dbName: string
@@ -1225,13 +1256,37 @@ function LogPanel({ t, telemetry, project }: {
   const [filter, setFilter] = useState<LogFilter>('all')
   const [failed, setFailed] = useState<string | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
+  // Журнал дворца — наш собственный: показываем путь и размер, и даём его очистить.
+  const [storage, setStorage] = useState<LogStorageInfo | null>(null)
+  const [storageFailed, setStorageFailed] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearing, setClearing] = useState(false)
   useEffect(() => {
     let cancelled = false
     api<{ operations: ActivityRow[] }>('activity?limit=50', undefined, true)
       .then((data) => { if (!cancelled) { setRows(data.operations); setFailed(null) } })
       .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
+    api<LogStorageInfo>('log-info', undefined, true)
+      .then((data) => { if (!cancelled) { setStorage(data); setStorageFailed(null) } })
+      .catch((error: Error) => { if (!cancelled) setStorageFailed(error.message) })
     return () => { cancelled = true }
   }, [project, reloadTick])
+  /** Очистка журнала: первый клик — вопрос, второй — действие (как у прочих удалений). */
+  const clearLog = (): void => {
+    if (!confirmClear) { setConfirmClear(true); return }
+    setClearing(true)
+    api<LogStorageInfo>('log-clear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }, true)
+      .then((data) => {
+        setStorage(data)
+        setStorageFailed(null)
+        setNotice(t('logClearDone', { n: data.totals.deleted ?? 0, size: formatBytes(data.totals.fileBytes) }))
+        setConfirmClear(false)
+        setReloadTick(tick => tick + 1)
+      })
+      .catch((error: Error) => { setStorageFailed(error.message); setConfirmClear(false) })
+      .finally(() => { setClearing(false) })
+  }
   const allow = LOG_GROUPS[filter]
   const visible = (rows ?? []).filter(row => allow === null || allow.includes(row.op))
   const counts = telemetry?.counts
@@ -1268,6 +1323,27 @@ function LogPanel({ t, telemetry, project }: {
               onClick={() => { setFilter(option) }}>{t(LOG_FILTER_KEY[option])}</button>
           ))}
         </div>
+      </div>
+      {/* Журнал дворца — наш собственный: путь, размер и кнопка очистки. Журналы хост-сессий
+          (dsh) сюда не попадают вовсе: мы их не читаем и не трогаем. */}
+      <div className={styles.logStorage}>
+        <div className={styles.logStorageMain}>
+          <span className={styles.logStoragePath} title={storage?.dir ?? ''}>{t('logStoragePath', { path: storage?.dir ?? '…' })}</span>
+          <span className={styles.logStorageSize}>{storage === null ? t('loading') : formatBytes(storage.totals.fileBytes)}</span>
+          <button type="button" className={styles.button} disabled={clearing || storage === null} onClick={clearLog}>
+            {confirmClear ? t('logClearConfirm') : t('logClear')}
+          </button>
+        </div>
+        <div className={styles.logStorageParts}>
+          {(storage?.parts ?? []).map(part => (
+            <span key={part.path} className={styles.logStoragePart} title={part.path}>
+              {t('logStoragePart', { file: part.path.split(/[\\/]/).pop() ?? part.path, size: formatBytes(part.fileBytes), n: part.rows })}
+            </span>
+          ))}
+        </div>
+        <span className={styles.logStorageHint}>{t('logStorageHint')}</span>
+        {notice === null ? null : <span className={styles.logStorageNotice}>{notice}</span>}
+        {storageFailed === null ? null : <LoadFailedLine t={t} msg={storageFailed} onRetry={() => { setReloadTick(tick => tick + 1) }} />}
       </div>
       <div className={styles.panelCard}>
         {failed !== null
@@ -2241,6 +2317,147 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
  * 今日速览：三个主指标（记忆 / 开放 / 清晰度）+ 健康分环；近 7 天四项次级计数与诊脉时间并排下沉底行。
  * 取代原先常驻的九格日报条——主次分层，其余计数下沉到「管家日志」tab。
  */
+/**
+ * Что человек выбрал в окне первого старта: наши три языка либо «другой язык».
+ * «Другой» — не четвёртый язык дворца, а честное «вашего языка у дворца нет»:
+ * дворец настраивается на английский, а дальше человек идёт по инструкции для агента.
+ */
+type PalaceAskChoice = (typeof PALACE_LANGUAGES)[number] | 'other'
+
+/**
+ * Язык дворца в панели: решение принимается по диалогам, а окно нужно только там,
+ * где решать нечем или где языки разошлись (решение 21.10).
+ *
+ * Три случая:
+ * - `auto` — диалоги идут на одном из наших языков, базы на нём же или их ещё нет:
+ *   дворец настраивается сам, панель только сообщает, на что настроилась;
+ * - `ask` — реплик человека ещё не было (журналы не читаем, кроме текущей сессии),
+ *   спрашиваем и подставляем локаль Windows;
+ * - `mismatch` — диалоги на одном языке, базы на другом: говорим о расхождении
+ *   и уходим в то же окно выбора.
+ *
+ * Четыре выбора: ZH / EN / RU и «другой язык» — не четвёртый язык дворца, а честное
+ * «вашего языка у дворца нет»: дворец настраивается на английский, а дальше человек
+ * идёт по инструкции для агента (В.08). Предустановка — локаль Windows, а если её
+ * среди наших трёх нет, то «другой язык», а не английский под видом «вашего».
+ */
+function PalaceLanguageAsk({ t, overlayHost }: {
+  t: T
+  readonly overlayHost: { readonly current: HTMLDivElement | null }
+}): React.ReactElement | null {
+  const [palace, setPalace] = useState<RegistrySnapshot['palace']>(null)
+  const [suggested, setSuggested] = useState<PalaceAskChoice | null>(null)
+  const [choice, setChoice] = useState<PalaceAskChoice | null>(null)
+  const [pending, setPending] = useState(false)
+  const [saved, setSaved] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [closed, setClosed] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    api<RegistrySnapshot>('registry')
+      // palace !== null значит «определять было что, а решения нет»: настройка всё ещё auto.
+      .then((snapshot) => {
+        if (cancelled || snapshot.palace === null) return
+        // При расхождении подставляем язык диалогов, а не локаль: человек уже показал,
+        // на каком языке он говорит, и это сильнее настроек машины. В остальных случаях
+        // предустановка — локаль Windows.
+        const preferred = snapshot.palace.state === 'mismatch'
+          ? snapshot.palace.dialogue
+          : snapshot.palace.machine
+        const supported = PALACE_LANGUAGES.find(language => language === preferred)
+        setPalace(snapshot.palace)
+        setSuggested(supported ?? 'other')
+        setChoice(supported ?? 'other')
+      })
+      .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
+    return () => { cancelled = true }
+  }, [])
+  if (palace === null || closed) return null
+  // Опора есть: дворец настроился сам — говорим, на что, и ничего не спрашиваем.
+  if (palace.state === 'auto') {
+    const note = (
+      <div className={styles.palaceNote} role="status">
+        {t('palaceAutoNote', { language: (palace.dialogue ?? '').toUpperCase() })}
+      </div>
+    )
+    return overlayHost.current === null ? note : createPortal(note, overlayHost.current)
+  }
+  const mismatch = palace.state === 'mismatch'
+  const basesName = palace.bases === 'mixed' ? t('palaceMismatchMixed') : (palace.bases ?? '').toUpperCase()
+  const title = mismatch ? t('palaceMismatchTitle') : t('palaceAskTitle')
+  const body = mismatch
+    ? t('palaceMismatchBody', { dialogue: (palace.dialogue ?? '').toUpperCase(), bases: basesName })
+    : t('palaceAskBody')
+  const submit = (): void => {
+    if (choice === null) return
+    // «Другой язык» ставит дворцу английский: это единственный честный выбор, пока
+    // языка нет среди наших трёх, а инструкция для агента объясняет остальное (В.08).
+    const language = choice === 'other' ? 'en' : choice
+    setPending(true)
+    api<{ ok: boolean, language: string, error?: string }>('palace-language', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ language }),
+    })
+      .then((result) => {
+        if (!result.ok) { setFailed(result.error ?? ''); return }
+        setSaved(result.language.toUpperCase())
+        setFailed(null)
+      })
+      .catch((error: Error) => { setFailed(error.message) })
+      .finally(() => { setPending(false) })
+  }
+  const choices: readonly PalaceAskChoice[] = [...PALACE_LANGUAGES, 'other']
+  const screen = (
+    <div className={styles.importLayer} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={styles.importScrim} onClick={() => { if (!pending) setClosed(true) }} />
+      <div className={styles.drawer}>
+        <header className={styles.drawerHead}>
+          <div className={styles.drawerTitle}>
+            <h3>{title}</h3>
+          </div>
+          <button type="button" className={styles.drawerClose} aria-label={t('drawerClose')}
+            disabled={pending} onClick={() => { setClosed(true) }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </header>
+        <div className={styles.drawerBody}>
+          <p className={styles.regNote}>{body}</p>
+          <div className={styles.palaceChoiceList} role="radiogroup" aria-label={title}>
+            {choices.map(value => (
+              <label key={value} className={choice === value ? `${styles.palaceChoice} ${styles.palaceChoiceOn}` : styles.palaceChoice}>
+                <input type="radio" name="palace-language-choice" value={value}
+                  checked={choice === value} disabled={pending || saved !== null}
+                  onChange={() => { setChoice(value) }} />
+                <span className={styles.palaceChoiceName}>
+                  {value === 'other' ? t('palaceAskOther') : value.toUpperCase()}
+                </span>
+                {suggested === value ? <span className={styles.palaceChoiceNote}>{t('palaceAskSuggested')}</span> : null}
+              </label>
+            ))}
+          </div>
+          {choice === 'other' ? <p className={styles.palaceAskHint}>{t('palaceAskFallback')}</p> : null}
+          {saved === null ? null : <p className={styles.regNote}>{t('palaceAskSaved', { language: saved })}</p>}
+          {failed === null ? null : <p className={styles.regNote}>{t('loadFailed', { msg: failed })}</p>}
+          <div className={styles.modalFoot}>
+            <button type="button" className={styles.button} disabled={pending}
+              onClick={() => { setClosed(true) }}>{t('palaceAskLater')}</button>
+            <button type="button" className={`${styles.button} ${styles.primary}`}
+              disabled={pending || choice === null || saved !== null} onClick={submit}>
+              {pending ? t('palaceAskSaving') : t('palaceAskContinue')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+  // Окно fixed, но .panel образует собственный контекст наложения (см. .overlayHost):
+  // внутри него оверлей не перекрыл бы окно плагина целиком, поэтому — порталом в якорь.
+  return overlayHost.current === null ? screen : createPortal(screen, overlayHost.current)
+}
+
 function TodayHero({ t, overview, dueCount }: { t: T; overview: ReturnType<typeof usePalaceOverview>; dueCount: number }): React.ReactElement {
   const { stats, telemetry, health, failed } = overview
   if (failed !== null) {
@@ -3001,6 +3218,14 @@ interface RegistrySnapshot {
     readonly setting: string | null
     readonly source: string
     readonly conflict: boolean
+    /** Локаль машины как есть: «ru», «fr», пустая строка — прочитать не удалось. */
+    readonly machine: string
+    /** Язык диалогов этой сессии; null — реплик ещё не было. */
+    readonly dialogue: string | null
+    /** Язык, на котором стоят базы по меткам; null — метки нет, `mixed` — разные. */
+    readonly bases: string | null
+    /** `auto` — дворец настраивается сам; `ask` — спрашиваем; `mismatch` — языки разошлись. */
+    readonly state: string
   } | null
   readonly defaultLanguage: string | null
   readonly remote: boolean
@@ -4182,6 +4407,10 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           целиком. Раньше экран был sticky-слоем в конце карточки обслуживания и оставался
           ниже видимой области при прокрутке: нажатие кнопки выглядело как «ничего не произошло». */}
       <div ref={overlayHost} className={styles.overlayHost} />
+      {/* Первый старт: окно выбора языка дворца. Живёт здесь, а не на вкладке «Сегодня»:
+          вопрос о языке — не содержимое вкладки, а то, что человек должен увидеть,
+          на какой бы вкладке ни открыл панель. */}
+      <PalaceLanguageAsk t={t} overlayHost={overlayHost} />
       {versionMismatch !== null && (
         <div className={styles.versionBanner} role="status">
           {t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch })}

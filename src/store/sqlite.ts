@@ -564,6 +564,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlHasAudit = db.prepare('SELECT 1 AS x FROM op_log WHERE op = ? AND detail = ? LIMIT 1')
   const sqlListAudit = db.prepare('SELECT detail FROM op_log WHERE op = ? AND detail IS NOT NULL ORDER BY seq')
   const sqlClearAudit = db.prepare('DELETE FROM op_log WHERE op = ? AND detail = ?')
+  const sqlLogSize = db.prepare(`SELECT COUNT(*) AS rows,
+    COALESCE(SUM(LENGTH(COALESCE(detail, '')) + LENGTH(COALESCE(target_id, ''))), 0) AS bytes FROM op_log`)
+  const sqlLogCount = db.prepare('SELECT COUNT(*) AS n FROM op_log')
   // 基底事实（这库站在哪个模型上）住在 meta：不是操作日志，考古时不进 op_log。
   const sqlWriteMeta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
   const sqlOpLogById = db.prepare('SELECT at, op, target_id, detail FROM op_log WHERE target_id = ? ORDER BY seq DESC LIMIT ?')
@@ -1843,6 +1846,34 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
 
     async clearAudit(op: string, detail: string) {
       sqlClearAudit.run(op, detail)
+    },
+
+    async logSize() {
+      const row = sqlLogSize.get() as { rows: number; bytes: number }
+      return { rows: Number(row.rows), bytes: Number(row.bytes) }
+    },
+
+    async clearLog(keepOps: readonly string[]) {
+      const before = Number((sqlLogCount.get() as { n: number }).n)
+      if (keepOps.length === 0) {
+        sqlPurgeLog.run()
+      } else {
+        // Список опов фиксирован вызывающим (не пользовательский ввод), поэтому
+        // подстановка плейсхолдеров по длине безопасна.
+        const placeholders = keepOps.map(() => '?').join(', ')
+        db.prepare(`DELETE FROM op_log WHERE op NOT IN (${placeholders})`).run(...keepOps)
+      }
+      const deleted = before - Number((sqlLogCount.get() as { n: number }).n)
+      // Место освобождает только VACUUM: без него файл остаётся прежнего размера.
+      // Занятая другим процессом база просто не сожмётся — размер покажет панель.
+      let vacuumed = false
+      try {
+        db.exec('VACUUM')
+        vacuumed = true
+      } catch {
+        vacuumed = false
+      }
+      return { deleted, vacuumed }
     },
 
     async writeMeta(key: string, value: string) {

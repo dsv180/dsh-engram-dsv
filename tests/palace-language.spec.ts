@@ -7,7 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { decideLanguage, dominantLanguage, scriptLanguage } from '../src/i18n/palace-language.ts'
+import { decideLanguage, dominantLanguage, palaceCase, scriptLanguage } from '../src/i18n/palace-language.ts'
+import { collectLanguageSignals } from '../src/language-signals.ts'
 import { findPalaceEntry, interfacePreference, type SettingsEntryView } from '../src/settings-bridge.ts'
 
 describe('язык реплики по письму', () => {
@@ -53,6 +54,8 @@ describe('решение о языке дворца', () => {
     expect(decision.language).toBe('ru')
     expect(decision.source).toBe('dialogue')
     expect(decision.conflict).toBe(false)
+    // Опора есть: решение можно записывать в конфигурацию самим.
+    expect(decision.grounded).toBe(true)
   })
 
   it('среда разошлась без диалога — это конфликт, решает человек', () => {
@@ -64,6 +67,7 @@ describe('решение о языке дворца', () => {
     // Язык всё равно называется — но как предложение, а не как решение.
     expect(decision.language).toBe('ru')
     expect(decision.source).toBe('windows')
+    expect(decision.grounded).toBe(false)
   })
 
   it('среда согласна — решения нет только у диалога', () => {
@@ -73,12 +77,59 @@ describe('решение о языке дворца', () => {
     ])
     expect(decision.conflict).toBe(false)
     expect(decision.language).toBe('ru')
+    // Среда согласна с собой, но она не голос человека: сами такое не записываем.
+    expect(decision.grounded).toBe(false)
+  })
+
+  it('сигналов нет вовсе — записывать нечего, спрашиваем человека', () => {
+    const decision = decideLanguage([])
+    expect(decision.source).toBe('fallback')
+    expect(decision.grounded).toBe(false)
   })
 
   it('сигналов нет вовсе — английский с честным источником', () => {
     const decision = decideLanguage([])
     expect(decision.language).toBe('en')
     expect(decision.source).toBe('fallback')
+  })
+})
+
+describe('три случая языка дворца (решение 21.10)', () => {
+  it('баз ещё нет, диалоги на русском — настраиваемся сами', () => {
+    expect(palaceCase('ru', null)).toBe('auto')
+  })
+
+  it('базы на языке диалогов — тоже сами, без окна', () => {
+    expect(palaceCase('ru', 'ru')).toBe('auto')
+  })
+
+  it('базы на другом языке — расхождение, решает человек', () => {
+    expect(palaceCase('ru', 'en')).toBe('mismatch')
+  })
+
+  it('базы на разных языках — тоже расхождение', () => {
+    expect(palaceCase('ru', 'mixed')).toBe('mismatch')
+  })
+
+  it('реплик не было — опоры нет, спрашиваем', () => {
+    expect(palaceCase(null, null)).toBe('ask')
+    // Даже если базы что-то знают: язык диалогов сильнее, а его нет — спрашиваем.
+    expect(palaceCase(null, 'en')).toBe('ask')
+  })
+})
+
+describe('сбор сигналов: локаль машины как есть', () => {
+  it('локаль без нашего языка не подменяется английским', async () => {
+    // Решение сведёт «fr» к английскому (словаря нет), но панель первого старта
+    // должна знать настоящий язык: иначе французу предустановят английский как «его».
+    const collected = await collectLanguageSignals({ systemLocale: () => 'en', systemLocaleTag: () => 'fr' })
+    expect(collected.machine).toBe('fr')
+    expect(collected.decision.language).toBe('en')
+  })
+
+  it('локаль, прочитать не удалось — пустая строка, а не догадка', async () => {
+    const collected = await collectLanguageSignals({ systemLocaleTag: () => '' })
+    expect(collected.machine).toBe('')
   })
 })
 

@@ -24,7 +24,7 @@
  */
 
 import { decideLanguage, type LanguageDecision, type LanguageSignal } from './i18n/palace-language.ts'
-import { isEngramLanguage, resolveLanguage, type EngramLanguage } from './i18n/language.ts'
+import { isEngramLanguage, resolveLanguage, systemLocaleBase, type EngramLanguage } from './i18n/language.ts'
 
 /** Откуда брать сигналы. Все источники, кроме системной локали, необязательны. */
 export interface LanguageSignalDeps {
@@ -32,12 +32,22 @@ export interface LanguageSignalDeps {
   readonly readInterfacePreference?: (() => Promise<string | undefined>) | undefined
   /** Локаль машины (по умолчанию `systemLanguage`). */
   readonly systemLocale?: (() => EngramLanguage) | undefined
+  /** Локаль машины как есть, без сведения к нашим языкам (по умолчанию `systemLocaleBase`). */
+  readonly systemLocaleTag?: (() => string) | undefined
 }
 
 /** Собранные сигналы и решение по ним. */
 export interface CollectedSignals {
   /** Решение с обоснованием. */
   readonly decision: LanguageDecision
+  /**
+   * Локаль машины как есть: «ru», «fr», пустая строка — прочитать не удалось.
+   *
+   * Отдельно от решения намеренно: решение сводит всё к нашим трём языкам, а панели
+   * первого старта нужно знать настоящий язык человека, чтобы подставить его в выбор
+   * и не выдать французу английский за «ваш язык» (решение 21.10).
+   */
+  readonly machine: string
 }
 
 /**
@@ -61,5 +71,6 @@ export async function collectLanguageSignals(deps: LanguageSignalDeps = {}): Pro
   const windows = (deps.systemLocale ?? (() => resolveLanguage('auto')))()
   signals.push({ source: 'windows', language: windows })
 
-  return { decision: decideLanguage(signals) }
+  const machine = (deps.systemLocaleTag ?? systemLocaleBase)()
+  return { decision: decideLanguage(signals), machine }
 }

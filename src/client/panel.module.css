@@ -754,6 +754,27 @@ select.input { padding-right: 28px; appearance: none; }
 .logOp { font-weight: 500; color: var(--dsw-alias-label-primary); }
 .logScope { color: var(--dsw-alias-label-tertiary); }
 .logDetail { color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 宫殿自己的日志：路径、体积和清理按钮。宿主会话日志不在这里出现。 */
+.logStorage { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); }
+.logStorageMain { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.logStoragePath { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); font-family: var(--dsw-font-mono, ui-monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.logStorageSize { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.logStorageMain .button { margin-left: auto; }
+.logStorageParts { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+.logStoragePart { font-size: var(--fs-micro); color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.logStorageHint { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.logStorageNotice { font-size: var(--fs-micro); color: var(--dsw-alias-state-success-primary); }
+/* Первый старт: окно выбора языка дворца (внутри .drawer, см. .importLayer). */
+.palaceChoiceList { display: flex; flex-direction: column; gap: 6px; margin: var(--space-3) 0; }
+.palaceChoice { display: flex; align-items: center; gap: var(--space-2); padding: 8px var(--space-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--radius-control); cursor: pointer; transition: border-color var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease-spring); }
+.palaceChoice:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); }
+.palaceChoiceOn { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, var(--dsw-alias-bg-layer-1)); }
+.palaceChoice input { accent-color: var(--dsw-alias-brand-primary); margin: 0; }
+.palaceChoiceName { font-size: var(--fs-body); color: var(--dsw-alias-label-primary); }
+.palaceChoiceNote { margin-left: auto; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.palaceAskHint { margin: 0 0 var(--space-2); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.45; }
+/* Сообщение «дворец настроился сам»: окно не нужно, но человек должен видеть, на что. */
+.palaceNote { position: fixed; left: 24px; bottom: 24px; z-index: 55; max-width: min(420px, calc(100vw - 48px)); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, var(--dsw-alias-border-l2)); border-radius: var(--radius-control); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); line-height: 1.5; box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .55); }
 
 /* ---------- 画像 curated block（当前内容 + 版本历史 + 行级 diff，只读审计卡） ---------- */
 .profileCard { display: flex; flex-direction: column; gap: var(--space-3); }
