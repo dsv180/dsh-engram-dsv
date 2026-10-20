@@ -3001,7 +3001,6 @@ interface RegistrySnapshot {
     readonly setting: string | null
     readonly source: string
     readonly conflict: boolean
-    readonly dialogue: { readonly sessions: number, readonly texts: number }
   } | null
   readonly defaultLanguage: string | null
   readonly remote: boolean

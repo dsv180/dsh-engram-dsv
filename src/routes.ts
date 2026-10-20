@@ -198,12 +198,15 @@ export interface RegistryView {
   /**
    * Язык дворца: чем определён и разошлись ли сигналы. null — определять было нечего
    * (язык пришёл из настройки), либо определение ещё не сделано.
+   *
+   * Прочитанных реплик здесь нет намеренно: журналы сессий больше не читаются
+   * при старте (решение 20.10), и показывать «0 сессий» значило бы выдавать
+   * отсутствие чтения за отсутствие диалогов.
    */
   readonly palace: {
     readonly setting: string | null
     readonly source: string
     readonly conflict: boolean
-    readonly dialogue: { readonly sessions: number; readonly texts: number }
   } | null
   /** Объявленное умолчание пакета; не объявлено — null. */
   readonly defaultLanguage: string | null

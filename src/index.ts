@@ -33,7 +33,7 @@ import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
 import { pickLanguage } from './i18n/language.ts'
 import { collectLanguageSignals } from './language-signals.ts'
-import { findPalaceEntry, interfacePreference, type SettingsEntryView, type SettingsServiceView } from './settings-bridge.ts'
+import { interfacePreference, writePalaceLanguage, writePalaceLanguageWithRetry, type SettingsServiceView } from './settings-bridge.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
@@ -591,20 +591,9 @@ function settingsOf(ctx: Context): SettingsServiceView | undefined {
   return ctx.get('settings' as never) as SettingsServiceView | undefined
 }
 
-/**
- * Источник истории сессий для чтения диалогов — тот же адаптер, что у исторического
- * заполнения: список заголовков и чтение журнала через одноразовый дескриптор.
- * @param ctx - контекст плагина.
- * @returns Источник либо `undefined`, если сервиса персистентности нет.
- */
-function historySourceOf(ctx: Context): HistoryLogSource | undefined {
-  const persistence = ctx.get('sessionPersistence' as never) as PersistenceServiceView | undefined
-  if (persistence === undefined) return undefined
-  return {
-    list: async signal => (await persistence.list(signal === undefined ? undefined : { signal })).map(snapshot => snapshot.header),
-    load: id => withReadHandle(persistence, id, async handle => ({ events: (await handle.read()).events })),
-  }
-}
+/** Сколько раз пробуем записать язык дворца и с какой паузой (окно ~3 с). */
+const PALACE_WRITE_ATTEMPTS = 20
+const PALACE_WRITE_DELAY_MS = 150
 
 /**
  * Записать выбранный язык дворца в конфигурацию плагина.
@@ -618,34 +607,30 @@ function historySourceOf(ctx: Context): HistoryLogSource | undefined {
  * @param language - выбранный язык дворца.
  * @returns Причина отказа; undefined — запись удалась.
  */
-async function writePalaceLanguage(ctx: Context, language: EngramLanguage): Promise<string | undefined> {
-  const settings = settingsOf(ctx)
-  if (settings === undefined) return 'settings service is absent — palace language stays for this process only'
-  let entries: readonly SettingsEntryView[]
-  try {
-    entries = settings.describe()
-  } catch (error) {
-    return `could not read settings forms — ${String(error)}`
-  }
-  const own = findPalaceEntry(entries)
-  if (own === undefined) return 'own settings entry not found — palace language stays for this process only'
-  try {
-    await settings.update(own.ns, { language }, own.revision)
-    return undefined
-  } catch (error) {
-    return `could not persist palace language — ${String(error)}`
-  }
-}
+
 
 /**
  * Записать определённый язык дворца, не задерживая старт плагина.
+ *
+ * Повтор и сам отказ живут в мосте (`settings-bridge.ts`): там же, где поиск своей
+ * формы. Здесь только привязка к контексту — где взять сервис и когда остановиться.
  * @param ctx - контекст плагина.
  * @param language - определённый язык дворца.
  */
 function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
-  void writePalaceLanguage(ctx, language).then(reason => {
-    if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
-  })
+  let stopped = false
+  ctx.effect(() => {
+    void writePalaceLanguageWithRetry({
+      settings: () => settingsOf(ctx),
+      language,
+      attempts: PALACE_WRITE_ATTEMPTS,
+      delayMs: PALACE_WRITE_DELAY_MS,
+      stopped: () => stopped,
+    }).then(reason => {
+      if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
+    })
+    return () => { stopped = true }
+  }, 'dsh-engram: palace language persistence')
 }
 
 /**
@@ -663,13 +648,15 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   const languageSetting = readLanguageSetting(config.language)
   let language = pickLanguage(languageSetting, registry.defaultLanguage)
   // Язык дворца определяется полуавтоматически (В.02): если решения нет, дворец
-  // смотрит на диалоги, интерфейс и локаль машины и записывает СВОЙ язык — конкретным
-  // значением, а не «auto». Разошлись сигналы среды без перевешивающего диалога —
-  // не выставляем ничего: спросим пользователя в панели.
+  // смотрит на preference интерфейса и локаль машины и записывает СВОЙ язык —
+  // конкретным значением, а не «auto». Разошлись сигналы среды — не выставляем
+  // ничего: спросим пользователя в панели.
+  //
+  // Журналы сессий здесь больше не читаются (решение 20.10): журнал читается целиком,
+  // и на живых данных это сотни мегабайт кучи на каждом старте ради сорока реплик.
   let determination: Awaited<ReturnType<typeof collectLanguageSignals>> | undefined
   if (languageSetting === undefined || languageSetting === 'auto') {
     determination = await collectLanguageSignals({
-      history: historySourceOf(ctx),
       readInterfacePreference: async () => {
         const settings = settingsOf(ctx)
         return settings === undefined ? undefined : interfacePreference(settings.describe())
@@ -744,7 +731,6 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       setting: resolved.languageSetting ?? null,
       source: determination.decision.source,
       conflict: determination.decision.conflict,
-      dialogue: determination.dialogue,
     }
   const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
     registry,
@@ -900,6 +886,13 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       return undefined
     })
   void embedder
+  // Эмбеддер держит ONNX-инстанс и память под модель: при выгрузке плагина его надо
+  // отпустить, иначе перемонтирование оставляет в процессе ещё один живой инстанс,
+  // а память под модель не возвращается. Закрываем независимо от того, успел ли он
+  // загрузиться: обещание разрешается в undefined, если модель не поднялась.
+  ctx.effect(() => () => {
+    void embedder.then(active => active?.close()).catch(() => { /* закрытие не чинится */ })
+  }, 'dsh-engram: close embedder')
 
   // 辅助请求写 engram 自己的操作日志（下游插件禁止向会话日志写未知事件类型）。
   const logIngestRequest = (data: IngestRequestEventData): void => {
@@ -1388,14 +1381,11 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       writeBaseLabels,
       convertBases,
       writePalaceLanguage: async (language: string) => {
-        const reason = await writePalaceLanguage(ctx, language as EngramLanguage)
+        const reason = await writePalaceLanguage(settingsOf(ctx), language)
         return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
       },
       dictionary: dictionaryDeps,
       dictionaryFill: dictionaryFillDeps,
-      // Пересчёт векторов — этап 2 блока Б: конвертер живёт вне плагина и в карточку
-      // ещё не подключён. Пока false — карточка честно называет такие состояния
-      // невыполнимыми, а кнопка ничего не делает молча.
       convertAvailable: true,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。

@@ -54,24 +54,94 @@ export function interfacePreference(entries: readonly SettingsEntryView[]): stri
 }
 
 /**
- * Найти свою запись: в её форме есть поле языка дворца.
+ * Найти свою запись: в её форме есть поле языка дворца — и оно там единственное.
  *
  * Ищем не по имени пакета, а по составу формы: идентификатор записи в профиле —
  * дело хоста, и полагаться на конкретную строку значило бы зависеть от того, как
- * пользователь назвал запись. Если форм с полем `language` несколько, берём ту,
- * где это поле единственное (наша форма состоит только из него), иначе — никакую:
- * молча писать в чужую настройку хуже, чем не записать вовсе.
+ * пользователь назвал запись.
+ *
+ * Условие «поле единственное» — защита, а не украшение: у чужого плагина тоже может
+ * быть поле `language`, и записать свой язык в его настройку хуже, чем не записать
+ * вовсе. Поэтому формы с дополнительными полями не рассматриваются, а если
+ * подходящих несколько — не берём никакую. Появится у нас второе volatile-поле,
+ * это правило придётся назвать явно, а не расширять догадкой.
  * @param entries - ответ `describe()`.
  * @returns Запись с ревизией либо `undefined`.
  */
 export function findPalaceEntry(entries: readonly SettingsEntryView[]): { ns: string; revision: number } | undefined {
-  const candidates = entries.filter(entry => entry.schema?.properties !== undefined
-    && Object.hasOwn(entry.schema.properties, PALACE_LANGUAGE_FIELD))
-  if (candidates.length === 0) return undefined
-  const exact = candidates.filter(entry => {
+  const exact = entries.filter(entry => {
     const fields = Object.keys(entry.schema?.properties ?? {})
     return fields.length === 1 && fields[0] === PALACE_LANGUAGE_FIELD
   })
-  const picked = exact.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : undefined
+  const picked = exact.length === 1 ? exact[0] : undefined
   return picked === undefined ? undefined : { ns: picked.ns, revision: picked.revision }
+}
+
+/** Причина, по которой язык не записался; `undefined` — записан. */
+export type PalaceWriteFailure = string | undefined
+
+/**
+ * Записать язык дворца одной попыткой.
+ *
+ * Форму своего плагина сервис отдаёт только для работающего фибера, поэтому «своей
+ * записи нет» — это ещё не приговор: см. `writePalaceLanguageWithRetry`.
+ * @param settings - сервис настроек; undefined — сервиса в хосте нет.
+ * @param language - язык, который надо записать.
+ * @returns Причина отказа либо `undefined`.
+ */
+export async function writePalaceLanguage(
+  settings: SettingsServiceView | undefined,
+  language: string,
+): Promise<PalaceWriteFailure> {
+  if (settings === undefined) return 'settings service is absent — palace language stays for this process only'
+  let entries: readonly SettingsEntryView[]
+  try {
+    entries = settings.describe()
+  } catch (error) {
+    return `could not read settings forms — ${String(error)}`
+  }
+  const own = findPalaceEntry(entries)
+  if (own === undefined) return 'own settings entry not found — palace language stays for this process only'
+  try {
+    await settings.update(own.ns, { language }, own.revision)
+    return undefined
+  } catch (error) {
+    return `could not persist palace language — ${String(error)}`
+  }
+}
+
+/** Ожидание между попытками: подменяется в тестах, чтобы не ждать по-настоящему. */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => { setTimeout(resolve, ms) })
+}
+
+/**
+ * Записать язык дворца, повторяя попытку коротким окном.
+ *
+ * Зачем повтор: `describe()` отдаёт форму только для фибера в состоянии «работает»,
+ * а определение языка считается внутри `apply` — то есть до того, как наш плагин
+ * стал работающим. Один отказ там означает «ещё рано», а не «записать некуда».
+ * Окно ограничено: по его истечении причина уходит вызывающему, и тот говорит в лог,
+ * что язык остался на этот процесс. Отмену даёт `stopped` — выгруженный плагин
+ * не должен продолжать писать в настройки.
+ * @param input - откуда взять сервис, что записать, сколько и с какой паузой пробовать.
+ * @returns Причина отказа либо `undefined`.
+ */
+export async function writePalaceLanguageWithRetry(input: {
+  readonly settings: () => SettingsServiceView | undefined
+  readonly language: string
+  readonly attempts: number
+  readonly delayMs: number
+  readonly wait?: (ms: number) => Promise<void>
+  readonly stopped?: () => boolean
+}): Promise<PalaceWriteFailure> {
+  const wait = input.wait ?? sleep
+  let reason: PalaceWriteFailure = 'no attempts made'
+  for (let attempt = 0; attempt < Math.max(1, input.attempts); attempt += 1) {
+    if (input.stopped?.() === true) return 'persistence stopped: plugin unloaded'
+    reason = await writePalaceLanguage(input.settings(), input.language)
+    if (reason === undefined) return undefined
+    if (attempt + 1 < input.attempts) await wait(input.delayMs)
+  }
+  return reason
 }
