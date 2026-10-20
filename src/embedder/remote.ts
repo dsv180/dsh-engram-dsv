@@ -33,6 +33,8 @@ export interface RemoteEmbedderOptions {
   readonly baseUrl: string
   /** Bearer 密钥；空值表示端点不需要鉴权（局域网内常见）。 */
   readonly apiKey?: string | undefined
+  /** 环境变量的名字；每次请求时读取，优先于 `apiKey`。 */
+  readonly apiKeyEnv?: string | undefined
   /** 单次请求的文本条数上限；默认 32。 */
   readonly batchSize?: number
   /** 单次请求的超时；默认 30000 毫秒。 */
@@ -76,8 +78,19 @@ export async function createRemoteEmbedder(options: RemoteEmbedderOptions): Prom
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const apiKey = options.apiKey
-  if (apiKey !== undefined && apiKey !== '') headers['Authorization'] = `Bearer ${apiKey}`
+  /**
+   * Заголовки на момент запроса, а не на момент сборки: имя переменной задаёт
+   * конфигурация, а значение читается каждый раз — ключ можно сменить в окружении
+   * (или подложить в тесте), не перезагружая плагин.
+   */
+  const requestHeaders = (): Record<string, string> => {
+    const fromEnv = options.apiKeyEnv === undefined || options.apiKeyEnv === ''
+      ? undefined
+      : process.env[options.apiKeyEnv]
+    const apiKey = fromEnv !== undefined && fromEnv !== '' ? fromEnv : options.apiKey
+    if (apiKey === undefined || apiKey === '') return headers
+    return { ...headers, Authorization: `Bearer ${apiKey}` }
+  }
 
   /** 单次请求；服务端给了 index 就按 index 还原顺序。 */
   const request = async (texts: readonly string[]): Promise<Float32Array[]> => {
@@ -85,7 +98,7 @@ export async function createRemoteEmbedder(options: RemoteEmbedderOptions): Prom
     try {
       response = await fetch(endpoint, {
         method: 'POST',
-        headers,
+        headers: requestHeaders(),
         body: JSON.stringify({ model: options.model, input: [...texts], encoding_format: 'float' }),
         signal: AbortSignal.timeout(timeoutMs),
       })
@@ -106,8 +119,15 @@ export async function createRemoteEmbedder(options: RemoteEmbedderOptions): Prom
         }),
       )
     }
-    const payload = await response.json() as EmbeddingsResponse
-    const data = payload.data
+    let payload: EmbeddingsResponse | undefined
+    try {
+      payload = await response.json() as EmbeddingsResponse
+    } catch (error) {
+      // Не-JSON тело — это ответ чужого сервиса, а не сбой разбора: наружу должен
+      // уйти наш код ошибки, иначе вызывающий не отличит его от ошибки в своём коде.
+      throw new EngramError('EMBEDDER_REMOTE_FAILED', message('store.embedderRemoteBody'), { cause: error })
+    }
+    const data = payload?.data
     if (!Array.isArray(data) || data.length !== texts.length) {
       throw new EngramError(
         'EMBEDDER_REMOTE_FAILED',

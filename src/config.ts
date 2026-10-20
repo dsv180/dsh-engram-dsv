@@ -243,6 +243,12 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
 ])
 
 const INGEST_MODES: ReadonlySet<string> = new Set(['off', 'light', 'eager'])
+
+/** `embedder` 块的键：未知键按错误处理，而不是静默忽略。 */
+const EMBEDDER_KEYS: ReadonlySet<string> = new Set([
+  'kind', 'localModel', 'localPooling', 'model', 'baseUrl', 'apiKey', 'apiKeyEnv', 'batchSize', 'timeoutMs',
+])
+
 const REFLECT_MODES: ReadonlySet<string> = new Set(['off', 'suggest', 'auto'])
 
 /** Schemastery 校验面（cordis.yml 读取时校验）。 */
@@ -401,6 +407,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   const embedderConfig = config.embedder
   const embedderKind = embedderConfig?.kind ?? 'local'
   if (embedderConfig !== undefined) {
+    for (const key of Object.keys(embedderConfig)) {
+      if (!EMBEDDER_KEYS.has(key)) throw new Error(`dsh-engram: unknown embedder key "${key}"`)
+    }
     if (embedderConfig.kind !== undefined && embedderConfig.kind !== 'local' && embedderConfig.kind !== 'remote') {
       throw new Error('dsh-engram: embedder.kind must be one of local|remote')
     }

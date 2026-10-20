@@ -155,6 +155,7 @@ embedding dimension mismatch: the store holds {expected}-dimensional vectors, th
 could not resolve a local embedding model for this language; retrieval has degraded to keyword-only mode — check the model registry	Не удалось определить локальную модель вложений для этого языка; поиск переведён в режим только по ключевым словам — проверьте реестр моделей
 embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)	эндпоинт эмбеддингов недоступен ({baseUrl}, таймаут {timeoutMs} мс)
 embedding endpoint returned HTTP {status}{detail}	эндпоинт эмбеддингов вернул HTTP {status}{detail}
+embedding endpoint returned a body that is not parseable JSON	эндпоинт эмбеддингов вернул тело, которое не удалось разобрать как JSON
 embedding endpoint returned {received} vectors instead of the requested {expected}	эндпоинт эмбеддингов вернул {received} векторов вместо запрошенных {expected}
 not an array	не массив
 embedding endpoint returned an empty vector	эндпоинт эмбеддингов вернул пустой вектор

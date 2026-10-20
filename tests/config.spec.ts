@@ -188,4 +188,18 @@ describe('embedder config', () => {
 
     expect(() => resolveConfig({ embedder: { kind: 'nope' } as never })).toThrow(/embedder\.kind/)
   })
+
+  // Автор просил не игнорировать молча неизвестные ключи внутри блока: опечатка в
+  // имени поля иначе выглядит как «настройка не подействовала».
+  it('未知键 внутри embedder тоже loud 失败', () => {
+    expect(() => resolveConfig({ embedder: { lnocalModel: 'X' } as never })).toThrow(/unknown embedder key "lnocalModel"/)
+  })
+
+  it('remote без ключа и с именем переменной доходит до конфигурации', () => {
+    const resolved = resolveConfig({
+      embedder: { kind: 'remote', model: 'text-embedding-3-small', baseUrl: 'https://api.example.com/v1', apiKeyEnv: 'MY_KEY' },
+    }).embedder
+    expect(resolved.kind).toBe('remote')
+    expect(resolved.remote?.apiKeyEnv).toBe('MY_KEY')
+  })
 })

@@ -61,6 +61,7 @@ export const zh = {
   // —— embedder/remote.ts ——
   'store.embedderRemoteUnreachable': '嵌入端点不可达（{baseUrl}，超时 {timeoutMs} 毫秒）',
   'store.embedderRemoteHttp': '嵌入端点返回 HTTP {status}{detail}',
+  'store.embedderRemoteBody': '嵌入端点的响应不是可解析的 JSON',
   'store.embedderRemoteCount': '嵌入端点返回 {received} 个向量，而本次请求为 {expected} 个',
   'store.embedderRemoteCountNa': '非数组',
   'store.embedderRemoteEmpty': '嵌入端点返回了空向量',
@@ -122,6 +123,7 @@ export const en = {
   // —— embedder/remote.ts ——
   'store.embedderRemoteUnreachable': 'embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)',
   'store.embedderRemoteHttp': 'embedding endpoint returned HTTP {status}{detail}',
+  'store.embedderRemoteBody': 'embedding endpoint returned a body that is not parseable JSON',
   'store.embedderRemoteCount': 'embedding endpoint returned {received} vectors instead of the requested {expected}',
   'store.embedderRemoteCountNa': 'not an array',
   'store.embedderRemoteEmpty': 'embedding endpoint returned an empty vector',
