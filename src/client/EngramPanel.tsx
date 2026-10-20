@@ -2959,7 +2959,6 @@ interface RegistrySnapshot {
     readonly entries: number
     readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
   }[]
-  readonly panel: Readonly<Record<string, string>>
   /** Базы дворца: состояние каждой и что с ней сделает кнопка. */
   readonly bases: readonly RegistryBase[]
   /** Сколько баз ещё нет: их создаёт код автора, не мы. */
@@ -3002,8 +3001,8 @@ const BASE_STATE_KEY: Readonly<Record<string, EngramKey>> = {
  * явная форма, а не эта. Здесь видно состояние: какая модель выбрана, по какому
  * правилу, что лежит в каталоге и какие файлы словарей прочитаны.
  *
- * Тексты берутся из словаря панели, пришедшего тем же ответом: он главнее
- * вшитого в сборку, и это ровно то, ради чего словарь вынесен в файл.
+ * Тексты берутся из вшитых словарей панели (locales/*.ts): в них уже есть все
+ * ключи обслуживания, и они переключаются вместе с языком панели.
  */
 function RegistryCard({ t, overlayHost }: {
   readonly t: T
@@ -3030,16 +3029,10 @@ function RegistryCard({ t, overlayHost }: {
     return () => { alive = false }
   }, [])
 
-  // Словарь панели: слева английская строка (как в файле), справа перевод.
-  // Нет файла — карта пуста, и тексты остаются теми, что вшиты в сборку.
-  const panel = snapshot?.panel ?? {}
-  // Словарь панели отдаёт готовую строку, вшитый текст — с подстановками: приводим
-  // оба к одному виду, подставляя значения поверх, а не полагаясь на `t`.
-  const tt = (key: EngramKey, params?: Record<string, string | number>): string => {
-    const text = panel[en[key]] ?? t(key)
-    if (params === undefined) return text
-    return text.replace(/\{(\w+)\}/g, (whole, name: string) => params[name] === undefined ? whole : String(params[name]))
-  }
+  // Тексты карточки — из вшитых словарей панели (locales/*.ts): в них есть все
+  // ключи обслуживания, и они переключаются вместе с языком панели. Файловый
+  // словарь серверного языка выбранный язык больше не перекрывает.
+  const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
 
   if (error !== null) {
     return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>

@@ -577,7 +577,6 @@ function registrySnapshot(input: {
       detail: problem.detail,
     })),
     dictionaries: [dictionary('messages', input.messages), dictionary('panel', input.panel)],
-    panel: Object.fromEntries(input.panel.entries),
   }
 }
 

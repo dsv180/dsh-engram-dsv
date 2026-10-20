@@ -217,8 +217,6 @@ export interface RegistryView {
     readonly entries: number
     readonly problems: readonly { readonly file: string; readonly line: number; readonly kind: string; readonly detail: string }[]
   }[]
-  /** Словарь панели целиком: английская строка → перевод. Пусто — словаря нет. */
-  readonly panel: Readonly<Record<string, string>>
 }
 
 /**
