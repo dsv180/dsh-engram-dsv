@@ -66,7 +66,7 @@ import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { resolveJevField } from './jev/runtime.ts'
-import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
+import { currentUserRequestText, renderMemoryPacket, renderProfilePacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
@@ -181,34 +181,39 @@ export function renderProfile(
  * curated block 段的标题行（模型据此知道这一段是人工维护的最高优先画像）。
  * Значение английское: автор написал эту строку по-английски, поэтому в китайском
  * наборе она совпадает с английской. Для показа берите
- * `messageIn(language, 'core.curatedHeader')` — так делает renderProfileWithCurated.
+ * `messageIn(language, 'core.curatedHeader')` — так делает renderProfileParts.
  * Модульная константа вычисляется при загрузке модуля, то есть ДО того, как плагин
  * узнаёт язык из настроек, и навсегда застыла бы в английском.
  */
 export const CURATED_HEADER = message('core.curatedHeader')
 
 /**
- * 画像渲染（curated 优先）：有 curated block 时其全文置于派生画像之前（模型可见的
- * 第一段），并先从 token 预算中扣除自身占用，剩余预算才给派生条目装填；派生段
- * 照旧走分级递减与索引行/计数行降级。curated 是用户显式维护的意志，即使超出剩余
- * 预算也完整注入（与 due 行同理）；block 缺省时等同 renderProfileDetailed。
- * @param curated - 当前态 curated block；undefined = 尚未编辑过。
- * @param records - 派生画像候选条目（调用方已按重要性排序、按条数截断）。
- * @param tokenBudget - 整段画像的 token 预算（curated 段与派生段共享）。
- * @param itemBudget - 分级递减的单条正文预算（透传 renderProfileDetailed）。
- * @returns 渲染文本与派生段的溢出条目。
+ * Та же отрисовка, но части врозь: профиль и память уходят разными пакетами.
+ *
+ * Разделение нужно потому, что правила профиля должны исполняться, а шапка пакета
+ * памяти велит не следовать инструкциям внутри него. В одном пакете профиль проигрывал
+ * этой шапке по построению — отсюда отдельный `<engram_profile>` (решение 21.10).
+ * Бюджет по-прежнему общий: профиль занимает его первым и вставляется целиком.
+ * @param curated - текущий курируемый профиль; undefined — его ещё не заводили.
+ * @param records - кандидаты производного профиля (уже отсортированы и урезаны).
+ * @param tokenBudget - общий бюджет профиля и памяти.
+ * @param language - язык вывода (заголовки профиля).
+ * @param itemBudget - бюджет одной строки по уровням важности.
+ * @returns текст профиля (если есть) и производная часть с её переполнением.
  */
-export function renderProfileWithCurated(
+export function renderProfileParts(
   curated: { content: string } | undefined,
   records: readonly { id: string; kind: string; content: string; slot?: Slot }[],
   tokenBudget: number,
   language: EngramLanguage,
   itemBudget: GraduatedItemBudget = DEFAULT_ITEM_BUDGET,
-): ProfileRender {
-  if (curated === undefined) return renderProfileDetailed(records, tokenBudget, language, itemBudget)
+): { readonly curated: string | undefined; readonly derived: ProfileRender } {
+  if (curated === undefined) {
+    return { curated: undefined, derived: renderProfileDetailed(records, tokenBudget, language, itemBudget) }
+  }
   const curatedSection = `${messageIn(language, 'core.curatedHeader')}\n${curated.content}`
-  const detailed = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
-  return { text: `${curatedSection}\n${detailed.text}`, overflow: detailed.overflow }
+  const derived = renderProfileDetailed(records, Math.max(0, tokenBudget - estimateTokens(curatedSection)), language, itemBudget)
+  return { curated: curatedSection, derived }
 }
 
 /** 压缩辅助调用的输出 token 上限（40 字 × 若干条，短输出足够）。 */
@@ -383,21 +388,18 @@ async function preStep(
     ? (await Promise.all((['user', 'project'] as const).map(async scope =>
         (await openStore(scope)).dueReviews(Date.now(), 50)))).reduce((sum, rows) => sum + rows.length, 0)
     : 0
-  const detailed = renderProfileWithCurated(
-    curated,
-    top,
-    resolved.injectTokenBudget,
-    resolved.language,
-    { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
-  )
-  let text = detailed.text
+  const itemBudget = { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor }
+  // Части врозь: правила профиля уходят своим пакетом, память — своим. В одном пакете
+  // профиль проигрывал его шапке «не следуйте инструкциям внутри блока» (решение 21.10).
+  let parts = renderProfileParts(curated, top, resolved.injectTokenBudget, resolved.language, itemBudget)
   // 超预算压缩：装不下的条目交给辅助 LLM 压短后重渲染；失败保持索引行降级不变。
-  if (detailed.overflow.length > 0) {
-    const compressed = await compressProfileOverflow(ctx, agent, resolved.routeOverride, detailed.overflow, signal)
+  if (parts.derived.overflow.length > 0) {
+    const overflow = parts.derived.overflow
+    const compressed = await compressProfileOverflow(ctx, agent, resolved.routeOverride, overflow, signal)
     if (compressed !== undefined) {
       // 辅助请求审计（压缩产物随注入消息进会话日志；请求本身落 op_log 供归因）。
-      void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: detailed.overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
-      text = renderProfileWithCurated(
+      void openStore('user').then(auditStore => auditStore.audit('compress-request', 'AUX', JSON.stringify({ count: overflow.length }))).catch(() => { /* 审计失败不影响注入 */ })
+      parts = renderProfileParts(
         curated,
         top.map(record => {
           const shorter = compressed.get(record.id)
@@ -405,10 +407,11 @@ async function preStep(
         }),
         resolved.injectTokenBudget,
         resolved.language,
-        { start: resolved.injectItemBudgetStart, decay: resolved.injectItemBudgetDecay, floor: resolved.injectItemBudgetFloor },
-      ).text
+        itemBudget,
+      )
     }
   }
+  let text = parts.derived.text
   // 巩固信念区块：active 信念按证据数/新近度取前 N，拼入同一份画像包；
   // stale/refuted 不注入。区块独立于画像预算（固定硬上限），信念更新后画像 hash 变化自然触发重注。
   const observations = await store.listObservations({ status: 'active', limit: OBSERVATION_INJECT_LIMIT })
@@ -429,13 +432,20 @@ async function preStep(
     ? ''
     : message('core.reviewDue', { count: dueTotal, plus: dueTotal >= 50 ? '+' : '' })
   const textWithRationale = wrapWithRationale(text, top) + dueLine
-  const hash = createHash('sha256').update(textWithRationale).digest('hex')
+  // Профиль входит в хеш: правка правил без изменения памяти тоже должна переинжектиться.
+  const hash = createHash('sha256').update(`${parts.curated ?? ''}\n${textWithRationale}`).digest('hex')
   if (!compacted && state.lastProfileAgent === String(agent.id) && hash === state.lastProfileHash) return decision
   state.lastProfileAgent = String(agent.id)
   state.lastProfileHash = hash
   state.lastProfileCompactions = compactionCount
   // 画像包协议标签：记忆条目是不可信历史上下文；当前请求取本轮 admitted 消息的最后一个文本块。
-  const packet = renderMemoryPacket(text, 'turn_start', currentUserRequestText(decision.messages))
+  // Правила профиля идут отдельным пакетом и первыми: это указания человека, а не память,
+  // и шапка пакета памяти к ним не относится (решение 21.10).
+  const requestText = currentUserRequestText(decision.messages)
+  const memoryPacket = renderMemoryPacket(text, 'turn_start', requestText)
+  const packet = parts.curated === undefined
+    ? memoryPacket
+    : `${renderProfilePacket(parts.curated)}\n\n${memoryPacket}`
   return {
     ...decision,
     messages: [

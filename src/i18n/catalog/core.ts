@@ -11,7 +11,7 @@
 
 /** Оригинальные формулировки автора. */
 export const zh = {
-  // ---- Профиль сессии (renderProfileDetailed / renderProfileWithCurated) ----
+  // ---- Профиль сессии (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
@@ -74,7 +74,7 @@ export const zh = {
 
 /** Английский набор — образец полноты. */
 export const en = {
-  // ---- Session profile (renderProfileDetailed / renderProfileWithCurated) ----
+  // ---- Session profile (renderProfileDetailed / renderProfileParts) ----
   'core.profileHeader': 'User memory profile (dsh-engram, cross-session) — Grand Hall (always present):',
   'core.profileFooter': 'Use engram_search to recall details (pass room to search inside one room); use engram_save to persist new facts.',
   'core.curatedHeader': 'Curated profile (user-maintained via engram_profile_edit; authoritative over derived facts):',
