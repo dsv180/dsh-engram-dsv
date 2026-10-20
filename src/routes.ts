@@ -195,6 +195,16 @@ export interface RegistryModelView {
 export interface RegistryView {
   /** Язык, на котором говорит серверная половина (он же язык прочитанных словарей). */
   readonly language: string
+  /**
+   * Язык дворца: чем определён и разошлись ли сигналы. null — определять было нечего
+   * (язык пришёл из настройки), либо определение ещё не сделано.
+   */
+  readonly palace: {
+    readonly setting: string | null
+    readonly source: string
+    readonly conflict: boolean
+    readonly dialogue: { readonly sessions: number; readonly texts: number }
+  } | null
   /** Объявленное умолчание пакета; не объявлено — null. */
   readonly defaultLanguage: string | null
   /** Выбрана ли удалённая модель: тогда локальная строка не выбирается вовсе. */

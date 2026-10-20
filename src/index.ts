@@ -21,7 +21,7 @@ declare module '@deepseek-ai/dsh-llm' {
     [kind: `plugin:${string}`]: { kind: `plugin:${string}` } & ContextFormed
   }
 }
-import { resolveConfig } from './config.ts'
+import { readLanguageSetting, resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
@@ -32,6 +32,8 @@ import { describeRegistryProblems, loadRegistry } from './registry/registry-file
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
 import { pickLanguage } from './i18n/language.ts'
+import { collectLanguageSignals } from './language-signals.ts'
+import { findPalaceEntry, interfacePreference, type SettingsEntryView, type SettingsServiceView } from './settings-bridge.ts'
 import { message, messageIn, setMessageDictionary, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
@@ -535,6 +537,8 @@ function makeSessionResolver(
 function registrySnapshot(input: {
   readonly registry: LoadedRegistry
   readonly language: string
+  /** Язык дворца: чем определён и были ли расхождения сигналов. */
+  readonly palace: RegistryView['palace']
   readonly remote: boolean
   readonly model: LocalModelChoice | undefined
   readonly messages: LoadedDictionary
@@ -553,6 +557,7 @@ function registrySnapshot(input: {
   })
   return {
     language: input.language,
+    palace: input.palace,
     defaultLanguage: input.registry.defaultLanguage ?? null,
     remote: input.remote,
     resolved: input.model === undefined ? null : {
@@ -580,24 +585,102 @@ function registrySnapshot(input: {
   }
 }
 
+/** Хостовый сервис настроек: живёт отдельно от плагина и может отсутствовать. */
+function settingsOf(ctx: Context): SettingsServiceView | undefined {
+  return ctx.get('settings' as never) as SettingsServiceView | undefined
+}
+
+/**
+ * Источник истории сессий для чтения диалогов — тот же адаптер, что у исторического
+ * заполнения: список заголовков и чтение журнала через одноразовый дескриптор.
+ * @param ctx - контекст плагина.
+ * @returns Источник либо `undefined`, если сервиса персистентности нет.
+ */
+function historySourceOf(ctx: Context): HistoryLogSource | undefined {
+  const persistence = ctx.get('sessionPersistence' as never) as PersistenceServiceView | undefined
+  if (persistence === undefined) return undefined
+  return {
+    list: async signal => (await persistence.list(signal === undefined ? undefined : { signal })).map(snapshot => snapshot.header),
+    load: id => withReadHandle(persistence, id, async handle => ({ events: (await handle.read()).events })),
+  }
+}
+
+/**
+ * Записать определённый язык дворца в конфигурацию плагина.
+ *
+ * Пишем через хостовый сервис настроек: он кладёт значение в профильный patch, то есть
+ * ровно в конфигурацию плагина, и применяет его на живом фибере volatile-путём —
+ * без перемонтирования. Если сервиса или своей записи нет, язык остаётся на этот
+ * процесс и на следующий старт не переживает: об этом говорим в лог, а не молчим.
+ * @param ctx - контекст плагина.
+ * @param language - определённый язык дворца.
+ */
+function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
+  const settings = settingsOf(ctx)
+  if (settings === undefined) {
+    console.warn('dsh-engram: settings service is absent — palace language stays for this process only')
+    return
+  }
+  let entries: readonly SettingsEntryView[]
+  try {
+    entries = settings.describe()
+  } catch (error) {
+    console.warn(`dsh-engram: could not read settings forms — ${String(error)}`)
+    return
+  }
+  const own = findPalaceEntry(entries)
+  if (own === undefined) {
+    console.warn('dsh-engram: own settings entry not found — palace language stays for this process only')
+    return
+  }
+  void settings.update(own.ns, { language }, own.revision).catch((error: unknown) => {
+    console.warn(`dsh-engram: could not persist palace language — ${String(error)}`)
+  })
+}
+
 /**
  * 插件体：预热分库与嵌入器，注册 10 个工具、画像注入、自动摄取与衰减调度。
  * @param ctx - host 上下文。
  * @param config - cordis.yml 传入的可选配置；非法值在加载时 loud 失败。
  */
-export function apply(ctx: Context, config: EngramConfig = {}): void {
+export async function apply(ctx: Context, config: EngramConfig = {}): Promise<void> {
   const resolvedConfig = resolveConfig(config)
   // Реестры читаются до языка: умолчание пакета живёт в привязках (см. src/registry),
   // а от языка уже зависят и словарь, и шаблоны сообщений. Чтение чистое — файлы без
   // сети, — поэтому порядок ничего не стоит.
   const registry = loadRegistry({ dbDir: resolvedConfig.dbDir })
-  const language = pickLanguage(config.language, registry.defaultLanguage)
+  /** Что записано в настройке: `auto` — решения о языке дворца ещё нет. */
+  const languageSetting = readLanguageSetting(config.language)
+  let language = pickLanguage(languageSetting, registry.defaultLanguage)
+  // Язык дворца определяется полуавтоматически (В.02): если решения нет, дворец
+  // смотрит на диалоги, интерфейс и локаль машины и записывает СВОЙ язык — конкретным
+  // значением, а не «auto». Разошлись сигналы среды без перевешивающего диалога —
+  // не выставляем ничего: спросим пользователя в панели.
+  let determination: Awaited<ReturnType<typeof collectLanguageSignals>> | undefined
+  if (languageSetting === undefined || languageSetting === 'auto') {
+    determination = await collectLanguageSignals({
+      history: historySourceOf(ctx),
+      readInterfacePreference: async () => {
+        const settings = settingsOf(ctx)
+        return settings === undefined ? undefined : interfacePreference(settings.describe())
+      },
+    })
+    if (!determination.decision.conflict) language = determination.decision.language
+  }
   // Настройка главнее умолчания, умолчание — главнее системной локали (см.
   // src/i18n/language.ts): «наш язык» должен зависеть от объявленного выпуска, а не
   // от машины, на которой плагин запущен.
-  const resolved: ResolvedEngramConfig = language === resolvedConfig.language
-    ? resolvedConfig
-    : { ...resolvedConfig, language }
+  const resolved: ResolvedEngramConfig = { ...resolvedConfig, language, languageSetting }
+  // Запись решения — отдельным тиком, когда фибер уже поднялся: правка конфигурации
+  // на стартующем фибере пошла бы обычным путём (перемонтирование посреди apply),
+  // а на живом идёт volatile-путём — значение меняется на ходу, плагин не грузится заново.
+  if (determination !== undefined && !determination.decision.conflict) {
+    const decided = determination.decision.language
+    ctx.effect(() => {
+      const timer = setTimeout(() => { persistPalaceLanguage(ctx, decided) }, 0)
+      return () => { clearTimeout(timer) }
+    }, 'dsh-engram: palace language persistence')
+  }
   // Язык служебных сообщений — один на процесс. Помощник message() зовут десятки
   // функций, и протаскивать язык в каждую было бы куда грубее, чем задать его здесь
   // один раз при сборке плагина (см. src/i18n/messages.ts).
@@ -641,9 +724,23 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
   // два места не должны.
   const localModel = resolveLocalModel(registry, resolved.language, resolved.embedder.localModel, resolved.embedder.localPooling)
   /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
+  /**
+   * Язык дворца в том виде, в каком его увидит панель: что решили и на чём основано.
+   * 
+ull — решать было нечего (язык пришёл из настройки).
+   */
+  const palaceLanguageView = determination === undefined
+    ? null
+    : {
+      setting: resolved.languageSetting ?? null,
+      source: determination.decision.source,
+      conflict: determination.decision.conflict,
+      dialogue: determination.dialogue,
+    }
   const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
     registry,
     language: resolved.language,
+    palace: palaceLanguageView,
     remote: resolved.embedder.remote !== undefined,
     model: localModel,
     messages,

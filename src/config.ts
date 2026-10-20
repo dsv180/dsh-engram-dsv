@@ -135,11 +135,12 @@ export interface EngramConfig {
   /** 嵌入器：本地离线模型或远程 OpenAI 兼容端点；默认 local。 */
   embedder?: EmbedderConfig
   /**
-   * Язык текстов, которые плагин формирует сам: имена комнат, сообщения инструментов.
-   * «auto» (по умолчанию) — язык системы. Интерфейс панели настраивается отдельно,
-   * средствами DSH: плагин отдаёт хосту словари, а выбор делает хост.
+   * Язык дворца: на нём плагин говорит сам — имена комнат, сообщения инструментов,
+   * системные инструкции модели. «auto» — решения ещё нет: язык берётся из системы.
+   * В рантайме поле приходит живой ссылкой (volatile) и меняется без перемонтирования;
+   * интерфейс панели настраивается отдельно, средствами DSH.
    */
-  language?: LanguageSetting
+  language?: LanguageSetting | { get(): LanguageSetting }
   /**
    * Слова-метки секретов, добавленные пользователем. Дополняют наборы языкового пакета
    * и действуют **всегда**, независимо от языка: пользователь добавляет их как раз потому,
@@ -226,6 +227,12 @@ export interface ResolvedEngramConfig {
   readonly embedder: ResolvedEmbedderConfig
   /** Язык вывода серверной половины (после разворачивания «auto» в язык системы). */
   readonly language: EngramLanguage
+  /**
+   * Что стояло в настройке до разворачивания: `auto`, конкретный язык или ничего.
+   * Нужен, чтобы отличить «язык дворца уже определён» от «ещё не определён»:
+   * `auto` — это не язык дворца, а отсутствие решения.
+   */
+  readonly languageSetting: LanguageSetting | undefined
   /** Слова пользователя для вычистки секретов (действуют поверх языковых наборов). */
   readonly redactWords: readonly string[]
 }
@@ -302,9 +309,26 @@ export const Config: z<EngramConfig> = z.object({
     batchSize: z.number().step(1).min(1).max(256),
     timeoutMs: z.number().step(1).min(1000).max(600000),
   }) as unknown as z<EmbedderConfig>,
-  language: z.string() as unknown as z<LanguageSetting>,
+  // volatile: язык дворца меняется на ходу, без перемонтирования плагина
+  // (загрузчик коммитит новое значение в живую ссылку и шлёт loader/volatile-update).
+  language: z.string().volatile() as unknown as z<LanguageSetting>,
   redactWords: z.array(z.string()),
 })
+
+/**
+ * Прочитать значение `language` из любого вида, в котором оно приходит:
+ * загрузчик отдаёт volatile-поле ссылкой (`{ get() }`), а тесты и обычный конфиг — строкой.
+ * @param value - ссылка на volatile-поле, строка или ничего.
+ * @returns Настройка языка в том виде, в каком её записал пользователь.
+ */
+export function readLanguageSetting(
+  value: LanguageSetting | { get(): LanguageSetting } | undefined,
+): LanguageSetting | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'string') return value
+  const live = (value as { get?: () => LanguageSetting }).get
+  return typeof live === 'function' ? value.get() : undefined
+}
 
 /**
  * 显式 resolve 步骤：默认值只在唯一的此处落地，非法值 loud 失败。
@@ -325,8 +349,9 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.reflect !== undefined && !REFLECT_MODES.has(config.reflect)) {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
   }
-  if (config.language !== undefined && config.language !== 'auto' && !isEngramLanguage(config.language)) {
-    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(config.language)}"`)
+  const languageSetting = readLanguageSetting(config.language)
+  if (languageSetting !== undefined && languageSetting !== 'auto' && !isEngramLanguage(languageSetting)) {
+    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(languageSetting)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')
@@ -453,7 +478,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     hfEndpoint: config.hfEndpoint,
     ingest: config.ingest ?? 'off',
     reflect: config.reflect ?? 'off',
-    language: resolveLanguage(config.language ?? 'auto'),
+    language: resolveLanguage(languageSetting ?? 'auto'),
+    languageSetting,
     redactWords: config.redactWords ?? [],
     routeOverride: hasProvider && hasModel ? { provider: config.provider!, model: config.model! } : undefined,
     decayAfterDays: config.decayAfterDays ?? 30,
