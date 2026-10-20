@@ -49,7 +49,8 @@ export type FillPair = readonly [string, string]
  * @returns системная инструкция и JSON-массив терминов.
  */
 export function fillPrompt(terms: readonly string[], language: EngramLanguage): FillPrompt {
-  const name = LANGUAGE_NAMES[language]
+  // Языка вне вшитой таблицы имён может не быть — тогда называем его кодом.
+  const name = LANGUAGE_NAMES[language] ?? language
   return {
     system: message('llm.dictionaryFillSystem', { language: name }),
     userText: JSON.stringify(terms, null, 1),

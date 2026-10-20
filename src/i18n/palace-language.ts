@@ -98,18 +98,21 @@ export function scriptLanguage(text: string): EngramLanguage | undefined {
  */
 export function dominantLanguage(texts: readonly string[]): { language: EngramLanguage; share: number } | undefined {
   let letters = 0
-  const votes: Record<EngramLanguage, number> = { ru: 0, zh: 0, en: 0 }
+  // Голосуют три письменности, а не три языка: ключ — язык сценария, и он может
+  // быть любым, что вернул `scriptLanguage`. Поэтому словарь счётчиков — по строке,
+  // а чтение идёт через `?? 0`.
+  const votes: Record<string, number> = { ru: 0, zh: 0, en: 0 }
   for (const text of texts) {
     const counts = scriptCounts(text)
     letters += counts.ru + counts.zh + counts.en
     const language = scriptLanguage(text)
-    if (language !== undefined) votes[language] += 1
+    if (language !== undefined) votes[language] = (votes[language] ?? 0) + 1
   }
   if (letters < DIALOGUE_MIN_LETTERS) return undefined
-  const total = votes.ru + votes.zh + votes.en
+  const total = (votes.ru ?? 0) + (votes.zh ?? 0) + (votes.en ?? 0)
   if (total === 0) return undefined
-  const best = Math.max(votes.ru, votes.zh, votes.en)
-  const leaders = (['ru', 'zh', 'en'] as const).filter(language => votes[language] === best)
+  const best = Math.max(votes.ru ?? 0, votes.zh ?? 0, votes.en ?? 0)
+  const leaders = (['ru', 'zh', 'en'] as const).filter(language => (votes[language] ?? 0) === best)
   if (leaders.length !== 1) return undefined
   const winner = leaders[0]
   if (winner === undefined) return undefined

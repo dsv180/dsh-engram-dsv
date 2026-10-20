@@ -25,7 +25,7 @@ import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, save
 import { testJevConnection } from './jev/client.ts'
 import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
-import { isEngramLanguage, type EngramLanguage } from './i18n/language.ts'
+import { isLanguageCode, type EngramLanguage } from './i18n/language.ts'
 import { messageIn } from './i18n/messages.ts'
 import { entriesFromRequest } from './i18n/dictionary-edit.ts'
 import type { DictionarySetView } from './i18n/dictionary-edit.ts'
@@ -1250,7 +1250,7 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             const body = await readJsonBody(req)
             if (body === null) { json(res, 400, { error: 'malformed body' }); return }
             const wanted = body['language']
-            if (typeof wanted !== 'string' || !isEngramLanguage(wanted)) {
+            if (typeof wanted !== 'string' || !isLanguageCode(wanted)) {
               json(res, 400, { ok: false, error: `unknown palace language: ${String(wanted)}` })
               return
             }

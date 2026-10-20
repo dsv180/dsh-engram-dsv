@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
-import { isEngramLanguage, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
+import { isLanguageCode, resolveLanguage, type EngramLanguage, type LanguageSetting } from './i18n/language.ts'
 
 /** 旧库迁移策略：默认自动迁移，可选择保留待人工确认。 */
 export type LegacyMigrationPolicy = 'eager' | 'conservative'
@@ -350,8 +350,8 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     throw new Error(`dsh-engram: reflect must be one of off|suggest|auto, got "${String(config.reflect)}"`)
   }
   const languageSetting = readLanguageSetting(config.language)
-  if (languageSetting !== undefined && languageSetting !== 'auto' && !isEngramLanguage(languageSetting)) {
-    throw new Error(`dsh-engram: language must be one of auto|zh|en|ru, got "${String(languageSetting)}"`)
+  if (languageSetting !== undefined && languageSetting !== 'auto' && !isLanguageCode(languageSetting)) {
+    throw new Error(`dsh-engram: language must be "auto" or a language code (zh, en, ru, fr, …), got "${String(languageSetting)}"`)
   }
   if (config.profileTopN !== undefined && (!Number.isInteger(config.profileTopN) || config.profileTopN < 1 || config.profileTopN > 64)) {
     throw new Error('dsh-engram: profileTopN must be an integer in [1, 64]')

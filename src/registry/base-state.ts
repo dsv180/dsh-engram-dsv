@@ -19,7 +19,7 @@
  * @module @kenz1117/dsh-engram/registry/base-state
  */
 
-import { ENGRAM_LANGUAGES, type EngramLanguage } from '../i18n/language.ts'
+import { isLanguageCode, type EngramLanguage } from '../i18n/language.ts'
 import { bindingLabel } from './models.ts'
 
 /**
@@ -48,8 +48,15 @@ export function languageOfLabels(labels: readonly (string | null)[]): EngramLang
   const found = new Set<EngramLanguage>()
   for (const label of labels) {
     if (label === null) continue
-    const language = ENGRAM_LANGUAGES.find(code => label.startsWith(`${code}-`))
-    if (language !== undefined) found.add(language)
+    // Язык — это часть метки до первого дефиса; всё, что дальше, — имя модели, и
+    // оно языком не является (правило 21.10: «название модели тут не показатель»).
+    // Режем именно по первому дефису, потому что дефисы есть и в метке модели
+    // (`ru-minilm-l12`), и в подтеге языка (`zh-Hans` — тогда останется `zh`).
+    const cut = label.indexOf('-')
+    if (cut <= 0) continue
+    const code = label.slice(0, cut)
+    if (!isLanguageCode(code)) continue
+    found.add(code)
   }
   if (found.size === 0) return null
   const [first] = [...found]

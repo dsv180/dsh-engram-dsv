@@ -187,4 +187,14 @@ describe('язык баз по меткам (решение 21.10)', () => {
     // Метка формата `<язык>-<модель>`: строка без языка не доказывает ни одного из трёх.
     expect(languageOfLabels(['minilm-l12'])).toBe(null)
   })
+
+  it('язык вне тройки читается по коду: fr — это fr, а не «метки нет»', () => {
+    // Решение 21.10: языки берутся из реестра, а не из закрытого списка трёх.
+    expect(languageOfLabels(['fr-minilm-l12'])).toBe('fr')
+    expect(languageOfLabels(['fr-minilm-l12', 'de-minilm-l12'])).toBe('mixed')
+  })
+
+  it('подтег языка срезается до основного кода: zh-Hans-… — это zh', () => {
+    expect(languageOfLabels(['zh-Hans-minilm-l12'])).toBe('zh')
+  })
 })

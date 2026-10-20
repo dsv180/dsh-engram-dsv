@@ -23,7 +23,9 @@
 
 import { readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { isEngramLanguage } from '../i18n/language.ts'
+import { isLanguageCode } from '../i18n/language.ts'
+import { parseLanguages } from './languages.ts'
+import type { LanguageRecord } from './languages.ts'
 import { checkBindingModels, parseBindings, parseModels } from './models.ts'
 import type { ModelRecord, RegistryIssueKind } from './models.ts'
 import { packageRoot } from './root.ts'
@@ -44,6 +46,12 @@ export interface LoadedRegistry {
   readonly bindings: ReadonlyMap<string, string>
   /** Умолчание пакета: язык, на котором плагин говорит, если язык не выбран. */
   readonly defaultLanguage: string | undefined
+  /**
+   * Языки дворца, которые плагин знает: из `registry/languages.json`, а без файла —
+   * встроенный набор. Список нужен интерфейсу (что предлагать в выборе языка) и
+   * проверке умолчания пакета.
+   */
+  readonly languages: readonly LanguageRecord[]
   readonly problems: readonly RegistryProblem[]
   /** Прочитанные файлы, в порядке наложения: поставка, затем пользователь. */
   readonly files: readonly string[]
@@ -112,21 +120,41 @@ export function loadRegistry(sources: RegistrySources): LoadedRegistry {
     }
   }
 
+  // Языки дворца: файл поставки, а без него — встроенный набор. Пользовательского
+  // слоя здесь нет: какие языки знает плагин — свойство поставки, а не машины.
+  const languagesPath = join(root, 'registry', 'languages.json')
+  const languagesText = readText(languagesPath, problems, false)
+  let languages: readonly LanguageRecord[]
+  if (languagesText !== undefined) {
+    files.push(languagesPath)
+    const parsed = parseLanguages(languagesText)
+    for (const issue of parsed.issues) problems.push({ file: languagesPath, kind: issue.kind, detail: issue.detail })
+    languages = parsed.languages
+  } else {
+    // Файла нет — плагин не должен остаться без языков: берём встроенный набор.
+    languages = parseLanguages('').languages
+  }
+
   // Сверка слоёв с каталогом: привязка на модель, которой в каталоге нет, не работает.
   for (const issue of checkBindingModels(models, bindings)) {
     problems.push({ file: join(root, 'registry', 'bindings.json'), kind: issue.kind, detail: issue.detail })
   }
 
-  // Умолчание без словаря не исполнится — плагин заговорит на языке системы.
-  if (defaultLanguage !== undefined && !isEngramLanguage(defaultLanguage)) {
-    problems.push({
-      file: defaultFile ?? join(root, 'registry', 'bindings.json'),
-      kind: 'unknownLanguage',
-      detail: `default = ${defaultLanguage}`,
-    })
+  // Умолчание обязано быть объявленным языком: необъявленное не исполнится, и
+  // плагин заговорит на языке системы. Проверяются две вещи — форма кода и
+  // согласие реестра языков.
+  if (defaultLanguage !== undefined) {
+    const declared = languages.some(record => record.code === defaultLanguage)
+    if (!isLanguageCode(defaultLanguage) || !declared) {
+      problems.push({
+        file: defaultFile ?? join(root, 'registry', 'bindings.json'),
+        kind: 'unknownLanguage',
+        detail: `default = ${defaultLanguage}`,
+      })
+    }
   }
 
-  return { models, bindings, defaultLanguage, problems, files }
+  return { models, bindings, defaultLanguage, languages, problems, files }
 }
 
 /** Короткая сводка претензий для одного предупреждения. */

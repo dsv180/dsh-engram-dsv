@@ -24,7 +24,7 @@
  */
 
 import { decideLanguage, type LanguageDecision, type LanguageSignal } from './i18n/palace-language.ts'
-import { isEngramLanguage, resolveLanguage, systemLocaleBase, type EngramLanguage } from './i18n/language.ts'
+import { isLanguageCode, resolveLanguage, systemLocaleBase, type EngramLanguage } from './i18n/language.ts'
 
 /** Откуда брать сигналы. Все источники, кроме системной локали, необязательны. */
 export interface LanguageSignalDeps {
@@ -62,7 +62,7 @@ export async function collectLanguageSignals(deps: LanguageSignalDeps = {}): Pro
     try {
       const preference = await deps.readInterfacePreference()
       const base = preference?.split('-')[0]?.toLowerCase()
-      if (base !== undefined && isEngramLanguage(base)) signals.push({ source: 'interface', language: base })
+      if (base !== undefined && isLanguageCode(base)) signals.push({ source: 'interface', language: base })
     } catch {
       // Настройки недоступны — сигнала интерфейса нет.
     }

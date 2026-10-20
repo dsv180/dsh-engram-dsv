@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isEngramLanguage, pickLanguage, systemLanguage } from '../src/i18n/language.ts'
+import { isLanguageCode, pickLanguage, systemLanguage } from '../src/i18n/language.ts'
 import { resolveLocalModel } from '../src/embedder/select.ts'
 import { bindingLabel, parseBindings, parseModels } from '../src/registry/models.ts'
 import type { LoadedRegistry } from '../src/registry/registry-file.ts'
@@ -73,7 +73,7 @@ describe('loadRegistry: умолчание складывается слоями
     const dbDir = await mkdtemp(join(tmpdir(), 'engram-models-db-'))
     const loaded = loadRegistry({ packageRoot: packageRoot(), dbDir })
     expect(loaded.defaultLanguage).toBeDefined()
-    expect(isEngramLanguage(loaded.defaultLanguage ?? '')).toBe(true)
+    expect(isLanguageCode(loaded.defaultLanguage ?? '')).toBe(true)
     expect(loaded.problems).toEqual([])
   })
 })
@@ -164,6 +164,11 @@ describe('метка базы: язык и имя модели', () => {
       ]]),
       bindings: new Map([['*', 'Xenova/m']]),
       defaultLanguage: 'ru',
+      languages: [
+        { code: 'ru', label: 'Русский', builtin: false },
+        { code: 'en', label: 'English', builtin: true },
+        { code: 'zh', label: '中文', builtin: true },
+      ],
       problems: [],
       files: [],
     }
