@@ -67,7 +67,7 @@ const llmDouble = {
 
 const EXPECTED_TOOLS = [
   'engram_assess', 'engram_audit_forgotten', 'engram_distill', 'engram_episode_timeline', 'engram_examine',
-  'engram_export', 'engram_facts', 'engram_forget', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
+  'engram_export', 'engram_facts', 'engram_forget', 'engram_import', 'engram_ingest_history', 'engram_neighbors', 'engram_profile_edit',
   'engram_reflect', 'engram_report', 'engram_review', 'engram_review_queue', 'engram_save', 'engram_search', 'engram_stats',
   'engram_timeline', 'engram_tour', 'engram_update',
 ]

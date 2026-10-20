@@ -12,7 +12,9 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ListFilter, MemoryRecord, ObservationStatus, ReviewGrade } from './types.ts'
+import { asMemoryId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
+import { embedImportedRecords, parseImportData } from './store/import.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
@@ -606,6 +608,34 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               'content-disposition': `attachment; filename="engram-${scope}-${stamp}.${format}"`,
             })
             res.end(body)
+            return
+          }
+          if (req.method === 'POST' && route === 'import') {
+            // 面板导入（#33）：body = { data: ExportData 形状, scope?, dryRun?, keepDuplicates?, selectedIds? }。
+            // dryRun=true 走 importPreview 只分类不写库；正式导入后就地补嵌入（与 engram_import 工具同一共享路径）。
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            const bodyObj = typeof body === 'object' && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {}
+            const parsed = parseImportData(bodyObj.data)
+            if (typeof parsed === 'string') {
+              json(res, 400, { error: messageIn(deps.language, 'misc.importInvalidPayload', { error: parsed }) })
+              return
+            }
+            const scope = scopeOf(typeof bodyObj.scope === 'string' ? bodyObj.scope : null, 'user')
+            const store = await storeFor(scope)
+            if (bodyObj.dryRun === true) {
+              json(res, 200, { preview: await store.importPreview(parsed) })
+              return
+            }
+            const result = await store.importData(parsed, {
+              ...(Array.isArray(bodyObj.selectedIds)
+                ? { selectedIds: bodyObj.selectedIds.filter((v): v is string => typeof v === 'string').map(id => asMemoryId(id)) }
+                : {}),
+              ...(bodyObj.keepDuplicates === true ? { keepDuplicates: true } : {}),
+            })
+            const embedder = deps.embedder === undefined ? undefined : await deps.embedder
+            const embedded = await embedImportedRecords(store, embedder, result.importedIds)
+            json(res, 200, { ...result, embedded })
             return
           }
           if (req.method === 'GET' && route === 'mirror') {

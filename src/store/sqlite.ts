@@ -19,8 +19,8 @@ import { cosine } from '../vec.ts'
 import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
-  FactRecord, FactWriteInput, ForgettingTombstone,
-  ForgottenAuditRow, ImageryLabel,
+  FactRecord, FactWriteInput, ForgettingTombstone, ForgottenAuditRow, ImageryLabel,
+  ImportEntryClass, ImportOptions, ImportPreview, ImportResult,
   ListFilter, ListResult, MemoryEdge, MemoryId, MemoryOutcome,
   MemoryRecord, ObservationId, ObservationListFilter, ObservationRecord, ObservationWriteInput,
   ProfileBlock, ProfileBlockVersion, ReviewGrade, ReviewView, SearchHit, SearchResult, Slot, StoreStats,
@@ -547,6 +547,16 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
   const sqlCountRedacted = db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE content LIKE '%[REDACTED:%'")
   const sqlAllNodes = db.prepare('SELECT * FROM nodes ORDER BY created_at')
   const sqlAllEdges = db.prepare('SELECT * FROM edges')
+  // 导入路径：全字段插入（不经 write 的写入期自动化——导入条目保留导出侧的桩位/复习调度/时间戳），
+  // 内容全等查重（nodes 无内容哈希列，个人库量级逐条 LIMIT 1 查询够用），实体别名并集回写。
+  const sqlImportInsert = db.prepare(`INSERT INTO nodes
+    (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
+     source_session_id, source_round, source_seq, embedding, outcome, imagery_json,
+     slot_room, slot_index, imagery_score, next_review_at, ease_factor, interval_days, review_reps)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const sqlImportContentMatch = db.prepare('SELECT id FROM nodes WHERE content = ? LIMIT 1')
+  const sqlImportAttachEmbedding = db.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+  const sqlImportEntityAliases = db.prepare('UPDATE entities SET aliases_json = ?, updated_at = ? WHERE id = ?')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
     WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
   // 进入 SM-2 复习调度的条目（next_review_at 非空）不参与自动衰减：到期未复习的记忆
@@ -740,6 +750,29 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       ...(initialReviewAt === undefined ? {} : { initialReviewAt }),
     }
   }
+
+  /** 导入分类（importPreview 与 importData 共用）：id 占用时比内容全等，否则查内容是否与库内他条全等。 */
+  const classifyForImport = (records: readonly MemoryRecord[]): {
+    record: MemoryRecord
+    content: string
+    classification: ImportEntryClass
+    duplicateOf?: MemoryId
+  }[] =>
+    records.map(record => {
+      const content = String(record.content ?? '').trim()
+      const occupied = getRow(record.id)
+      if (occupied !== undefined) {
+        if (occupied.content === content) {
+          return { record, content, classification: 'duplicate' as const, duplicateOf: asMemoryId(occupied.id) }
+        }
+        return { record, content, classification: 'conflict' as const, duplicateOf: asMemoryId(occupied.id) }
+      }
+      const hit = sqlImportContentMatch.get(content) as unknown as { id: string } | undefined
+      if (hit !== undefined) {
+        return { record, content, classification: 'duplicate' as const, duplicateOf: asMemoryId(hit.id) }
+      }
+      return { record, content, classification: 'new' as const }
+    })
 
   return {
     async write(input: WriteInput) {
@@ -1291,6 +1324,118 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         edges: edgeRows.map(edge => ({ from: asMemoryId(edge.from_id), to: asMemoryId(edge.to_id), type: edge.type as MemoryEdge['type'], createdAt: edge.created_at })),
         entities,
       }
+    },
+
+    async importPreview(data: ExportData): Promise<ImportPreview> {
+      const classified = classifyForImport(data.records ?? [])
+      const storeIds = new Set((sqlAllNodes.all() as unknown as NodeRow[]).map(row => row.id))
+      const importable = new Set(classified.filter(c => c.classification === 'new').map(c => c.record.id))
+      let edgesDangling = 0
+      for (const edge of data.edges ?? []) {
+        if (!(storeIds.has(edge.from) || importable.has(edge.from))) { edgesDangling++; continue }
+        if (!(storeIds.has(edge.to) || importable.has(edge.to))) edgesDangling++
+      }
+      let entitiesNew = 0
+      let entitiesMerged = 0
+      for (const entity of data.entities ?? []) {
+        if (sqlEntityGet.get(entity.id) === undefined) entitiesNew++
+        else entitiesMerged++
+      }
+      return {
+        entries: classified.map(c => ({
+          id: c.record.id,
+          kind: c.record.kind,
+          status: c.record.status,
+          content: c.content,
+          classification: c.classification,
+          ...(c.duplicateOf === undefined ? {} : { duplicateOf: c.duplicateOf }),
+        })),
+        edgesTotal: (data.edges ?? []).length,
+        edgesDangling,
+        entitiesNew,
+        entitiesMerged,
+      }
+    },
+
+    async importData(data: ExportData, options: ImportOptions = {}): Promise<ImportResult> {
+      const classified = classifyForImport(data.records ?? [])
+      const selected = options.selectedIds === undefined ? undefined : new Set(options.selectedIds)
+      const eligible = classified.filter(c => {
+        if (selected !== undefined && !selected.has(c.record.id)) return false
+        if (c.classification === 'new') return true
+        if (c.classification !== 'duplicate') return false
+        // 内容全等且 id 空闲的重复在 keepDuplicates 下放行；id 被占用的重复是同一备份回灌，永不重复插入。
+        return options.keepDuplicates === true && getRow(c.record.id) === undefined
+      })
+      const importedIds = new Set(eligible.map(c => c.record.id))
+      const storeIds = new Set((sqlAllNodes.all() as unknown as NodeRow[]).map(row => row.id))
+      const entityRows = data.entities ?? []
+      let edgesLinked = 0
+      let edgesDangling = 0
+      let entitiesNew = 0
+      let entitiesMerged = 0
+      const at = Date.now()
+      withTransaction(() => {
+        for (const c of eligible) {
+          const r = c.record
+          const review = r.review
+          sqlImportInsert.run(
+            r.id, r.scope, r.kind, c.content, r.importance, r.confidence, r.status,
+            r.createdAt, r.lastAccessedAt, r.accessCount,
+            r.sourceSessionId ?? null, r.sourceRound ?? null, r.sourceSeq ?? null,
+            null, r.outcome ?? null, imageryToJson(r.imagery),
+            r.slot?.room ?? null, r.slot?.index ?? null, r.imageryScore ?? null,
+            review?.nextReviewAt ?? null, review?.easeFactor ?? null, review?.intervalDays ?? null, review?.reps ?? null,
+          )
+          sqlFtsInsert.run(r.id, tokenizeForFts(c.content))
+        }
+        for (const edge of data.edges ?? []) {
+          if (!(storeIds.has(edge.from) || importedIds.has(edge.from))) { edgesDangling++; continue }
+          if (!(storeIds.has(edge.to) || importedIds.has(edge.to))) { edgesDangling++; continue }
+          sqlEdgeUpsert.run(edge.from, edge.to, edge.type, edge.createdAt)
+          edgesLinked++
+        }
+        for (const entity of entityRows) {
+          const row = sqlEntityGet.get(entity.id) as unknown as EntityRow | undefined
+          if (row === undefined) {
+            const aliases = [...new Set(entity.aliases)].map(a => a.trim()).filter(a => a !== '')
+            sqlEntityInsert.run(entity.id, entity.name, entity.kind, JSON.stringify(aliases), entity.createdAt, entity.updatedAt)
+            entitiesNew++
+            continue
+          }
+          const merged = [...new Set([...entityRowToRecord(row).aliases, ...entity.aliases])]
+            .map(a => a.trim()).filter(a => a !== '')
+          sqlImportEntityAliases.run(JSON.stringify(merged), at, entity.id)
+          entitiesMerged++
+        }
+        if (eligible.length > 0 || (data.edges ?? []).length > 0) {
+          sqlLog.run(at, 'import', 'BATCH', JSON.stringify({
+            imported: eligible.length, edges: edgesLinked, dangling: edgesDangling, exportedAt: data.exportedAt,
+          }))
+        }
+      })
+      return {
+        imported: eligible.length,
+        importedIds: eligible.map(c => c.record.id),
+        skippedDuplicates: classified.filter(c => c.classification === 'duplicate').length
+          - eligible.filter(c => c.classification === 'duplicate').length,
+        conflicts: classified.filter(c => c.classification === 'conflict').length,
+        edgesLinked,
+        edgesDangling,
+        entitiesNew,
+        entitiesMerged,
+      }
+    },
+
+    async attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number> {
+      let attached = 0
+      withTransaction(() => {
+        for (const entry of entries) {
+          const result = sqlImportAttachEmbedding.run(vecToBlob(entry.embedding), entry.id)
+          attached += Number(result.changes)
+        }
+      })
+      return attached
     },
 
     async decay(options: DecayOptions) {

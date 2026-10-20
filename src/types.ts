@@ -489,6 +489,51 @@ export interface ExportData {
   readonly entities?: readonly EntityRecord[]
 }
 
+/** 导入预览行的分类：new=将导入；duplicate=与库内某条内容全等（默认跳过）；conflict=id 已被占用且内容不同（跳过并报告）。 */
+export type ImportEntryClass = 'new' | 'duplicate' | 'conflict'
+
+/** 导入预览的单行（面板勾选列表与 engram_import dryRun 的数据源）。 */
+export interface ImportPreviewEntry {
+  readonly id: MemoryId
+  readonly kind: MemoryRecord['kind']
+  readonly status: MemoryRecord['status']
+  readonly content: string
+  readonly classification: ImportEntryClass
+  /** duplicate 时：与之内容全等的既有条目 id（conflict 时为被占用的 id 本身）。 */
+  readonly duplicateOf?: MemoryId
+}
+
+/** 导入预览：逐条分类 + 边/实体层面汇总（不写库）。 */
+export interface ImportPreview {
+  readonly entries: readonly ImportPreviewEntry[]
+  readonly edgesTotal: number
+  /** 双端都无法落地的边数（端点既不在导入集也不在库内；导入时将被丢弃）。 */
+  readonly edgesDangling: number
+  readonly entitiesNew: number
+  readonly entitiesMerged: number
+}
+
+/** 导入选项。 */
+export interface ImportOptions {
+  /** 只导入这些 id（缺省 = 全部按分类规则放行的条目）。 */
+  readonly selectedIds?: readonly MemoryId[]
+  /** 内容全等的重复也强制导入（沿用导出侧 id；仅当该 id 未被占用时生效）。默认跳过。 */
+  readonly keepDuplicates?: boolean
+}
+
+/** 导入结果。 */
+export interface ImportResult {
+  readonly imported: number
+  /** 实际写入的条目 id（调用方据此批量补嵌入）。 */
+  readonly importedIds: readonly MemoryId[]
+  readonly skippedDuplicates: number
+  readonly conflicts: number
+  readonly edgesLinked: number
+  readonly edgesDangling: number
+  readonly entitiesNew: number
+  readonly entitiesMerged: number
+}
+
 /** 衰减参数：低于 importanceBelow 且 lastAccessedAt 超过 olderThanDays 的 active 条目归档。 */
 export interface DecayOptions {
   readonly importanceBelow: number
