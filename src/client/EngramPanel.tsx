@@ -3064,7 +3064,7 @@ function RegistryCard({ t, overlayHost }: {
   const [busy, setBusy] = useState(false)
   /**
    * Временный предохранитель от конвертации баз (решение 20.10): пока он отмечен,
-   * кнопка «Выполнить» нажимается, но не делает ничего. Убирается к концу работ.
+   * кнопка «Выполнить» заблокирована. Убирается к концу работ.
    */
   const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseGuard', 'off', ['on', 'off'])
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
@@ -3114,7 +3114,8 @@ function RegistryCard({ t, overlayHost }: {
     : todo === 'convert' ? tt('baseActionConvert') : todo === 'repair' ? tt('baseActionRepair') : tt('baseActionNone')
 
   const run = (): void => {
-    // Предохранитель: кнопка нажимается, но не делает ничего, пока его не снимут.
+    // Предохранитель: пока он отмечен, кнопка заблокирована; здесь — вторая линия
+    // защиты на случай, если состояние успело разойтись с разметкой.
     if (guard === 'on') return
     setBusy(true)
     void api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
@@ -3151,13 +3152,6 @@ function RegistryCard({ t, overlayHost }: {
         </dd>
       </dl>
       {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
-      {snapshot.resolved !== null && (
-        <p className={styles.regNote}>
-          <span className={styles.regMono}>{snapshot.resolved.id}</span>
-          {' · '}
-          {snapshot.resolved.pooling} · {snapshot.resolved.dtype}
-        </p>
-      )}
 
       <div className={styles.regGroup}>
         <span className={styles.regGroupTitle}>{tt('baseTitle')}</span>
@@ -3208,7 +3202,7 @@ function RegistryCard({ t, overlayHost }: {
         </label>
         <div className={styles.regActions}>
           <button type="button" className={`${styles.button} ${styles.primary}`}
-            disabled={busy || todo !== 'write-label'} onClick={run}>
+            disabled={busy || guard === 'on' || todo !== 'write-label'} onClick={run}>
             {busy ? tt('baseRunBusy') : tt('baseRun')}
           </button>
           {/* Текст действия стоит справа от кнопки на её высоте: кнопка читается
