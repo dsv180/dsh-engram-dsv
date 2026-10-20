@@ -87,6 +87,24 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits.length).toBe(1)
   })
 
+  // Мисматч размерности — не повод терять keyword-поиск (запрос автора по PR #21):
+  // база со старыми векторами обязана отдавать найденное по словам и говорить,
+  // что семантическая дорога не участвовала. Запись при этом отвергается осознанно.
+  it('мисматч размерности: поиск keyword-only с degraded, запись отвергается', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: 'alpha 512', embedding: new Float32Array(512).fill(0.1) })
+    const result = await store.search({ text: 'alpha', scopes: ['user'] }, new Float32Array(384).fill(0.1))
+    expect(result.degraded).toBe(true)
+    expect(result.hits).toHaveLength(1)
+    expect(result.hits[0]!.via).toBe('fts')
+
+    await expect(store.write({
+      scope: 'user',
+      kind: 'fact',
+      content: 'новая модель, старая база',
+      embedding: new Float32Array(384).fill(0.1),
+    })).rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
   it('向量道与 FTS 道融合，via=both 且 degraded=false', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: 'alpha 内容说明', embedding: new Float32Array(512).fill(0.1) })
     const vec = new Float32Array(512).fill(0.1)
