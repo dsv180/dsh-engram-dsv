@@ -17,8 +17,9 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadMessageDictionary } from '../src/i18n/dictionary-file.ts'
-import { entriesFromRequest, readDictionarySet, writeDictionarySet } from '../src/i18n/dictionary-edit.ts'
+import { loadMessageDictionary, readDictionaryLayer } from '../src/i18n/dictionary-file.ts'
+import { applyDictionaryPatch, entriesFromRequest, readDictionarySet, writeDictionarySet } from '../src/i18n/dictionary-edit.ts'
+import { splitDictionaryPatch } from '../src/i18n/dictionary-limits.ts'
 import { isDictionarySet, panelTwinTerms } from '../src/i18n/dictionary-terms.ts'
 import { messageVocabulary } from '../src/i18n/messages.ts'
 import { en as panelEn, ru as panelRu } from '../src/client/locales/index.ts'
@@ -197,6 +198,73 @@ describe('тело запроса разбирается без доверия �
     expect(entriesFromRequest(undefined).size).toBe(0)
     expect(entriesFromRequest('[]').size).toBe(0)
     expect(entriesFromRequest({ left: 'x' }).size).toBe(0)
+  })
+})
+
+describe('правки накладываются на слой, а не заменяют его', () => {
+  it('чего нет в правках — остаётся, пустое — снимает правку', () => {
+    const current = new Map([['A', 'а'], ['B', 'б'], ['C', 'в']])
+    const merged = applyDictionaryPatch(current, new Map([['B', 'б!'], ['C', ''], ['D', 'г']]))
+    expect(merged.get('A')).toBe('а')
+    expect(merged.get('B')).toBe('б!')
+    expect(merged.has('C')).toBe(false)
+    expect(merged.get('D')).toBe('г')
+  })
+
+  it('сохранение одной клетки не стирает прежние правки', async () => {
+    const roots = await makeRoots({ user: { 'ru.txt': `${TERM}\tПервая правка\n` } })
+    const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
+    // Как это делает маршрут: читаем текущий слой, накладываем присланные клетки, пишем.
+    const current = readDictionaryLayer(userFile).entries
+    const written = writeDictionarySet({
+      set: 'messages',
+      language: 'ru',
+      ...roots,
+      entries: applyDictionaryPatch(current, new Map([['Строка которой нет в коде', 'Вторая правка']])),
+    })
+    const text = await readFile(written.file, 'utf8')
+    expect(text).toContain(`${TERM}\tПервая правка`)
+    expect(text).toContain('Строка которой нет в коде\tВторая правка')
+  })
+
+  it('пустая клетка снимает одну правку и не трогает соседнюю', async () => {
+    const roots = await makeRoots({
+      user: { 'ru.txt': `${TERM}\tПервая правка\nСтрока которой нет в коде\tВторая правка\n` },
+    })
+    const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
+    const current = readDictionaryLayer(userFile).entries
+    const written = writeDictionarySet({
+      set: 'messages',
+      language: 'ru',
+      ...roots,
+      entries: applyDictionaryPatch(current, new Map([[TERM, '']])),
+    })
+    const text = await readFile(written.file, 'utf8')
+    expect(text).not.toContain(`${TERM}\t`)
+    expect(text).toContain('Строка которой нет в коде\tВторая правка')
+  })
+})
+
+describe('пачка сохранения пролезает в тело запроса', () => {
+  it('режется по длине строк, а не по их числу', () => {
+    // Четыре короткие правки пролезают в одну пачку...
+    expect(splitDictionaryPatch([['a', 'б'], ['b', 'в'], ['c', 'г'], ['d', 'д']], 200)).toHaveLength(1)
+    // ...а многострочная подсказка не пролезает ни с соседями, ни к соседям: три строки
+    // дают три пачки. Правило «по N строк» дало бы две — и вторая не влезла бы в тело.
+    const long = 'я'.repeat(400)
+    const mixed = splitDictionaryPatch([['a', 'б'], ['b', long], ['c', 'г']], 200)
+    expect(mixed).toEqual([[['a', 'б']], [['b', long]], [['c', 'г']]])
+  })
+
+  it('пустой вход и вход в пределах дают ожидаемое число пачек', () => {
+    expect(splitDictionaryPatch([])).toEqual([])
+    expect(splitDictionaryPatch([['a', 'б'], ['c', 'г']])).toHaveLength(1)
+  })
+
+  it('строка больше предела уходит одна, а не теряется', () => {
+    // Отказать в такой строке хуже, чем отправить её одну: сервер всё равно решает сам.
+    const huge = 'я'.repeat(400)
+    expect(splitDictionaryPatch([['a', huge]], 100)).toEqual([[['a', huge]]])
   })
 })
 

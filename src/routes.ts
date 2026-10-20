@@ -276,6 +276,22 @@ export interface DictionarySaveResult {
 }
 
 /**
+ * Итог заполнения партии словаря моделью: переводы и то, кто их дал.
+ *
+ * Пустой список переводов — не ошибка формата: модель вправе не перевести строку,
+ * которую уже нельзя перевести (или перевести её же). Настоящее «нечего принять»
+ * отличается тем, что модель не ответила вовсе, — это уже ошибка (см. deps).
+ */
+export interface DictionaryFillResult {
+  readonly set: DictionarySet
+  /** Маршрут, который отвечал: виден в тосте и в аудите. */
+  readonly provider: string
+  readonly model: string
+  /** Пары «английская строка → перевод»; строки вне запроса сюда не попадают. */
+  readonly translations: readonly (readonly [string, string])[]
+}
+
+/**
  * Ответ `GET registry`: снимок реестра плюс состояние баз.
  *
  * Разделение намеренное: реестр, словари и язык читаются один раз при сборке
@@ -349,6 +365,15 @@ export interface RouteDeps {
     readonly read: (set: DictionarySet) => DictionarySetView
     readonly write: (set: DictionarySet, entries: ReadonlyMap<string, string>) => DictionarySaveResult
   }
+  /**
+   * Заполнение словаря моделью: перевести партию английских строк на язык набора.
+   *
+   * Партии режет панель (см. i18n/dictionary-ai): один запрос — одна партия, чтобы
+   * у прогресса была цена, а обрыв одной партии не уносил остальные. Здесь ничего
+   * не пишется: переводы уходят в черновик таблицы и станут файлом только после
+   * «Сохранить» — модель не должна править словарь молча.
+   */
+  readonly dictionaryFill: (set: DictionarySet, terms: readonly string[]) => Promise<DictionaryFillResult>
   /**
    * Обслуживание: состояние каждой базы дворца. Считается на каждый запрос, а не
    * при сборке плагина: метку меняет кнопка в этой же карточке, и после неё панель
@@ -960,16 +985,36 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'dictionary') {
             // Запись — только в пользовательский слой в каталоге данных: поставка
             // принадлежит выпуску плагина (см. i18n/dictionary-edit.ts). Тело:
-            // { set, entries: [[английская строка, перевод], ...] } — полное желаемое
-            // состояние слоя, а не список изменений: строка без пары снимает правку.
+            // { set, entries: [[английская строка, перевод], ...] } — только изменённые
+            // клетки: пустое значение снимает правку, отсутствие строки оставляет прежнюю.
+            // Наложение на текущий слой — в deps.dictionary.write (applyDictionaryPatch).
             if (!guardWrite(req, res)) return
             const body = await readJsonBody(req)
-            const set = body?.['set']
+            // null = тело не прочиталось (битый JSON или больше 64 КиБ). Продолжать нельзя:
+            // пустой список правок — это «снять всё», то есть молчаливая потеря слоя.
+            if (body === null) { json(res, 400, { error: 'malformed body' }); return }
+            const set = body['set']
             if (!isDictionarySet(set)) {
               json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
               return
             }
-            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body?.['entries'])))
+            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body['entries'])))
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary-fill') {
+            // Заполнение словаря моделью. Тело: { set, terms: [английская строка, ...] }.
+            // Пишем только в черновик панели: файл словаря меняет «Сохранить», а не модель.
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null) { json(res, 400, { error: 'malformed body' }); return }
+            const set = body['set']
+            if (!isDictionarySet(set)) {
+              json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
+              return
+            }
+            const raw = Array.isArray(body['terms']) ? body['terms'] as unknown[] : []
+            const terms = raw.filter((term): term is string => typeof term === 'string')
+            json(res, 200, await deps.dictionaryFill(set, terms))
             return
           }
           if (req.method === 'POST' && route === 'base-label') {

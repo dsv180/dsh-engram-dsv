@@ -469,6 +469,17 @@ export type EngramKey =
   | 'dictNoRows'
   | 'dictLoading'
   | 'dictFailed'
+  | 'dictCancelHint'
+  | 'dictSaveHint'
+  | 'dictSaveBusy'
+  | 'dictSaved'
+  | 'dictSaveFailed'
+  | 'dictReverted'
+  | 'dictFillHint'
+  | 'dictFillStop'
+  | 'dictFillRunning'
+  | 'dictFillDone'
+  | 'dictFillFailed'
 
 /** kind 数据值 → 词典键（面板与走廊图共用一份，避免两处各自硬编码房间名）。 */
 export const KIND_KEY: Readonly<Record<string, EngramKey>> = {

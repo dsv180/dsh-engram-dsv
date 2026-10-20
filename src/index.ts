@@ -23,9 +23,11 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import { resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
-import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary } from './i18n/dictionary-file.ts'
+import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
-import { readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
+import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
+import { FILL_MAX_TOKENS, FILL_TIMEOUT_MS } from './i18n/dictionary-limits.ts'
+import { fillBatch, fillPrompt, parseFillAnswer } from './i18n/dictionary-ai.ts'
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
@@ -64,6 +66,7 @@ import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
 import { estimateTokens } from './token.ts'
+import { EngramError } from './types.ts'
 import type { EngramScope, Slot } from './types.ts'
 
 /** Cordis 插件名（loader 诊断与注入 source 使用）。 */
@@ -998,12 +1001,54 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
    */
   const dictionaryDeps: RouteDeps['dictionary'] = {
     read: set => readDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir }),
-    write: (set, entries): DictionarySaveResult => {
-      const written = writeDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir, entries })
+    write: (set, patch): DictionarySaveResult => {
+      const sources = { set, language: resolved.language, dbDir: resolved.dbDir }
+      // Панель присылает только изменённые клетки: накладываем их на текущий слой, чтобы
+      // не тронутые человеком строки не стёрлись и запрос остался соразмерен правке.
+      const current = readDictionaryLayer(dictionaryPaths(sources).user).entries
+      const written = writeDictionarySet({ ...sources, entries: applyDictionaryPatch(current, patch) })
       // Перечитываем словари до снимка набора: панель должна увидеть то, что записали.
       reloadDictionaries()
-      return { set, ...written, view: readDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir }) }
+      return { set, ...written, view: readDictionarySet(sources) }
     },
+  }
+
+  /**
+   * Заполнение словаря моделью: одна партия английских строк → переводы.
+   *
+   * Маршрут берётся так же, как у прочих вспомогательных вызовов: переопределение из
+   * настроек главнее модели текущей сессии (панель — не сессия, своего маршрута у неё
+   * нет). Запрос модели пишется в op_log тем же способом, что у соседей: обещание
+   * «что видел пользователь — то и записано» не должно зависеть от того, откуда вызов.
+   */
+  const dictionaryFillDeps: RouteDeps['dictionaryFill'] = async (set, rawTerms) => {
+    const terms = fillBatch(rawTerms)
+    const route = resolved.routeOverride ?? preStepState.route
+    if (terms.length === 0) {
+      return { set, provider: route?.provider ?? '', model: route?.model ?? '', translations: [] }
+    }
+    if (route === undefined) throw new EngramError('DICTIONARY_FILL_NO_ROUTE', message('llm.dictionaryFillNoRoute'))
+    const prompt = fillPrompt(terms, resolved.language)
+    void openStore('user')
+      .then(store => store.audit('dictionary-fill-request', 'AUX', JSON.stringify({
+        route, set, language: resolved.language, terms, maxTokens: FILL_MAX_TOKENS,
+      })))
+      .catch(() => { /* аудит не должен ломать заполнение */ })
+    const text = await streamText(ctx, {
+      route,
+      system: prompt.system,
+      userText: prompt.userText,
+      // Своей сессии у панели нет: пустой id — как у исторического бэкфилла (см. buildHistoryDeps).
+      sessionId: '',
+      maxTokens: FILL_MAX_TOKENS,
+      purpose: 'engram-dictionary-fill',
+      signal: AbortSignal.timeout(FILL_TIMEOUT_MS),
+    })
+    const translations = parseFillAnswer(text, terms)
+    if (translations.length === 0) {
+      throw new EngramError('DICTIONARY_FILL_EMPTY', message('llm.dictionaryFillEmptyAnswer'))
+    }
+    return { set, provider: route.provider, model: route.model, translations }
   }
 
   /** 组装历史回填依赖；source 每次现取，兼容持久化服务在插件之后挂载的组合。 */
@@ -1137,6 +1182,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       baseStates,
       writeBaseLabels,
       dictionary: dictionaryDeps,
+      dictionaryFill: dictionaryFillDeps,
       // Пересчёт векторов — этап 2 блока Б: конвертер живёт вне плагина и в карточку
       // ещё не подключён. Пока false — карточка честно называет такие состояния
       // невыполнимыми, а кнопка ничего не делает молча.

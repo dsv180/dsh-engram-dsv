@@ -17,6 +17,9 @@ import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
+// Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
+// поэтому в клиентскую сборку не тянется ни модель, ни её клиент.
+import { FILL_BATCH, splitDictionaryPatch } from '../i18n/dictionary-limits.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
@@ -3225,7 +3228,9 @@ function RegistryCard({ t, overlayHost }: {
         )}
       </div>
 
-      {dictionaryOpen && <DictionaryEditor tt={tt} host={overlayHost} onClose={() => { setDictionaryOpen(false) }} />}
+      {dictionaryOpen && (
+        <DictionaryEditor tt={tt} host={overlayHost} toast={toast} onClose={() => { setDictionaryOpen(false) }} />
+      )}
     </div>
   )
 }
@@ -3252,6 +3257,26 @@ interface DictionarySetView {
   readonly rows: readonly DictionaryRowView[]
   readonly files: { readonly delivery: string, readonly user: string, readonly read: readonly string[] }
   readonly problems: readonly { readonly file: string, readonly line: number, readonly kind: string, readonly detail: string }[]
+}
+
+/**
+ * Ответ POST dictionary: куда легли правки и как набор выглядит после записи.
+ * Представление приходит тем же ответом — таблица обязана показывать записанное.
+ */
+interface DictionarySaveResultView {
+  readonly set: DictionarySetName
+  readonly file: string
+  readonly written: number
+  readonly bytes: number
+  readonly view: DictionarySetView
+}
+
+/** Ответ POST dictionary-fill: переводы партии и маршрут, который отвечал. */
+interface DictionaryFillAnswer {
+  readonly set: DictionarySetName
+  readonly provider: string
+  readonly model: string
+  readonly translations: readonly (readonly [string, string])[]
 }
 
 /**
@@ -3282,16 +3307,20 @@ const DictionaryRow = memo(function DictionaryRow({ left, value, edited, hint, p
  *
  * Слева — английская строка ровно как она стоит в коде: это ключ словаря, поэтому
  * её показывают, а не правят. Справа — перевод, который видит выбранный язык;
- * клетки правятся здесь же, а уходят в пользовательский слой файла при сохранении.
- * Сохранение, отмена и заполнение ИИ ещё не подключены: кнопки стоят на своих
- * местах и говорят об этом прямо, вместо того чтобы делать вид, что работают.
+ * клетки правятся здесь же, а уходят в пользовательский слой файла только по «Сохранить».
+ *
+ * Заполнение ИИ пишет в тот же черновик, что и человек, и партиями: файл меняет только
+ * «Сохранить», поэтому работа модели ничего не портит молча и её можно отменить. Партии
+ * (а не один запрос на весь словарь) — потому что партия это единица прогресса и то,
+ * что можно прервать; повторное нажатие на кнопку останавливает заполнение.
  */
-function DictionaryEditor({ tt, host, onClose }: {
+function DictionaryEditor({ tt, host, toast, onClose }: {
   readonly tt: (key: EngramKey, params?: Record<string, string | number>) => string
   /** Якорь оверлея (начало `.panelRoot`): экран уходит туда порталом. Сам он fixed, но якорь
    *  обязан лежать вне `.panel` — иначе собственный контекст наложения панели не даст
    *  перекрыть окно целиком. */
   readonly host: { readonly current: HTMLDivElement | null }
+  readonly toast: ToastController
   readonly onClose: () => void
 }): React.ReactElement {
   const [set, setSet] = useState<DictionarySetName>('panel')
@@ -3300,11 +3329,21 @@ function DictionaryEditor({ tt, host, onClose }: {
   const [query, setQuery] = useState('')
   /** Черновик правок: английская строка → значение клетки ('' — снять правку). */
   const [draft, setDraft] = useState<ReadonlyMap<string, string>>(new Map())
+  /** Что сейчас занято: сохранение и заполнение не ходят одновременно. */
+  const [busy, setBusy] = useState<'save' | 'fill' | null>(null)
+  /** Прогресс заполнения (null — не заполняем): отправлено партий / терминов всего. */
+  const [fill, setFill] = useState<{ readonly done: number, readonly total: number } | null>(null)
+  /** Просьба остановить заполнение: проверяется перед каждой партией. */
+  const stopFill = useRef(false)
 
   // Набор перечитывается на каждое переключение: «панель» и «сообщения» — разные
-  // файлы, и общий кэш здесь только запутал бы, чей перевод на экране.
+  // файлы, и общий кэш здесь только запутал бы, чей перевод на экране. Заодно
+  // останавливается заполнение: партии другого набора в этот черновик не годятся.
   useEffect(() => {
     let alive = true
+    stopFill.current = true
+    setFill(null)
+    setBusy(null)
     setView(null)
     setError(null)
     setDraft(new Map())
@@ -3334,15 +3373,133 @@ function DictionaryEditor({ tt, host, onClose }: {
     return view.rows.filter(row => row.left.toLowerCase().includes(needle) || cell(row).toLowerCase().includes(needle))
   }, [view, query, cell])
 
-  const dirty = useMemo(() => {
-    if (view === null) return 0
-    let count = 0
+  /**
+   * Партия правок — то, что уйдёт в файл: только клетки, отличающиеся от слоя.
+   * Пустое значение остаётся значимым («снять правку»), поэтому отбрасывается не пустое,
+   * а совпадающее с тем, что уже лежит в словаре.
+   */
+  const patch = useMemo(() => {
+    if (view === null) return [] as readonly (readonly [string, string])[]
+    const changed: (readonly [string, string])[] = []
     for (const row of view.rows) {
-      const edited = draft.get(row.left)
-      if (edited !== undefined && edited !== row.right) count += 1
+      const value = draft.get(row.left)
+      if (value === undefined || value === row.right) continue
+      changed.push([row.left, value])
     }
-    return count
+    return changed
   }, [view, draft])
+  const dirty = patch.length
+
+  /** Клетки без перевода: только их и отдаём модели — заполнение не перекрывает готовое. */
+  const fillable = useMemo(() => {
+    if (view === null) return [] as readonly string[]
+    return view.rows.filter(row => cell(row).trim() === '').map(row => row.left)
+  }, [view, cell])
+
+  const save = (): void => {
+    if (view === null || dirty === 0 || busy !== null) return
+    setBusy('save')
+    void (async () => {
+      // Правок бывает больше, чем пролезает в одно тело запроса (набор сообщений при
+      // заполнении нового языка): режем по размеру, а не по числу строк. Каждая пачка —
+      // законченная запись (правки накладываются на слой), поэтому обрыв на середине
+      // оставляет уже записанное записанным, а не откатывает всё.
+      const chunks = splitDictionaryPatch(patch)
+      const sent: string[] = []
+      let last: DictionarySaveResultView | null = null
+      try {
+        for (const chunk of chunks) {
+          const answer = await api<DictionarySaveResultView>('dictionary', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ set, entries: chunk }),
+          })
+          last = answer
+          for (const row of chunk) sent.push(row[0])
+        }
+      } catch (cause) {
+        const text = cause instanceof Error ? cause.message : String(cause)
+        // Что успело записаться, то записалось: об этом говорят отдельно, чтобы «не вышло»
+        // не читалось как «ничего не изменилось».
+        if (sent.length > 0) toast.push('success', tt('dictSaved', { n: sent.length, file: last?.file ?? '' }))
+        toast.push('error', tt('dictSaveFailed', { error: text }))
+        return
+      } finally {
+        // Таблица продолжает показывать записанное: представление берём из ответа последней
+        // пачки, а не перечитываем — иначе «сохранил» и «вижу» расходятся на один запрос.
+        if (last !== null) setView(last.view)
+        // Записанные клетки возвращаются к слою: иначе снятая правка (пустая клетка)
+        // навсегда осталась бы «изменённой» и кнопка сохранения не гасла бы.
+        setDraft(current => {
+          const next = new Map(current)
+          for (const left of sent) next.delete(left)
+          return next
+        })
+        setBusy(null)
+      }
+      toast.push('success', tt('dictSaved', { n: sent.length, file: last?.file ?? '' }))
+    })()
+  }
+
+  const cancel = (): void => {
+    if (dirty === 0 || busy !== null) return
+    setDraft(new Map())
+    toast.push('info', tt('dictReverted'))
+  }
+
+  /** Уход с экрана: несохранённое теряется, поэтому об этом говорят, а не молчат. */
+  const back = (): void => {
+    if (dirty > 0) toast.push('info', tt('dictReverted'))
+    onClose()
+  }
+
+  const fillAi = (): void => {
+    if (view === null) return
+    // Второе нажатие — остановка: у долгого заполнения должна быть кнопка «хватит».
+    if (fill !== null) { stopFill.current = true; return }
+    if (busy !== null || fillable.length === 0) return
+    const terms = fillable
+    const base = new Map(view.rows.map(row => [row.left, row.right]))
+    stopFill.current = false
+    setBusy('fill')
+    setFill({ done: 0, total: terms.length })
+    void (async () => {
+      let filled = 0
+      let failure: string | null = null
+      for (let index = 0; index < terms.length; index += FILL_BATCH) {
+        if (stopFill.current) break
+        try {
+          const answer = await api<DictionaryFillAnswer>('dictionary-fill', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ set, terms: terms.slice(index, index + FILL_BATCH) }),
+          })
+          // Набор переключили, пока партия ехала: её переводы уже чужого словаря.
+          if (stopFill.current) break
+          setDraft(current => {
+            const next = new Map(current)
+            for (const [left, right] of answer.translations) {
+              // Пишем только в пустую клетку: ни работа человека, ни прошлая партия
+              // не перекрываются — иначе повторный проход затирал бы уже принятое.
+              if ((next.get(left) ?? base.get(left) ?? '').trim() !== '') continue
+              next.set(left, right)
+            }
+            return next
+          })
+          filled += answer.translations.length
+        } catch (cause) {
+          failure = cause instanceof Error ? cause.message : String(cause)
+          break
+        }
+        setFill({ done: Math.min(index + FILL_BATCH, terms.length), total: terms.length })
+      }
+      stopFill.current = true
+      setFill(null)
+      setBusy(null)
+      if (filled > 0) toast.push('success', tt('dictFillDone', { n: filled }))
+      if (failure !== null) toast.push('error', tt('dictFillFailed', { error: failure }))
+    })()
+  }
 
   /** Подпись строки: откуда взят правый столбец (в подсказке, не в колонке). */
   const hintOf = (source: DictionaryRowView['source']): string => source === 'user'
@@ -3355,18 +3512,23 @@ function DictionaryEditor({ tt, host, onClose }: {
   const screen = (
     <div className={styles.dictScreen}>
       <div className={styles.dictMenu}>
-        <button type="button" className={styles.dictBack} onClick={onClose}
+        <button type="button" className={styles.dictBack} onClick={back}
           title={tt('dictBack')} aria-label={tt('dictBack')}>{'←'}</button>
         <span className={styles.dictTitle}>{tt('dictTitle')}</span>
         <div className={styles.dictMenuRight}>
-          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
-            {tt('dictFillAi')}
+          <button type="button" className={styles.button}
+            disabled={view === null || busy === 'save' || (fill === null && fillable.length === 0)}
+            title={fill !== null ? tt('dictFillStop') : fillable.length === 0 ? tt('dictFillHint') : undefined}
+            onClick={fillAi}>
+            {fill !== null ? tt('dictFillStop') : tt('dictFillAi')}
           </button>
-          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+          <button type="button" className={styles.button} disabled={busy !== null || dirty === 0}
+            title={dirty === 0 ? tt('dictCancelHint') : undefined} onClick={cancel}>
             {tt('dictCancel')}
           </button>
-          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
-            {tt('dictSave')}
+          <button type="button" className={styles.button} disabled={busy !== null || dirty === 0}
+            title={dirty === 0 ? tt('dictSaveHint') : undefined} onClick={save}>
+            {busy === 'save' ? tt('dictSaveBusy') : tt('dictSave')}
           </button>
         </div>
       </div>
@@ -3382,8 +3544,8 @@ function DictionaryEditor({ tt, host, onClose }: {
         <span className={styles.dictStatus}>
           {view === null ? tt('dictLoading') : tt('dictRows', { n: view.rows.length })}
           {dirty > 0 && <> · {tt('dictDirty', { n: dirty })}</>}
+          {fill !== null && <> · {tt('dictFillRunning', { done: fill.done, total: fill.total })}</>}
           {view !== null && <> · {tt('dictTarget')} <span className={styles.regMono}>{view.files.user}</span></>}
-          {' · '}{tt('dictNotWired')}
         </span>
       </div>
       <div className={styles.dictBody}>
