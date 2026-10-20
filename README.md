@@ -273,7 +273,7 @@ pnpm test
 ## Known Limitations and Deferred Work
 
 - **矛盾判定默认无 LLM** —— 写入时默认仅按向量相似度（≥0.88）报告候选并建边，语义矛盾的确认留给模型/用户裁决与蒸馏；可配 Jev 裁决（面板「裁决」tab 或 yml `jev`）让模糊带与矛盾边走外部判决，Jev 不可用时回落本默认。
-- **嵌入器降级期间的记忆无向量** —— 模型未就绪时写入的记忆不参与语义道；语义上线后跑一次 `pnpm backfill` 补算存量向量（`pnpm build` 的模型缓存就绪后执行，可经 `HF_ENDPOINT` 配镜像）。**换模型同理**：换了 `embedder.localModel`（或从 local 换到 remote）之后，库中旧向量与新模型维度不同，写入会被拒绝——要么把模型改回去，要么用新模型重建全部向量。
+- **嵌入器降级期间的记忆无向量** —— 模型未就绪时写入的记忆不参与语义道；语义上线后跑一次 `pnpm backfill` 补算存量向量（`pnpm build` 的模型缓存就绪后执行，可经 `HF_ENDPOINT` 配镜像）。**换模型同理**：换了 `embedder.localModel`（或从 local 换到 remote）之后，库中旧向量与新模型维度不同，写入会被拒绝——要么把模型改回去，要么用新模型重建全部向量：`pnpm backfill -- --force --model <id>`（`--pooling mean|cls` 可选，`--cache-dir` 指向已有模型缓存可省一次下载）。脚本扫描 `<dbDir>` 下的全部分库（`user.db`、`shared.db`、`project-<hash>.db`）；不带 `--force` 时若模型维度与库中已有向量不符，它在写入前就报错退出，绝不会写出混合维度的库。远程嵌入器（`kind: remote`）不在脚本覆盖范围——它跑的是本地 transformers.js 推理，复现不了远程端点的向量。
 
 ## 路线图
 
