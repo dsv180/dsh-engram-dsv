@@ -78,6 +78,8 @@ export async function askNoul(
  * Реквизиты соединения берутся у хоста лениво — при первом вопросе этого судьи —
  * и запоминаются на время его жизни: одна операция задаёт десятки вопросов, а
  * чтение конфигурации провайдера и секрета — это обращения к сервисам хоста.
+ * Помнится только удачная сборка: неудачную следующая попытка повторяет, иначе
+ * разовый сбой сервиса хоста залипал бы на всю жизнь судьи.
  *
  * @param config - разрешённая конфигурация Jev (включая три порога).
  * @param resolveConnection - сборщик соединения из данных хоста; строка = текст ошибки.
@@ -87,10 +89,17 @@ export function createMemoryJudge(
   config: ResolvedJevConfig,
   resolveConnection: () => Promise<JevConnection | string>,
 ): MemoryJudge {
-  let cached: Promise<JevConnection | string> | undefined
-  const connection = (): Promise<JevConnection | string> => {
-    cached ??= resolveConnection()
-    return cached
+  let cached: JevConnection | undefined
+  let attempt: Promise<JevConnection | string> | undefined
+  const connection = async (): Promise<JevConnection | string> => {
+    if (cached !== undefined) return cached
+    // Параллельные вопросы одной операции делят одну попытку, а не собирают каждый своё.
+    attempt ??= resolveConnection()
+    const resolved = await attempt
+    attempt = undefined
+    if (typeof resolved === 'string') return resolved
+    cached = resolved
+    return resolved
   }
   return {
     deferMergeAbove: config.deferMergeAbove,

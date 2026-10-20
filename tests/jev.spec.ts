@@ -136,6 +136,33 @@ describe('createMemoryJudge', () => {
     const judge = createMemoryJudge(jevConfig, async () => 'Jev: провайдер недоступен')
     await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/провайдер недоступен/)
   })
+
+  it('неудачная сборка соединения не залипает: следующий вопрос спрашивает хост снова', async () => {
+    let calls = 0
+    const judge = createMemoryJudge(jevConfig, async () => {
+      calls += 1
+      return calls === 1 ? 'Jev: провайдер недоступен' : connection
+    })
+    // Первый вопрос: сборка не удалась — ошибка уходит наверх, писать нечем.
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/провайдер недоступен/)
+    // Второй: хост спрашивается заново (а не отдаётся залипшая ошибка), вопрос доходит до сети.
+    const fetchMock = stubFetch({ answers: { q: { noul: 0.4 } } })
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).resolves.toEqual({ q: 0.4 })
+    expect(calls).toBe(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('удачная сборка помнится: два вопроса одной операции обходятся одной сборкой', async () => {
+    let calls = 0
+    const judge = createMemoryJudge(jevConfig, async () => {
+      calls += 1
+      return connection
+    })
+    stubFetch({ answers: { q: { noul: 0.4 } } })
+    await judge.ask('s', [{ id: 'q', instructions: 'i' }])
+    await judge.ask('s', [{ id: 'q', instructions: 'i' }])
+    expect(calls).toBe(1)
+  })
 })
 
 describe('decideWrite 模糊带 Jev 裁决', () => {

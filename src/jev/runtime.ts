@@ -16,7 +16,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { ResolvedJevConfig } from '../config.ts'
-import type { MemoryJudge } from '../write-disposition.ts'
+import type { JudgeProvider } from '../write-disposition.ts'
 import { message } from '../i18n/messages.ts'
 import { createMemoryJudge } from './client.ts'
 import { resolveJevConnection, type HostContext } from './host.ts'
@@ -206,12 +206,15 @@ export function jevConfigView(base: ResolvedJevConfig, override: JevOverride): J
 }
 
 /**
- * Единая точка сборки: прочитать перекрытие панели, слить с базой cordis.yml и,
- * если Jev включён, отдать судью; иначе — пустой объект.
- * Результат раскладывается условным расширением в четыре вида зависимостей
+ * Единая точка сборки: отдать поставщика судьи Jev — функцию, которая собирает судью
+ * в момент операции. Результат раскладывается в зависимости четырёх видов
  * (запись, инструменты, последний ход, догрузка истории).
- * Реквизиты соединения резолвятся лениво — при первом вопросе судьи, и там же
- * доопределяются провайдер и модель, которых не назвал никто.
+ *
+ * Поставщик читает перекрытие панели и базу cordis.yml при каждом вызове, а реквизиты
+ * соединения резолвятся ещё позже — при первом вопросе судьи, где и доопределяются
+ * провайдер и модель, которых не назвал никто. Поэтому включение Jev и смена провайдера,
+ * модели или адреса в панели действуют без перезапуска, а не только при загрузке плагина.
+ * Три порога задаются лишь в cordis.yml и меняются с перезапуском.
  * @param ctx - контекст плагина (доступ к сервисам хоста: llm, settings, credentials).
  * @param base - база из cordis.yml.
  * @param dbDir - каталог данных (там лежит файл перекрытия).
@@ -224,19 +227,21 @@ export function resolveJevField(
   base: ResolvedJevConfig,
   dbDir: string,
   routeProvider?: () => string | undefined,
-): { judge: MemoryJudge } | Record<string, never> {
-  const config = effectiveJevConfig(base, loadJevOverride(dbDir))
-  if (!config.enabled) return {}
-  const configured = config.provider
-  const model = config.model ?? ''
-  const endpoint = config.endpoint
-  const timeoutMs = config.timeoutMs
+): { resolveJudge: JudgeProvider } {
   return {
-    judge: createMemoryJudge(config, () => {
-      const provider = configured !== undefined && configured !== ''
-        ? configured
-        : (routeProvider?.() ?? '')
-      return resolveJevConnection(ctx, provider, model, timeoutMs, endpoint)
-    }),
+    resolveJudge: () => {
+      const config = effectiveJevConfig(base, loadJevOverride(dbDir))
+      if (!config.enabled) return undefined
+      const configured = config.provider
+      const model = config.model ?? ''
+      const endpoint = config.endpoint
+      const timeoutMs = config.timeoutMs
+      return createMemoryJudge(config, () => {
+        const provider = configured !== undefined && configured !== ''
+          ? configured
+          : (routeProvider?.() ?? '')
+        return resolveJevConnection(ctx, provider, model, timeoutMs, endpoint)
+      })
+    },
   }
 }

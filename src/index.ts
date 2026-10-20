@@ -852,7 +852,8 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     embedder,
     call: callParams => streamText(ctx, { ...callParams, sessionId: callParams.sessionId ?? '' }),
     routeOverride: resolved.routeOverride,
-    // 面板覆盖免缓存装配：工具每次调用时读 jev-config.json，面板保存立即生效。
+    // 面板覆盖免缓存装配：поставщик судьи читает jev-config.json в момент вызова инструмента,
+    // поэтому сохранение в панели действует сразу, без перезапуска DSH.
     // Читатель маршрута ленивый: инструменты регистрируются до первой сессии, и
     // провайдер берётся в момент вопроса, а не в момент регистрации.
     ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => preStepState.route?.provider),

@@ -23,7 +23,7 @@ import type { EngramStore } from '../store/interface.ts'
 import { INGEST_DONE_OP, encodeTurnKey, ensureSessionSummary, ingestPreviousTurn, ingestWriteRouting } from './hook.ts'
 import type { IngestDeps, IngestMode, IngestWriteRouting } from './hook.ts'
 import { message } from '../i18n/messages.ts'
-import type { MemoryJudge } from '../write-disposition.ts'
+import type { JudgeProvider } from '../write-disposition.ts'
 
 /** 历史会话 header 的窄视图（session-persistence 的 SessionHeader 子集，只依赖用到的字段）。 */
 export interface HistorySessionHeader {
@@ -140,8 +140,12 @@ export interface HistoryBackfillDeps {
   readonly routeOverride: LlmRoute | undefined
   readonly call: IngestDeps['call']
   readonly logRequest: IngestDeps['logRequest']
-  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态。 */
-  readonly judge?: MemoryJudge
+  /**
+   * Поставщик судьи Jev: спрашивается в начале прогона, поэтому включение Jev и выбор
+   * провайдера в панели действуют без перезапуска. Отсутствует или вернул undefined =
+   * судьи нет, чистые правила (DEFER пишется и сразу связывается).
+   */
+  readonly resolveJudge?: JudgeProvider
   /** 时间基准（测试可注入）。 */
   readonly now?: () => number
 }
@@ -359,6 +363,9 @@ export async function runHistoryBackfill(
   const routeOverride = overrides.provider !== undefined && overrides.model !== undefined
     ? { provider: overrides.provider, model: overrides.model }
     : deps.routeOverride
+  // Судья спрашивается в начале прогона: панель могла измениться после сборки плагина,
+  // а вопросы всего прогона делят одно соединение.
+  const judge = deps.resolveJudge?.()
   const failures: { sessionId: string; turn: number; reason: string }[] = []
   /** 内部可变累加器（对外以只读的 HistoryRunProgress 暴露）。 */
   const progress: {
@@ -403,7 +410,7 @@ export async function runHistoryBackfill(
           routeOverride,
           call: deps.call,
           logRequest: deps.logRequest,
-          ...(deps.judge === undefined ? {} : { judge: deps.judge }),
+          ...(judge === undefined ? {} : { judge }),
           signal,
           // 历史轮次同样节流（省调用），且写入不进入复习调度。
           throttle: true,

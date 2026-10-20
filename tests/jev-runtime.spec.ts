@@ -330,42 +330,45 @@ describe('resolveJevField', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('yml включён, выбор сделан, файла перекрытия нет: судья собирается', () => {
+  it('yml включён, выбор сделан, файла перекрытия нет: поставщик отдаёт судью', () => {
     const field = resolveJevField(hostStub, baseConfig, dir)
-    expect(typeof field.judge?.ask).toBe('function')
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
   })
 
-  it('yml выключен: пустой объект, судья не собирается', () => {
-    expect(resolveJevField(hostStub, { ...baseConfig, enabled: false }, dir)).toEqual({})
+  it('yml выключен: поставщик отдаёт undefined, судья не собирается', () => {
+    expect(resolveJevField(hostStub, { ...baseConfig, enabled: false }, dir).resolveJudge()).toBeUndefined()
   })
 
   it('провайдер не назван никем: судья собирается, причину назовёт момент вопроса', () => {
     const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined, model: undefined }, dir)
-    expect(typeof field.judge?.ask).toBe('function')
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
   })
 
-  it('наследование маршрута сессии: читатель провайдера вызывается и подставляет своё', () => {
+  it('наследование маршрута сессии: читатель провайдера спрашивается не при сборке судьи, а при вопросе', () => {
     let asked = 0
     const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined, model: undefined }, dir, () => {
       asked += 1
       return 'from-session'
     })
-    // Сборка судьи ленива: провайдер сессии спрашивается не при сборке, а при вопросе,
+    // Реквизиты соединения собираются при первом вопросе, а не при сборке судьи,
     // поэтому смена маршрута посреди сессии подхватывается сама.
-    expect(typeof field.judge?.ask).toBe('function')
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
     expect(asked).toBe(0)
   })
 
-  it('панель выключает тумблер: перекрытие перечитывается сразу, судья исчезает', async () => {
-    expect(typeof resolveJevField(hostStub, baseConfig, dir).judge?.ask).toBe('function')
+  it('панель выключает и включает тумблер: тот же поставщик следует за файлом, перезапуск не нужен', () => {
+    const field = resolveJevField(hostStub, baseConfig, dir)
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
     saveJevOverride(dir, { enabled: false })
-    expect(resolveJevField(hostStub, baseConfig, dir)).toEqual({})
+    expect(field.resolveJudge()).toBeUndefined()
+    saveJevOverride(dir, { enabled: true })
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
   })
 
   it('панель добавляет выбор: без провайдера в yml судья всё равно собирается', async () => {
     saveJevOverride(dir, { enabled: true, provider: 'aitunnel', model: 'jev-1' })
     const field = resolveJevField(hostStub, { ...baseConfig, provider: undefined }, dir)
-    expect(typeof field.judge?.ask).toBe('function')
+    expect(typeof field.resolveJudge()?.ask).toBe('function')
   })
 })
 
