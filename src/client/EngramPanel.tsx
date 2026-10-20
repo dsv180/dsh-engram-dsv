@@ -8,6 +8,7 @@
  */
 
 import { Component, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import styles from './panel.module.css'
 import { KIND_KEY, NS, en, ru, zh, type EngramKey } from './locales/index.ts'
@@ -3001,7 +3002,11 @@ const BASE_STATE_KEY: Readonly<Record<string, EngramKey>> = {
  * Тексты берутся из словаря панели, пришедшего тем же ответом: он главнее
  * вшитого в сборку, и это ровно то, ради чего словарь вынесен в файл.
  */
-function RegistryCard({ t }: { t: T }): React.ReactElement {
+function RegistryCard({ t, overlayHost }: {
+  readonly t: T
+  /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
+  readonly overlayHost: { readonly current: HTMLDivElement | null }
+}): React.ReactElement {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -3220,7 +3225,7 @@ function RegistryCard({ t }: { t: T }): React.ReactElement {
         )}
       </div>
 
-      {dictionaryOpen && <DictionaryEditor tt={tt} onClose={() => { setDictionaryOpen(false) }} />}
+      {dictionaryOpen && <DictionaryEditor tt={tt} host={overlayHost} onClose={() => { setDictionaryOpen(false) }} />}
     </div>
   )
 }
@@ -3273,7 +3278,7 @@ const DictionaryRow = memo(function DictionaryRow({ left, value, edited, hint, p
 })
 
 /**
- * Экран правки словаря: перекрывает окно плагина целиком (см. .dictLayer в CSS).
+ * Экран правки словаря: перекрывает окно плагина целиком (см. .overlayHost/.dictScreen в CSS).
  *
  * Слева — английская строка ровно как она стоит в коде: это ключ словаря, поэтому
  * её показывают, а не правят. Справа — перевод, который видит выбранный язык;
@@ -3281,8 +3286,12 @@ const DictionaryRow = memo(function DictionaryRow({ left, value, edited, hint, p
  * Сохранение, отмена и заполнение ИИ ещё не подключены: кнопки стоят на своих
  * местах и говорят об этом прямо, вместо того чтобы делать вид, что работают.
  */
-function DictionaryEditor({ tt, onClose }: {
+function DictionaryEditor({ tt, host, onClose }: {
   readonly tt: (key: EngramKey, params?: Record<string, string | number>) => string
+  /** Якорь оверлея (начало `.panelRoot`): экран уходит туда порталом. Сам он fixed, но якорь
+   *  обязан лежать вне `.panel` — иначе собственный контекст наложения панели не даст
+   *  перекрыть окно целиком. */
+  readonly host: { readonly current: HTMLDivElement | null }
   readonly onClose: () => void
 }): React.ReactElement {
   const [set, setSet] = useState<DictionarySetName>('panel')
@@ -3340,59 +3349,63 @@ function DictionaryEditor({ tt, onClose }: {
     ? tt('dictEdited')
     : source === 'delivery' ? tt('dictShipped') : source === 'builtin' ? tt('dictBuiltin') : tt('dictNoTranslation')
 
-  return (
-    <div className={styles.dictLayer}>
-      <div className={styles.dictScreen}>
-        <div className={styles.dictMenu}>
-          <button type="button" className={styles.dictBack} onClick={onClose}
-            title={tt('dictBack')} aria-label={tt('dictBack')}>{'←'}</button>
-          <span className={styles.dictTitle}>{tt('dictTitle')}</span>
-          <div className={styles.dictMenuRight}>
-            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
-              {tt('dictFillAi')}
-            </button>
-            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
-              {tt('dictCancel')}
-            </button>
-            <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
-              {tt('dictSave')}
-            </button>
-          </div>
+  // Экран уходит порталом в якорь оверлеев (.overlayHost) вне .panel: сам он fixed, поэтому
+  // место якоря не важно, важна лишь чужая область наложения. Якорь ещё не смонтирован —
+  // рисуем на месте, без портала: нажатие никогда не должно оставаться без ответа.
+  const screen = (
+    <div className={styles.dictScreen}>
+      <div className={styles.dictMenu}>
+        <button type="button" className={styles.dictBack} onClick={onClose}
+          title={tt('dictBack')} aria-label={tt('dictBack')}>{'←'}</button>
+        <span className={styles.dictTitle}>{tt('dictTitle')}</span>
+        <div className={styles.dictMenuRight}>
+          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+            {tt('dictFillAi')}
+          </button>
+          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+            {tt('dictCancel')}
+          </button>
+          <button type="button" className={styles.button} disabled title={tt('dictNotWired')}>
+            {tt('dictSave')}
+          </button>
         </div>
-        <div className={styles.dictBar}>
-          {(['panel', 'messages'] as const).map(name => (
-            <button key={name} type="button" className={name === set ? styles.dictSetOn : styles.dictSet}
-              onClick={() => { setSet(name) }}>
-              {name === 'panel' ? tt('dictSetPanel') : tt('dictSetMessages')}
-            </button>
-          ))}
-          <input className={styles.dictFilter} value={query} placeholder={tt('dictFilter')} spellCheck={false}
-            onChange={event => { setQuery(event.target.value) }} />
-          <span className={styles.dictStatus}>
-            {view === null ? tt('dictLoading') : tt('dictRows', { n: view.rows.length })}
-            {dirty > 0 && <> · {tt('dictDirty', { n: dirty })}</>}
-            {view !== null && <> · {tt('dictTarget')} <span className={styles.regMono}>{view.files.user}</span></>}
-            {' · '}{tt('dictNotWired')}
-          </span>
-        </div>
-        <div className={styles.dictBody}>
-          <p className={styles.regNote}>{tt('dictHint', { file: view?.files.user ?? '' })}</p>
-          {error !== null
-            ? <p className={styles.regBad}>{tt('dictFailed', { error })}</p>
-            : view === null
-              ? <p className={styles.regNote}>{tt('dictLoading')}</p>
-              : rows.length === 0
-                ? <p className={styles.regNote}>{tt('dictNoRows')}</p>
-                : rows.map(row => (
-                  <DictionaryRow key={row.left} left={row.left} value={cell(row)} hint={hintOf(row.source)}
-                    placeholder={row.source === 'none' ? tt('dictNoTranslation') : ''}
-                    edited={draft.get(row.left) !== undefined && draft.get(row.left) !== row.right}
-                    onEdit={edit} />
-                ))}
-        </div>
+      </div>
+      <div className={styles.dictBar}>
+        {(['panel', 'messages'] as const).map(name => (
+          <button key={name} type="button" className={name === set ? styles.dictSetOn : styles.dictSet}
+            onClick={() => { setSet(name) }}>
+            {name === 'panel' ? tt('dictSetPanel') : tt('dictSetMessages')}
+          </button>
+        ))}
+        <input className={styles.dictFilter} value={query} placeholder={tt('dictFilter')} spellCheck={false}
+          onChange={event => { setQuery(event.target.value) }} />
+        <span className={styles.dictStatus}>
+          {view === null ? tt('dictLoading') : tt('dictRows', { n: view.rows.length })}
+          {dirty > 0 && <> · {tt('dictDirty', { n: dirty })}</>}
+          {view !== null && <> · {tt('dictTarget')} <span className={styles.regMono}>{view.files.user}</span></>}
+          {' · '}{tt('dictNotWired')}
+        </span>
+      </div>
+      <div className={styles.dictBody}>
+        <p className={styles.regNote}>{tt('dictHint', { file: view?.files.user ?? '' })}</p>
+        {error !== null
+          ? <p className={styles.regBad}>{tt('dictFailed', { error })}</p>
+          : view === null
+            ? <p className={styles.regNote}>{tt('dictLoading')}</p>
+            : rows.length === 0
+              ? <p className={styles.regNote}>{tt('dictNoRows')}</p>
+              : rows.map(row => (
+                <DictionaryRow key={row.left} left={row.left} value={cell(row)} hint={hintOf(row.source)}
+                  placeholder={row.source === 'none' ? tt('dictNoTranslation') : ''}
+                  edited={draft.get(row.left) !== undefined && draft.get(row.left) !== row.right}
+                  onEdit={edit} />
+              ))}
       </div>
     </div>
   )
+
+  const hostNode = host.current
+  return hostNode === null ? screen : createPortal(screen, hostNode)
 }
 export type EngramSectionProps = PropsLocale<typeof NS> & {
   /** 宿主工作区服务（缺席时 chip 显示「无工作区信息」，面板其余功能照常）。 */
@@ -3404,6 +3417,8 @@ export type EngramSectionProps = PropsLocale<typeof NS> & {
 /** 设置页「记忆库」section 主组件（t 由渲染器按 locale: NS 声明合成；面板级语言覆盖在组件内 shadow 之）。 */
 export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionProps): React.ReactElement {
   const toast = useToast()
+  /** Куда порталом рисуется полноэкранный оверлей панели (правка словаря). */
+  const overlayHost = useRef<HTMLDivElement | null>(null)
   /** 面板级语言覆盖（持久化）：默认跟随宿主（采样宿主 t 输出探测词典语言），Header「中 | EN」段控强制覆盖。 */
   /** Язык панели по умолчанию — тот, чей словарь совпал с выводом хоста (ru — внешний язык). */
   const hostLang: PanelLang = hostT('scopeUser') === zh.scopeUser ? 'zh' : hostT('scopeUser') === ru.scopeUser ? 'ru' : 'en'
@@ -3635,6 +3650,12 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
   return (
     // v0.8+ 主列满宽：.panelRoot 接管纵向滚动（宿主主列可能是 grid 子项不滚动；这里自管滚动后，sticky 浮层定位到 panelRoot 即生效）
     <div className={styles.panelRoot}>
+      {/* Хост оверлеев панели: полноэкранные экраны (правка словаря) рисуются порталом сюда.
+          Якорь стоит вне .panel намеренно: экран позиционируется fixed, а .panel образует
+          собственный контекст наложения (isolation) — изнутри него оверлей не перекрыл бы окно
+          целиком. Раньше экран был sticky-слоем в конце карточки обслуживания и оставался
+          ниже видимой области при прокрутке: нажатие кнопки выглядело как «ничего не произошло». */}
+      <div ref={overlayHost} className={styles.overlayHost} />
       {versionMismatch !== null && (
         <div className={styles.versionBanner} role="status">
           {t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch })}
@@ -4082,7 +4103,7 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
           <section className={styles.section}>
             <div className={styles.panelCard}>
-              <RegistryCard t={t} />
+              <RegistryCard t={t} overlayHost={overlayHost} />
             </div>
           </section>
           <section className={styles.section}>

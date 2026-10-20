@@ -790,12 +790,16 @@ select.input { padding-right: 28px; appearance: none; }
 .regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
 .dictOpen { margin-left: auto; }
 
-/* ---------- Правка словаря: экран поверх окна плагина ----------
-   .dictLayer — sticky-прослойка нулевой высоты в точке прокрутки (как .drawerLayer):
-   экран встаёт там, где человек сейчас смотрит, и не уезжает вместе с длинной
-   страницей. z-index выше .panelSticky (40): перекрывается и полоса вкладок. */
-.dictLayer { position: sticky; top: 0; height: 0; z-index: 50; }
-.dictScreen { position: absolute; top: 0; left: 0; right: 0; height: 100vh; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); animation: scrimIn var(--dur-base) var(--ease-spring) both; }
+/* ---------- Оверлеи панели: экран поверх всего окна плагина ----------
+   .overlayHost — пустой якорь портала (высоты не занимает). Сам экран позиционируется fixed,
+   поэтому место якоря в потоке значения не имеет. Так сделано после грабель: экран был
+   sticky-слоем в конце длинной карточки обслуживания, а sticky подтягивает элемент к верху
+   области видимости только когда тот ушёл выше него, — при прокрутке экран так и оставался
+   за нижней кромкой, и нажатие кнопки выглядело как «ничего не произошло». fixed убирает
+   зависимость от прокрутки и от места нажатия: экран перекрывает окно, а не колонку в 1240px.
+   z-index 50 — выше .panelSticky (40) и .drawerLayer (41). */
+.overlayHost { height: 0; }
+.dictScreen { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); animation: scrimIn var(--dur-base) var(--ease-spring) both; }
 .dictMenu { display: flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .dictTitle { margin: 0 auto 0 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }
 .dictMenuRight { display: flex; align-items: center; gap: var(--space-2); }
