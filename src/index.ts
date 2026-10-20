@@ -31,7 +31,7 @@ import { answerSnippet, fillBatch, fillPrompt, parseFillAnswer } from './i18n/di
 import { describeRegistryProblems, loadRegistry } from './registry/registry-file.ts'
 import type { LoadedRegistry } from './registry/registry-file.ts'
 import type { EngramLanguage } from './i18n/language.ts'
-import { ENGRAM_LANGUAGES, pickLanguage } from './i18n/language.ts'
+import { pickLanguage } from './i18n/language.ts'
 import { dominantLanguage, palaceCase } from './i18n/palace-language.ts'
 import { collectLanguageSignals } from './language-signals.ts'
 import { interfacePreference, writePalaceLanguage, writePalaceLanguageWithRetry, type SettingsServiceView } from './settings-bridge.ts'
@@ -54,7 +54,7 @@ import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
 import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
-import { judgeBase, MODEL_LABEL_KEY } from './registry/base-state.ts'
+import { judgeBase, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
 import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
@@ -593,29 +593,6 @@ function registrySnapshot(input: {
   }
 }
 
-/**
- * Язык, на котором стоят базы дворца, — по меткам (`ru-minilm-l12` → `ru`).
- *
- * Метка — единственное место, где записано, «чья это база» (Б.02). Метки нет ни у одной
- * базы — `null`: сверять нечего, спорить не о чем. Базы подписаны разными языками —
- * `mixed`: в одной установке две базы на разных языках это тоже расхождение, а не
- * «какая-нибудь из них подойдёт».
- * @param bases - состояния баз из карточки обслуживания.
- * @returns Язык баз, `mixed` либо `null`.
- */
-function basesLanguage(bases: readonly BaseView[]): EngramLanguage | 'mixed' | null {
-  const found = new Set<EngramLanguage>()
-  for (const base of bases) {
-    const label = base.label
-    if (label === null) continue
-    const language = ENGRAM_LANGUAGES.find(code => label.startsWith(`${code}-`))
-    if (language !== undefined) found.add(language)
-  }
-  if (found.size === 0) return null
-  const [first] = [...found]
-  return found.size === 1 && first !== undefined ? first : 'mixed'
-}
-
 /** Хостовый сервис настроек: живёт отдельно от плагина и может отсутствовать. */
 function settingsOf(ctx: Context): SettingsServiceView | undefined {
   return ctx.get('settings' as never) as SettingsServiceView | undefined
@@ -1117,7 +1094,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     if (languageSetting !== undefined && languageSetting !== 'auto') return
     void (async () => {
       const { bases } = await baseStates()
-      const standing = basesLanguage(bases)
+      const standing = languageOfLabels(bases.map(base => base.label))
       // Базы на другом языке — не наше решение: это расхождение, его показывает окно.
       if (standing !== null && standing !== language) return
       const reason = await writePalaceLanguageWithRetry({
@@ -1144,7 +1121,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     // Язык пришёл из настройки — решать нечего, окно не нужно.
     if (languageSetting !== undefined && languageSetting !== 'auto') return null
     const dialogue = dialogueWatch.language ?? null
-    const standing = basesLanguage(bases)
+    const standing = languageOfLabels(bases.map(base => base.label))
     const state = palaceCase(dialogue, standing)
     return {
       setting: resolved.languageSetting ?? null,

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { judgeBase, MODEL_LABEL_KEY } from '../src/registry/base-state.ts'
+import { judgeBase, languageOfLabels, MODEL_LABEL_KEY } from '../src/registry/base-state.ts'
 import type { BaseFacts, BaseTarget, CatalogModel } from '../src/registry/base-state.ts'
 import { readBaseCensus } from '../src/registry/base-census.ts'
 import type { VectorTableSpec } from '../src/registry/vector-schema.ts'
@@ -162,5 +162,29 @@ describe('перепись базы: считаем область объявл�
       schemaVersion: 13,
     })
     expect(census.problems.map(problem => problem.kind)).toEqual(['no-table'])
+  })
+})
+
+describe('язык баз по меткам (решение 21.10)', () => {
+  it('все подписаны одним языком — он и есть', () => {
+    expect(languageOfLabels(['ru-minilm-l12', 'ru-minilm-l12'])).toBe('ru')
+  })
+
+  it('база без метки не мешает: метки нет — не мнение, а его отсутствие', () => {
+    expect(languageOfLabels([null, 'zh-bge-small-zh'])).toBe('zh')
+  })
+
+  it('базы на разных языках — mixed, а не «какая-нибудь из них»', () => {
+    expect(languageOfLabels(['ru-minilm-l12', 'en-minilm-l12'])).toBe('mixed')
+  })
+
+  it('метки нет ни у одной базы (и баз нет вовсе) — сверять нечего', () => {
+    expect(languageOfLabels([])).toBe(null)
+    expect(languageOfLabels([null, null])).toBe(null)
+  })
+
+  it('метка без нашего языка впереди — не язык', () => {
+    // Метка формата `<язык>-<модель>`: строка без языка не доказывает ни одного из трёх.
+    expect(languageOfLabels(['minilm-l12'])).toBe(null)
   })
 })

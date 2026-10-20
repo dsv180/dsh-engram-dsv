@@ -19,6 +19,7 @@
  * @module @kenz1117/dsh-engram/registry/base-state
  */
 
+import { ENGRAM_LANGUAGES, type EngramLanguage } from '../i18n/language.ts'
 import { bindingLabel } from './models.ts'
 
 /**
@@ -29,6 +30,31 @@ import { bindingLabel } from './models.ts'
  * источник правды, который рано или поздно разойдётся с первым.
  */
 export const MODEL_LABEL_KEY = 'model_label'
+
+/**
+ * Язык, на котором стоят базы дворца, — по меткам `meta.model_label` (решение 21.10).
+ *
+ * Метка — единственное место, где записано «чья это база» (`bindingLabel`), поэтому
+ * читается она, а не длина вектора. Правило живёт рядом с форматом метки: если метка
+ * когда-нибудь изменится, здесь и надо будет править.
+ *
+ * Три исхода: язык (все подписанные базы на нём), `mixed` (подписаны разными языками —
+ * одна установка не может жить на двух языках одновременно) и `null` (метки нет ни
+ * у одной базы: сверять нечего, спорить не о чем).
+ * @param labels - метки баз; null у базы без метки.
+ * @returns Язык баз, `mixed` либо `null`.
+ */
+export function languageOfLabels(labels: readonly (string | null)[]): EngramLanguage | 'mixed' | null {
+  const found = new Set<EngramLanguage>()
+  for (const label of labels) {
+    if (label === null) continue
+    const language = ENGRAM_LANGUAGES.find(code => label.startsWith(`${code}-`))
+    if (language !== undefined) found.add(language)
+  }
+  if (found.size === 0) return null
+  const [first] = [...found]
+  return found.size === 1 && first !== undefined ? first : 'mixed'
+}
 
 /** Состояние базы; перечень заморожен на семи (см. план, блок Б). */
 export type BaseStateId =
