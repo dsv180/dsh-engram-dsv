@@ -12,18 +12,6 @@ import { createLocalEmbedder } from './local.ts'
 import { createRemoteEmbedder } from './remote.ts'
 
 /**
- * 从环境变量读密钥。
- *
- * 变量名由配置给出，取值不进配置：同一份 cordis.yml 在几台机器上都能用，
- * 密钥也不会落在解析配置时读到的那个文件里。
- */
-function apiKeyFromEnv(name: string | undefined): string | undefined {
-  if (name === undefined || name === '') return undefined
-  const value = process.env[name]
-  return value === undefined || value === '' ? undefined : value
-}
-
-/**
  * 按配置创建嵌入器。
  * @param config - 插件解析后的配置。
  * @returns 就绪的 EngramEmbedder。
@@ -37,7 +25,9 @@ export function createEmbedder(config: ResolvedEngramConfig): Promise<EngramEmbe
       model: remote.model,
       baseUrl: remote.baseUrl,
       // 环境变量优先于配置里的密钥：这样密钥可以完全不落在文件里。
-      apiKey: apiKeyFromEnv(remote.apiKeyEnv) ?? remote.apiKey,
+      // 变量名整名交给嵌入器，由它在每次请求时读取——换密钥不必重启插件。
+      apiKey: remote.apiKey,
+      apiKeyEnv: remote.apiKeyEnv,
       batchSize: remote.batchSize,
       timeoutMs: remote.timeoutMs,
     })

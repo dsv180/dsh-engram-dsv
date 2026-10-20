@@ -15,7 +15,7 @@ import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
 import { message } from '../i18n/messages.ts'
 // 余弦相似度：store 检索与巩固聚类共享 src/vec.ts 的单一实现（维度不匹配告警一次）。
-import { cosine } from '../vec.ts'
+import { cosine, isDimensionMismatch } from '../vec.ts'
 import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
@@ -514,6 +514,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     .get() as unknown as { bytes: number } | undefined
   let storedDim = storedDimRow === undefined ? undefined : storedDimRow.bytes / Float32Array.BYTES_PER_ELEMENT
 
+  /** 降级为关键词检索的告警只打一次：同一个进程里重复刷同一句没有信息量。 */
+  let warnedDegradedRead = false
+
   /**
    * 放行向量入库，或拒绝并说出两边的维度。
    *
@@ -863,24 +866,38 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
 
       // 道 2：向量余弦（active 且带向量的条目全量参与）。
+      // 维度不符时这一路整体降级，而不是把检索打掉：写侧已经拒绝异维向量入库，
+      // 所以走到这里只可能是「换了模型，库里还是旧模型的向量」——关键词一路照常，
+      // 结果里标记 degraded，用户仍能搜到东西，也知道语义一路没参与。
       let degraded = true
       if (queryVector !== undefined) {
-        degraded = false
-        const pool = vectorPool(query.scopes, query.rooms)
-        const ranked = pool
-          .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
-          .filter(entry => entry.sim >= MIN_COSINE)
-          .sort((a, b) => b.sim - a.sim)
-          .slice(0, RANK_POOL)
-        ranked.forEach((entry, index) => {
-          const add = 1 / (RRF_K + index + 1)
-          const existing = scores.get(entry.row.id)
-          if (existing === undefined) {
-            scores.set(entry.row.id, { score: add, via: 'vec' })
-          } else {
-            scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+        try {
+          const pool = vectorPool(query.scopes, query.rooms)
+          const ranked = pool
+            .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
+            .filter(entry => entry.sim >= MIN_COSINE)
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, RANK_POOL)
+          ranked.forEach((entry, index) => {
+            const add = 1 / (RRF_K + index + 1)
+            const existing = scores.get(entry.row.id)
+            if (existing === undefined) {
+              scores.set(entry.row.id, { score: add, via: 'vec' })
+            } else {
+              scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+            }
+          })
+          degraded = false
+        } catch (error) {
+          if (!isDimensionMismatch(error)) throw error
+          if (!warnedDegradedRead) {
+            warnedDegradedRead = true
+            console.warn(message('store.embedderDimensionMismatch', {
+              expected: storedDim ?? queryVector.length,
+              found: queryVector.length,
+            }))
           }
-        })
+        }
       }
 
       // 排序 boost：RRF 融合分之上乘 recency 与 proof 因子（权重 0 时因子恒 1，退化为纯 RRF）。

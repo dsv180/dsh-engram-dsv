@@ -87,6 +87,23 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits.length).toBe(1)
   })
 
+  // 维度不一致不该连关键词检索一起打掉（作者对 PR #21 的要求）：旧库配新模型时
+  // 用户仍要能按词搜索，并被明确告知语义一路没参与；写入则照旧被拒绝。
+  it('维度不一致：检索降级为关键词并标记 degraded，写入被拒绝', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: 'alpha 512', embedding: new Float32Array(512).fill(0.1) })
+    const result = await store.search({ text: 'alpha', scopes: ['user'] }, new Float32Array(384).fill(0.1))
+    expect(result.degraded).toBe(true)
+    expect(result.hits).toHaveLength(1)
+    expect(result.hits[0]!.via).toBe('fts')
+
+    await expect(store.write({
+      scope: 'user',
+      kind: 'fact',
+      content: '新模型写旧库',
+      embedding: new Float32Array(384).fill(0.1),
+    })).rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
   it('向量道与 FTS 道融合，via=both 且 degraded=false', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: 'alpha 内容说明', embedding: new Float32Array(512).fill(0.1) })
     const vec = new Float32Array(512).fill(0.1)

@@ -36,3 +36,15 @@ export function cosine(a: Float32Array, b: Float32Array): number {
   if (na === 0 || nb === 0) return 0
   return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }
+
+/**
+ * 是不是「维度不一致」这类错误。
+ *
+ * 这类错误在比较向量时产生，要由调用方区分：能承受的调用方（检索）降级继续，
+ * 不能承受的（写入）照原样抛出。区分的依据是代码而不是文本——文本会随语言变。
+ * @param error - 接住的值。
+ * @returns true，若是带 EMBEDDER_DIMENSION_MISMATCH 代码的 EngramError。
+ */
+export function isDimensionMismatch(error: unknown): boolean {
+  return error instanceof EngramError && error.code === 'EMBEDDER_DIMENSION_MISMATCH'
+}
