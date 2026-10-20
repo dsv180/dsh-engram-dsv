@@ -269,8 +269,12 @@ select.input { padding-right: 28px; appearance: none; }
 .exportCaret { margin-left: 4px; font-size: 9px; opacity: 0.7; transition: transform var(--dur-fast) var(--ease-spring); }
 .exportWrap button[aria-expanded='true'] .exportCaret { transform: rotate(180deg); }
 .exportMenu { position: absolute; top: calc(100% + 4px); right: 0; min-width: 220px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; box-shadow: 0 8px 24px -10px color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent); z-index: 30; padding: 4px; animation: drawerIn var(--dur-base) var(--ease-spring) both; }
-.exportItem { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 7px; color: var(--dsw-alias-label-primary); text-decoration: none; transition: background var(--dur-fast) var(--ease-spring); }
+/* 菜单项 a 与 button 共用：button 必须显式抹掉 UA 默认（边框/底色/居中/字体/自适配宽度），
+   否则同一 class 下按钮渲染成大盒子、链接正常（实机截图对比得出的坑）。 */
+.exportItem { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-primary); text-decoration: none; text-align: left; font: inherit; cursor: pointer; transition: background var(--dur-fast) var(--ease-spring); }
 .exportItem:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); }
+.exportItem:disabled { opacity: 0.5; cursor: default; }
+.exportItem:disabled:hover { background: transparent; }
 .exportItemLabel { font-size: 13px; line-height: 1.2; font-weight: 500; }
 .exportItemHint { font-size: 11px; color: var(--dsw-alias-label-tertiary); line-height: 1.3; }
 
