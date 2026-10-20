@@ -112,6 +112,7 @@ export type EngramKey =
   | 'palaceAskTitle'
   | 'palaceAskBody'
   | 'palaceAskFallback'
+  | 'palaceAskNoCode'
   | 'palaceAskSaved'
   | 'palaceAskOther'
   | 'palaceAskSuggested'

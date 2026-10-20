@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loadMessageDictionary, loadPanelDictionary } from '../src/i18n/dictionary-file.ts'
+import { messageIn, setMessageDictionary } from '../src/i18n/messages.ts'
 
 /** Каталог поставки и каталог данных с указанными файлами словарей. */
 async function makeRoots(files: {
@@ -74,5 +75,32 @@ describe('словарь панели читается своим файлом',
     expect(panel.entries.size).toBeGreaterThan(0)
     expect(messages.problems).toEqual([])
     expect(panel.problems).toEqual([])
+  })
+})
+
+/**
+ * Язык, которого не было в прежней тройке. Вшитого набора у него нет — значит
+ * тексты приходят файлом, а нет файла — остаются английские. Это и есть обещание
+ * «язык добавляется данными» (В.09): новый язык не требует ни правки TypeScript,
+ * ни отказа от работы, пока словаря нет.
+ */
+describe('язык без вшитого набора: словарь файлом, иначе английский', () => {
+  it('файл в каталоге данных читается как обычный слой', async () => {
+    const roots = await makeRoots({ user: { 'fr.txt': 'Hello\tBonjour\n' } })
+    const messages = loadMessageDictionary({ language: 'fr', ...roots })
+    expect(messages.problems).toEqual([])
+    expect(messages.entries.get('Hello')).toBe('Bonjour')
+    expect(messages.files.map(file => file.split(/[\\/]/).pop())).toEqual(['fr.txt'])
+  })
+
+  it('файла нет — сообщение остаётся английским, а не пустым', async () => {
+    const roots = await makeRoots({})
+    const messages = loadMessageDictionary({ language: 'fr', ...roots })
+    expect(messages.entries.size).toBe(0)
+    expect(messages.problems).toEqual([])
+    setMessageDictionary('fr', messages.entries)
+    // Цепочка отката: набора `fr` в коде нет и словаря нет — значит английский текст.
+    expect(messageIn('fr', 'misc.mirrorPalacePersonal')).toBe(messageIn('en', 'misc.mirrorPalacePersonal'))
+    setMessageDictionary('fr', undefined)
   })
 })

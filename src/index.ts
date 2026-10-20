@@ -577,6 +577,9 @@ function registrySnapshot(input: {
     language: input.language,
     palace: input.palace,
     defaultLanguage: input.registry.defaultLanguage ?? null,
+    // Языки — тем же ответом, что и модели с привязками: список выбора в панели
+    // обязан приходить от реестра, а не из своей копии в сборке клиента.
+    languages: input.registry.languages.map(row => ({ code: row.code, label: row.label, builtin: row.builtin })),
     remote: input.remote,
     resolved: input.model === undefined ? null : {
       id: input.model.id,

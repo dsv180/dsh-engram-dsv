@@ -2318,11 +2318,14 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
  * 取代原先常驻的九格日报条——主次分层，其余计数下沉到「管家日志」tab。
  */
 /**
- * Что человек выбрал в окне первого старта: наши три языка либо «другой язык».
- * «Другой» — не четвёртый язык дворца, а честное «вашего языка у дворца нет»:
- * дворец настраивается на английский, а дальше человек идёт по инструкции для агента.
+ * Что человек выбрал в окне первого старта: код языка дворца либо особая строка
+ * `other` — «другого языка у дворца нет вшитым набором».
+ *
+ * «Другой» — не четвёртый язык дворца: дворцу записывается настоящий код локали
+ * (`fr`), он говорит английским словарём, пока для него не появится файл, а дальше
+ * человек идёт по инструкции для агента (В.08).
  */
-type PalaceAskChoice = (typeof PALACE_LANGUAGES)[number] | 'other'
+type PalaceAskChoice = string
 
 /**
  * Язык дворца в панели: решение принимается по диалогам, а окно нужно только там,
@@ -2352,6 +2355,8 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   readonly onClose?: () => void
 }): React.ReactElement | null {
   const [palace, setPalace] = useState<RegistrySnapshot['palace']>(null)
+  /** Языки дворца с сервера: что предлагать в выборе. */
+  const [languages, setLanguages] = useState<readonly PalaceLanguageOption[]>([])
   /** Предохранитель: пока снят — идёт отсчёт окна. */
   const [guard, setGuard] = useState(true)
   const [left, setLeft] = useState(GUARD_SECONDS)
@@ -2364,15 +2369,26 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   // Проверка: окно открывается независимо от состояния дворца и ничего не читает
   // из конфигурации. Локаль берём ту же, что и в жизни, — иначе проверка показывала
   // бы не тот язык, который человек увидит на первом старте.
+  //
+  // Список языков берётся с сервера и в проверке тоже: проверка должна показывать
+  // ровно то, что человек увидит на первом старте, а не копию тройки из сборки.
   useEffect(() => {
     if (dryRun !== true) return
     const machine = ((): string => {
       try { return (Intl.DateTimeFormat().resolvedOptions().locale.split('-')[0] ?? '').toLowerCase() } catch { return '' }
     })()
     setPalace({ setting: null, source: 'test', conflict: false, machine, dialogue: null, bases: null, state: 'ask' })
-    const supported = PALACE_LANGUAGES.find(language => language === machine)
-    setSuggested(supported ?? 'other')
-    setChoice(supported ?? 'other')
+    let cancelled = false
+    api<RegistrySnapshot>('registry')
+      .then((snapshot) => {
+        if (cancelled) return
+        setLanguages(snapshot.languages)
+        const supported = snapshot.languages.some(row => row.code === machine) ? machine : null
+        setSuggested(supported ?? 'other')
+        setChoice(supported ?? 'other')
+      })
+      .catch((error: Error) => { if (!cancelled) setFailed(error.message) })
+    return () => { cancelled = true }
   }, [dryRun])
   // Отсчёт окна — свойство формы, а не фоновая задача: сняли предохранитель — пошло,
   // поставили обратно — обнулилось. На нуле предохранитель встаёт сам.
@@ -2400,7 +2416,8 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
         const preferred = snapshot.palace.state === 'mismatch'
           ? snapshot.palace.dialogue
           : snapshot.palace.machine
-        const supported = PALACE_LANGUAGES.find(language => language === preferred)
+        const supported = snapshot.languages.some(row => row.code === preferred) ? preferred : null
+        setLanguages(snapshot.languages)
         setPalace(snapshot.palace)
         setSuggested(supported ?? 'other')
         setChoice(supported ?? 'other')
@@ -2424,11 +2441,22 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   const body = mismatch
     ? t('palaceMismatchBody', { dialogue: (palace.dialogue ?? '').toUpperCase(), bases: basesName })
     : t('palaceAskBody')
+  /**
+   * Код языка за четвёртым выбором — локаль машины как есть (`fr`).
+   *
+   * Подставлять вместо неё английский нельзя: это тот самый заменитель, из-за
+   * которого француз получал дворец «на своём языке», а на деле английский.
+   * null — локаль прочитать не удалось либо она не похожа на код языка; тогда
+   * выбор не отправляется, а человеку говорится, что код не определился.
+   */
+  const otherCode = LANGUAGE_CODE.test(palace.machine) ? palace.machine : null
   const submit = (): void => {
     if (choice === null) return
-    // «Другой язык» ставит дворцу английский: это единственный честный выбор, пока
-    // языка нет среди наших трёх, а инструкция для агента объясняет остальное (В.08).
-    const language = choice === 'other' ? 'en' : choice
+    if (choice === 'other' && otherCode === null) { setFailed(t('palaceAskNoCode')); return }
+    // «Другой язык» передаёт дворцу настоящий код языка, а не английский: язык
+    // дворца становится `fr`, служебные тексты он берёт английским словарём,
+    // пока для языка не появится файл (решение 21.10, В.09).
+    const language = choice === 'other' ? (otherCode as string) : choice
     // Проверка ничего не пишет: показываем, что было бы выбрано, и закрываемся.
     if (dryRun === true) {
       toast?.push('success', t('panelTestDone', { language: language.toUpperCase() }))
@@ -2450,7 +2478,7 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
       .catch((error: Error) => { setFailed(error.message) })
       .finally(() => { setPending(false) })
   }
-  const choices: readonly PalaceAskChoice[] = [...PALACE_LANGUAGES, 'other']
+  const choices: readonly PalaceAskChoice[] = [...languages.map(row => row.code), 'other']
   const screen = (
     <div className={styles.importLayer} role="dialog" aria-modal="true" aria-label={title}>
       <div className={styles.importScrim} onClick={() => { if (!pending) setClosed(true) }} />
@@ -2475,13 +2503,23 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
                   checked={choice === value} disabled={pending || saved !== null}
                   onChange={() => { setChoice(value) }} />
                 <span className={styles.palaceChoiceName}>
-                  {value === 'other' ? t('palaceAskOther') : value.toUpperCase()}
+                  {value === 'other'
+                    ? t('palaceAskOther')
+                    : (languages.find(row => row.code === value)?.label ?? value.toUpperCase())}
                 </span>
                 {suggested === value ? <span className={styles.palaceChoiceNote}>{t('palaceAskSuggested')}</span> : null}
               </label>
             ))}
           </div>
-          {choice === 'other' ? <p className={styles.palaceAskHint}>{t('palaceAskFallback')}</p> : null}
+          {choice === 'other'
+            ? (
+              <p className={styles.palaceAskHint}>
+                {otherCode === null
+                  ? t('palaceAskNoCode')
+                  : t('palaceAskFallback', { language: otherCode.toUpperCase() })}
+              </p>
+            )
+            : null}
           {dryRun === true ? (
             <div className={styles.regGroup}>
               <span className={styles.regGroupTitle}>{t('panelTestTitle')}</span>
@@ -3286,6 +3324,8 @@ interface RegistrySnapshot {
     readonly state: string
   } | null
   readonly defaultLanguage: string | null
+  /** Языки дворца, которые знает поставка: от неё же зависит, что предлагать в выборе. */
+  readonly languages: readonly PalaceLanguageOption[]
   readonly remote: boolean
   readonly resolved: { readonly id: string; readonly label: string | null; readonly source: string; readonly pooling: string; readonly dtype: string } | null
   readonly models: readonly { readonly id: string; readonly label: string | null; readonly pooling: string; readonly dtype: string; readonly dimensions: number | null }[]
@@ -3307,11 +3347,27 @@ interface RegistrySnapshot {
 }
 
 /**
- * Языки дворца, которые можно выбрать. Список совпадает с ENGRAM_LANGUAGES на
- * сервере: язык — это то, каким словарём описывается содержимое, и произвольная
- * строка здесь была бы обещанием, которого нет.
+ * Языки дворца, которые можно выбрать: приходят с сервера (`GET registry`).
+ *
+ * Своего списка в клиенте нет намеренно. Раньше здесь лежала копия тройки
+ * `zh|en|ru`, и язык, добавленный файлом `registry/languages.json`, появлялся на
+ * сервере, но не в списке выбора — то есть «язык как данные» не доходил до человека.
  */
-const PALACE_LANGUAGES = ['zh', 'en', 'ru'] as const
+interface PalaceLanguageOption {
+  readonly code: string
+  readonly label: string
+  /** Есть ли у плагина вшитый набор текстов; иначе язык говорит словарём из файла. */
+  readonly builtin: boolean
+}
+
+/**
+ * Код языка по форме: две-три латинские буквы, при желании с подтегами (`zh-Hans`).
+ *
+ * Повторяет проверку сервера (`i18n/language.ts`, `isLanguageCode`). Нужен здесь
+ * для одного случая — четвёртый выбор передаёт локаль машины как есть (`fr`), и
+ * отправлять на сервер строку, которую он заведомо отвергнет, незачем.
+ */
+const LANGUAGE_CODE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
 
 /**
  * Окно предохранителя в проверке, секунды.
@@ -3417,6 +3473,15 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
    * обязана показывать оба, а не выбирать за человека, какой из них настоящий.
    */
   const chosenLanguage = languageChoice ?? snapshot.palace?.setting ?? snapshot.language
+  /**
+   * Список выбора языка дворца: языки реестра с сервера плюс текущий, если его там
+   * нет. Записанный язык мог прийти из настройки или быть объявлен файлом
+   * `languages.json` на этой машине; без такой строки `select` показал бы пустое
+   * поле вместо языка, на котором дворец на самом деле стоит.
+   */
+  const languageOptions = snapshot.languages.some(row => row.code === chosenLanguage)
+    ? snapshot.languages
+    : [...snapshot.languages, { code: chosenLanguage, label: chosenLanguage.toUpperCase(), builtin: false }]
 
   // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
   // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
@@ -3509,8 +3574,8 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
           <select className={`${styles.input} ${styles.regLang}`} value={chosenLanguage}
             aria-label={tt('registryPalaceLanguage')}
             onChange={event => { pickLanguage(event.target.value) }}>
-            {PALACE_LANGUAGES.map(language => (
-              <option key={language} value={language}>{language.toUpperCase()}</option>
+            {languageOptions.map(row => (
+              <option key={row.code} value={row.code}>{row.label}</option>
             ))}
           </select>
           <span className={styles.regMono}>— {tt('registryPalaceLanguage')}</span>
