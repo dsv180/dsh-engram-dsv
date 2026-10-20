@@ -34,6 +34,19 @@ export interface RouteStop {
   readonly id: MemoryId
 }
 
+/**
+ * Строка, которой переписывается вектор.
+ *
+ * Таблица и поле вектора — из объявления схемы, а не из кода: у `nodes` это
+ * `embedding`, у `observations` своё имя, и знать его здесь незачем.
+ */
+export interface VectorTarget {
+  readonly table: string
+  readonly vector: string
+  readonly id: string
+  readonly embedding: Float32Array
+}
+
 /** 存储接口。所有方法在库不可用时抛 EngramError。 */
 export interface EngramStore {
   /** 追加一条 active 记忆，content 非空。 */
@@ -145,6 +158,18 @@ export interface EngramStore {
    * 只更新已存在行；返回实际更新条数。
    */
   attachEmbeddings(entries: readonly { readonly id: MemoryId; readonly embedding: Float32Array }[]): Promise<number>
+  /**
+   * Переписать векторы в таблицах объявления схемы (`registry/schema.json`): перевод
+   * базы на другую модель и ремонт записей без вектора — одна и та же операция, потому
+   * что обе меняют ровно поле вектора у названных строк.
+   *
+   * Имена таблицы и поля приходят из объявления, а не из кода: добавит автор таблицу —
+   * она попадёт сюда без правки этого метода. Пишется тем же соединением, что и всё
+   * остальное: у базы один писатель в процессе.
+   * @param targets - строки с готовыми векторами; id не проверяется на существование.
+   * @returns сколько строк действительно обновлено.
+   */
+  rewriteVectors(targets: readonly VectorTarget[]): Promise<number>
   /** 衰减：满足条件的 active 条目转 archived，返回归档数量。 */
   decay(options: DecayOptions): Promise<number>
   /** 矛盾候选：与给定向量余弦 ≥ 0.88 的同库 active 条目（调用方裁决后用 linkEdge 建边）。 */

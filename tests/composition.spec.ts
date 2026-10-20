@@ -297,7 +297,27 @@ describe('dsh-engram real Loader composition', () => {
       bases: { file: string, label: string | null, targetLabel: string | null, action: string | null, checked: boolean }[]
     }).bases
     expect(bases.map(base => base.file)).toContain('user.db')
-    expect((registry.json as { convertAvailable: boolean }).convertAvailable).toBe(false)
+    expect((registry.json as { convertAvailable: boolean }).convertAvailable).toBe(true)
+    // Язык дворца: в панели он выбирается селектором и пишется в настройки. В этом
+    // прогоне сервиса настроек нет — поэтому проверяем форму ответа, а не успех:
+    // отказ обязан называть причину, иначе выбор в панели выглядел бы сработавшим.
+    const unknownLanguage = await call(port, 'POST', '/api/engram/palace-language', { language: 'klingon' })
+    expect(unknownLanguage.status).toBe(400)
+    const pickedLanguage = await call(port, 'POST', '/api/engram/palace-language', { language: 'ru' })
+    expect(pickedLanguage.status).toBe(200)
+    const picked = pickedLanguage.json as { ok: boolean, language: string, error?: string }
+    expect(picked.language).toBe('ru')
+    if (!picked.ok) expect(typeof picked.error).toBe('string')
+
+    // Пересчёт векторов: маршрут отвечает формой результата, а не молчанием.
+    // Эмбеддер в этом прогоне офлайн — поэтому часть баз честно попадает в failed.
+    const converted = await call(port, 'POST', '/api/engram/base-convert', {})
+    expect(converted.status).toBe(200)
+    const conversion = converted.json as { converted: number, empty: number, written: unknown[], failed: unknown[] }
+    expect(typeof conversion.converted).toBe('number')
+    expect(typeof conversion.empty).toBe('number')
+    expect(Array.isArray(conversion.written)).toBe(true)
+    expect(Array.isArray(conversion.failed)).toBe(true)
 
     const labelled = await call(port, 'POST', '/api/engram/base-label', {})
     expect(labelled.status).toBe(200)

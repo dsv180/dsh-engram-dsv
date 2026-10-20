@@ -52,10 +52,11 @@ import type { IngestRequestEventData } from './ingest/hook.ts'
 import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
-import type { BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
+import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
 import { judgeBase, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
+import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
 import { loadVectorSchema } from './registry/vector-schema.ts'
 import { migrateProjectDb, migrationWarning, resolveProjectIdentity } from './project/identity.ts'
 import { findProjectPalace, listProjectPalaces } from './project/registry.ts'
@@ -606,35 +607,44 @@ function historySourceOf(ctx: Context): HistoryLogSource | undefined {
 }
 
 /**
- * Записать определённый язык дворца в конфигурацию плагина.
+ * Записать выбранный язык дворца в конфигурацию плагина.
  *
+ * Одна реализация на два повода: определение на первом старте и явный выбор в панели.
  * Пишем через хостовый сервис настроек: он кладёт значение в профильный patch, то есть
  * ровно в конфигурацию плагина, и применяет его на живом фибере volatile-путём —
  * без перемонтирования. Если сервиса или своей записи нет, язык остаётся на этот
- * процесс и на следующий старт не переживает: об этом говорим в лог, а не молчим.
+ * процесс и на следующий старт не переживает: об этом говорим вызывающему, а не молчим.
  * @param ctx - контекст плагина.
- * @param language - определённый язык дворца.
+ * @param language - выбранный язык дворца.
+ * @returns Причина отказа; undefined — запись удалась.
  */
-function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
+async function writePalaceLanguage(ctx: Context, language: EngramLanguage): Promise<string | undefined> {
   const settings = settingsOf(ctx)
-  if (settings === undefined) {
-    console.warn('dsh-engram: settings service is absent — palace language stays for this process only')
-    return
-  }
+  if (settings === undefined) return 'settings service is absent — palace language stays for this process only'
   let entries: readonly SettingsEntryView[]
   try {
     entries = settings.describe()
   } catch (error) {
-    console.warn(`dsh-engram: could not read settings forms — ${String(error)}`)
-    return
+    return `could not read settings forms — ${String(error)}`
   }
   const own = findPalaceEntry(entries)
-  if (own === undefined) {
-    console.warn('dsh-engram: own settings entry not found — palace language stays for this process only')
-    return
+  if (own === undefined) return 'own settings entry not found — palace language stays for this process only'
+  try {
+    await settings.update(own.ns, { language }, own.revision)
+    return undefined
+  } catch (error) {
+    return `could not persist palace language — ${String(error)}`
   }
-  void settings.update(own.ns, { language }, own.revision).catch((error: unknown) => {
-    console.warn(`dsh-engram: could not persist palace language — ${String(error)}`)
+}
+
+/**
+ * Записать определённый язык дворца, не задерживая старт плагина.
+ * @param ctx - контекст плагина.
+ * @param language - определённый язык дворца.
+ */
+function persistPalaceLanguage(ctx: Context, language: EngramLanguage): void {
+  void writePalaceLanguage(ctx, language).then(reason => {
+    if (reason !== undefined) console.warn(`dsh-engram: ${reason}`)
   })
 }
 
@@ -726,8 +736,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   /** Снимок обслуживания по прочитанным словарям: собирается заново после правки из панели. */
   /**
    * Язык дворца в том виде, в каком его увидит панель: что решили и на чём основано.
-   * 
-ull — решать было нечего (язык пришёл из настройки).
+   * null — решать было нечего (язык пришёл из настройки).
    */
   const palaceLanguageView = determination === undefined
     ? null
@@ -1088,6 +1097,71 @@ ull — решать было нечего (язык пришёл из наст�
   }
 
   /**
+   * Пересчитать векторы базам, которые стоят не на целевой модели или растеряли их.
+   *
+   * Одно действие на два состояния (`convert` и `repair`): критерий у них общий —
+   * строка области объявления схемы, у которой вектор пуст или его длина не равна
+   * ожидаемой. Метка ставится только там, где после пересчёта она перестала быть
+   * верной; у ремонта она уже верна, и трогать её незачем.
+   *
+   * Эмбеддер тот же, чем плагин пишет векторы при обычной записи: иначе «пересчитали»
+   * означало бы «посчитали другой моделью» — и база тихо перестала бы быть ровной.
+   * Длина вектора берётся из каталога: у модели без объявленной размерности пересчёт
+   * не начинается, потому что проверять его было бы не на чем.
+   */
+  const convertBases = async (): Promise<BaseConvertResult> => {
+    const result: { converted: number, empty: number, written: { file: string, label: string }[], failed: { file: string, table: string | null, error: string }[] } = {
+      converted: 0,
+      empty: 0,
+      written: [],
+      failed: [],
+    }
+    const dimensions = baseTarget.model?.dimensions
+    if (dimensions === undefined) return result
+    const active = await embedder
+    if (active === undefined) {
+      result.failed.push({ file: '*', table: null, error: message('store.embedderModelUnresolved') })
+      return result
+    }
+    const { bases } = await baseStates()
+    for (const base of bases) {
+      if (base.action !== 'convert' && base.action !== 'repair') continue
+      try {
+        const plan = await planBaseVectors({
+          path: join(resolved.dbDir, base.file),
+          specs: vectorSchema.specs,
+          targetBytes: dimensions * 4,
+        })
+        for (const problem of plan.problems) {
+          result.failed.push({ file: base.file, table: null, error: `${problem.kind} — ${problem.detail}` })
+        }
+        // Через хранилище, а не вторым соединением: у базы один писатель в процессе.
+        const store = await openDb(base.file)
+        const outcome = await runVectorConvert({
+          plan,
+          embedder: active,
+          write: targets => store.rewriteVectors(targets),
+        })
+        result.converted += outcome.converted
+        result.empty += outcome.empty
+        for (const failure of outcome.failed) {
+          result.failed.push({ file: base.file, table: failure.table, error: failure.error })
+        }
+        // Метка после пересчёта: база теперь стоит на целевой модели, и запись об этом
+        // должна это называть. Если пересчёт ничего не сделал, метку не меняем — она
+        // всё ещё описывает то, что в базе лежит.
+        if (base.targetLabel !== null && base.targetLabel !== base.label && (outcome.converted > 0 || plan.rows.length === 0)) {
+          await store.writeMeta(MODEL_LABEL_KEY, base.targetLabel)
+          result.written.push({ file: base.file, label: base.targetLabel })
+        }
+      } catch (error) {
+        result.failed.push({ file: base.file, table: null, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return result
+  }
+
+  /**
    * Правка словарей из панели: чтение набора и запись пользовательского слоя.
    *
    * Пишем в каталог данных (`<dbDir>/i18n/<имя>`), а не в пакет: файл поставки
@@ -1312,12 +1386,17 @@ ull — решать было нечего (язык пришёл из наст�
       registry: () => registryView,
       baseStates,
       writeBaseLabels,
+      convertBases,
+      writePalaceLanguage: async (language: string) => {
+        const reason = await writePalaceLanguage(ctx, language as EngramLanguage)
+        return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
+      },
       dictionary: dictionaryDeps,
       dictionaryFill: dictionaryFillDeps,
       // Пересчёт векторов — этап 2 блока Б: конвертер живёт вне плагина и в карточку
       // ещё не подключён. Пока false — карточка честно называет такие состояния
       // невыполнимыми, а кнопка ничего не делает молча.
-      convertAvailable: false,
+      convertAvailable: true,
       embedder,
       // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
       jev: { base: resolved.jev, dbDir: resolved.dbDir },

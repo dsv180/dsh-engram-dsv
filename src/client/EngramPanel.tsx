@@ -2996,6 +2996,13 @@ interface RegistryBase {
 /** GET /api/engram/registry 的返回（host 侧 RegistryView，字段名与响应一一对应）。 */
 interface RegistrySnapshot {
   readonly language: string
+  /** Язык дворца: чем определён; null — язык пришёл из настройки, решать было нечего. */
+  readonly palace: {
+    readonly setting: string | null
+    readonly source: string
+    readonly conflict: boolean
+    readonly dialogue: { readonly sessions: number, readonly texts: number }
+  } | null
   readonly defaultLanguage: string | null
   readonly remote: boolean
   readonly resolved: { readonly id: string; readonly label: string | null; readonly source: string; readonly pooling: string; readonly dtype: string } | null
@@ -3016,6 +3023,13 @@ interface RegistrySnapshot {
   /** Подключён ли пересчёт векторов (этап 2 блока Б). */
   readonly convertAvailable: boolean
 }
+
+/**
+ * Языки дворца, которые можно выбрать. Список совпадает с ENGRAM_LANGUAGES на
+ * сервере: язык — это то, каким словарём описывается содержимое, и произвольная
+ * строка здесь была бы обещанием, которого нет.
+ */
+const PALACE_LANGUAGES = ['zh', 'en', 'ru'] as const
 
 /** 文件全路径只留文件名：卡片里要的是「какой файл», а не «где лежит пакет». */
 function baseName(path: string): string {
@@ -3064,9 +3078,16 @@ function RegistryCard({ t, overlayHost }: {
   const [busy, setBusy] = useState(false)
   /**
    * Временный предохранитель от конвертации баз (решение 20.10): пока он отмечен,
-   * кнопка «Выполнить» заблокирована. Убирается к концу работ.
+   * кнопка «Выполнить» заблокирована — предохранитель по умолчанию стоит, снимает
+   * его человек. Убирается к концу работ.
+   *
+   * Ключ хранения отличается от прежнего (`library.baseGuard`): там могло остаться
+   * значение от старой семантики («нажимается, но ничего не делает»), и оно бы
+   * молча оставило предохранитель снятым.
    */
-  const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseGuard', 'off', ['on', 'off'])
+  const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseFuse', 'on', ['on', 'off'])
+  /** Выбранный здесь язык дворца; null — показываем тот, что записан в настройке. */
+  const [languageChoice, setLanguageChoice] = useState<string | null>(null)
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
   const toast = useToast()
@@ -3097,13 +3118,17 @@ function RegistryCard({ t, overlayHost }: {
   const resolvedLabel = snapshot.resolved === null
     ? tt('registryNone')
     : snapshot.resolved.label ?? snapshot.resolved.id
-  /** Язык, которым дворец реально считает: сегодня это серверный ключ `language`. */
-  const palaceLanguage = snapshot.language.toUpperCase()
+  /**
+   * Язык дворца в настройке: «чем записано» — в отличие от `snapshot.language`, которым
+   * этот процесс считает прямо сейчас. До перезапуска они могут расходиться, и панель
+   * обязана показывать оба, а не выбирать за человека, какой из них настоящий.
+   */
+  const chosenLanguage = languageChoice ?? snapshot.palace?.setting ?? snapshot.language
 
   // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
   // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
-  // здесь же. Пересчёт векторов ещё не подключён (этап 2 блока Б): состояния,
-  // которым он нужен, называют себя невыполнимыми, вместо того чтобы молчать.
+  // здесь же. Действий два: подписать базу (метки нет, но модель угадывается)
+  // или пересчитать векторы (чужая модель, пересортица, записи без вектора).
   const actions = snapshot.bases.map(base => base.action)
   const todo: 'convert' | 'repair' | 'write-label' | 'none' = actions.includes('convert')
     ? 'convert'
@@ -3116,22 +3141,60 @@ function RegistryCard({ t, overlayHost }: {
   const run = (): void => {
     // Предохранитель: пока он отмечен, кнопка заблокирована; здесь — вторая линия
     // защиты на случай, если состояние успело разойтись с разметкой.
-    if (guard === 'on') return
+    if (guard === 'on' || todo === 'none') return
     setBusy(true)
-    void api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
-      'base-label',
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
-    )
-      .then(async result => {
-        if (result.failed.length > 0) {
-          toast.push('error', `${tt('baseFailed')}: ${result.failed.map(row => `${row.file} — ${row.error}`).join('; ')}`)
-        } else {
-          toast.push('success', tt('baseDone', { label: result.written[0]?.label ?? '' }))
-        }
-        setSnapshot(await api<RegistrySnapshot>('registry'))
-      })
+    // Что делать — решает состояние баз, а не клиент: маршрут выбирается по нему.
+    const call = todo === 'write-label'
+      ? api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
+          'base-label',
+          { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+        ).then(result => {
+          if (result.failed.length > 0) {
+            toast.push('error', `${tt('baseFailed')}: ${result.failed.map(row => `${row.file} — ${row.error}`).join('; ')}`)
+          } else {
+            toast.push('success', tt('baseDone', { label: result.written[0]?.label ?? '' }))
+          }
+        })
+      : api<{
+          converted: number
+          empty: number
+          written: readonly { file: string, label: string }[]
+          failed: readonly { file: string, table: string | null, error: string }[]
+        }>('base-convert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+        .then(result => {
+          // Пустые строки называются отдельно от сбоев: первые — факт о содержимом
+          // базы, вторые — то, что не далось. Одно число скрыло бы разницу.
+          const summary = tt('baseConvertDone', { n: result.converted })
+          const extra = result.empty > 0 ? ` · ${tt('baseConvertEmpty', { n: result.empty })}` : ''
+          if (result.failed.length > 0) {
+            const detail = result.failed.map(row => `${row.table ?? row.file} — ${row.error}`).join('; ')
+            toast.push('error', `${summary}${extra} · ${tt('baseFailed')}: ${detail}`)
+          } else {
+            toast.push('success', `${summary}${extra}`)
+          }
+        })
+    void call
       .catch((runError: Error) => { toast.push('error', runError.message) })
+      .then(async () => { setSnapshot(await api<RegistrySnapshot>('registry')) })
       .finally(() => { setBusy(false) })
+  }
+
+  /** Выбрать язык дворца: он пишется в конфигурацию плагина, а не живёт в панели. */
+  const pickLanguage = (language: string): void => {
+    void api<{ ok: boolean, language: string, error?: string }>('palace-language', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ language }),
+    })
+      .then(result => {
+        if (!result.ok) {
+          toast.push('error', `${tt('palacePickFailed')}: ${result.error ?? ''}`)
+          return
+        }
+        setLanguageChoice(result.language)
+        toast.push('success', tt('palaceSaved', { language: result.language.toUpperCase() }))
+      })
+      .catch((pickError: Error) => { toast.push('error', pickError.message) })
   }
 
   return (
@@ -3146,11 +3209,22 @@ function RegistryCard({ t, overlayHost }: {
         <dd>
           {resolvedLabel}
           {' · '}
-          <span className={styles.regMono}>
-            {tt('registryModelLocale')} — {palaceLanguage} — {tt('registryPalaceLanguage')}
-          </span>
+          <span className={styles.regMono}>{tt('registryModelLocale')} —</span>
+          <select className={`${styles.input} ${styles.regLang}`} value={chosenLanguage}
+            aria-label={tt('registryPalaceLanguage')}
+            onChange={event => { pickLanguage(event.target.value) }}>
+            {PALACE_LANGUAGES.map(language => (
+              <option key={language} value={language}>{language.toUpperCase()}</option>
+            ))}
+          </select>
+          <span className={styles.regMono}>— {tt('registryPalaceLanguage')}</span>
         </dd>
       </dl>
+      {/* Разошлись настройка и живой процесс — говорим об этом прямо: иначе человек
+          решит, что выбор не сработал, хотя он записан и ждёт перезапуска. */}
+      {chosenLanguage !== snapshot.language && (
+        <p className={styles.regNote}>{tt('palacePending', { running: snapshot.language.toUpperCase() })}</p>
+      )}
       {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
 
       <div className={styles.regGroup}>
@@ -3202,7 +3276,7 @@ function RegistryCard({ t, overlayHost }: {
         </label>
         <div className={styles.regActions}>
           <button type="button" className={`${styles.button} ${styles.primary}`}
-            disabled={busy || guard === 'on' || todo !== 'write-label'} onClick={run}>
+            disabled={busy || guard === 'on' || todo === 'none'} onClick={run}>
             {busy ? tt('baseRunBusy') : tt('baseRun')}
           </button>
           {/* Текст действия стоит справа от кнопки на её высоте: кнопка читается

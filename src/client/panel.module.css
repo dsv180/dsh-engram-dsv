@@ -822,6 +822,8 @@ select.input { padding-right: 28px; appearance: none; }
 .regKV { display: flex; flex-wrap: wrap; gap: 2px var(--space-4); align-items: baseline; margin: var(--space-3) 0 0; }
 .regKV dt { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
 .regKV dd { margin: 0; color: var(--dsw-alias-label-primary); }
+/* Обслуживание: выбор языка дворца стоит в строке модели, поэтому ниже общего .input. */
+.regLang { width: auto; height: 22px; padding: 0 4px; margin: 0 2px; font-size: var(--fs-micro); }
 .regNote { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
 .regNote b { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
 .regBad { margin: 4px 0 0; padding-left: 18px; color: var(--dsw-alias-state-error-primary); font-size: var(--fs-micro); line-height: 1.5; }
@@ -830,8 +832,12 @@ select.input { padding-right: 28px; appearance: none; }
 .regActions { display: flex; align-items: center; gap: 0; margin-top: var(--space-3); }
 /* Отступ от кнопки равен её высоте (28px): описание стоит «на одном дыхании» с кнопкой. */
 .regActionNote { margin-left: 28px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
-/* Обслуживание: предохранитель — отдельной строкой над кнопкой. */
-.regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); }
+/* Обслуживание: предохранитель — отдельной строкой над кнопкой. Стоит по умолчанию,
+   поэтому отмеченное состояние подкрашено: снятый предохранитель виден сразу. */
+.regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); cursor: pointer; }
+.regGuard input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
+.regGuard:has(input:checked) { color: var(--dsw-alias-label-primary); }
+.regGuard:has(input:checked) span { font-weight: 500; }
 /* Обслуживание: заголовок группы с кнопкой справа («Словарь >» открывает правку). */
 .regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
 .dictOpen { margin-left: auto; }

@@ -27,7 +27,7 @@ import type {
   TimelineQuery, UpdateInput, WriteInput,
   EpisodeTimelineQuery, EpisodeTimelineResult,
 } from '../types.ts'
-import type { EngramStore, RoomState } from './interface.ts'
+import type { EngramStore, RoomState, VectorTarget } from './interface.ts'
 
 /** 当前 schema 版本；结构性变更必须 +1。可空列与伴随表走增量迁移（见 openEngramStore 的迁移段）。
  *  v12→v13 是纯数据迁移（历史房名归一化），但同样借版本号作为「只跑一次」的开关。 */
@@ -602,6 +602,24 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const sqlImportContentMatch = db.prepare('SELECT id FROM nodes WHERE content = ? LIMIT 1')
   const sqlImportAttachEmbedding = db.prepare('UPDATE nodes SET embedding = ? WHERE id = ?')
+  // Пересчёт векторов (перевод базы, ремонт): таблица и поле приходят из объявления
+  // схемы, поэтому подготовка запроса — по паре имён, а не заранее. Имя проверяется
+  // на «простое» и берётся в кавычки: объявление — данные, и SQL из него не собирается.
+  const vectorStatements = new Map<string, ReturnType<typeof db.prepare>>()
+  const statementForVector = (table: string, vector: string): ReturnType<typeof db.prepare> => {
+    const key = `${table}.${vector}`
+    const cached = vectorStatements.get(key)
+    if (cached !== undefined) return cached
+    const simple = (name: string): string => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw new EngramError('VECTOR_TARGET_BAD_NAME', `недопустимое имя таблицы или поля: ${name}`)
+      }
+      return `"${name}"`
+    }
+    const statement = db.prepare(`UPDATE ${simple(table)} SET ${simple(vector)} = ? WHERE id = ?`)
+    vectorStatements.set(key, statement)
+    return statement
+  }
   const sqlImportEntityAliases = db.prepare('UPDATE entities SET aliases_json = ?, updated_at = ? WHERE id = ?')
   const sqlDecay = db.prepare(`UPDATE nodes SET status = 'archived'
     WHERE status = 'active' AND importance < ? AND last_accessed_at < ? AND next_review_at IS NULL`)
@@ -1498,6 +1516,17 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         }
       })
       return attached
+    },
+
+    async rewriteVectors(targets: readonly VectorTarget[]): Promise<number> {
+      let written = 0
+      withTransaction(() => {
+        for (const target of targets) {
+          const result = statementForVector(target.table, target.vector).run(vecToBlob(target.embedding), target.id)
+          written += Number(result.changes)
+        }
+      })
+      return written
     },
 
     async decay(options: DecayOptions) {

@@ -24,7 +24,7 @@ import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, save
 import { testJevConnection } from './jev/client.ts'
 import { listJevObservations } from './jev/observe.ts'
 import { writeMirror } from './mirror/markdown.ts'
-import type { EngramLanguage } from './i18n/language.ts'
+import { isEngramLanguage, type EngramLanguage } from './i18n/language.ts'
 import { messageIn } from './i18n/messages.ts'
 import { entriesFromRequest } from './i18n/dictionary-edit.ts'
 import type { DictionarySetView } from './i18n/dictionary-edit.ts'
@@ -271,6 +271,39 @@ export interface BaseLabelResult {
 }
 
 /**
+ * Итог пересчёта векторов: сколько строк получило вектор, сколько осталось без него
+ * и что не далось.
+ *
+ * Разделение на «пустой текст» и «сбой» намеренное: первое — факт о содержимом базы
+ * (строке не из чего строить вектор), второе — сбой эмбеддера или записи. Сваливать
+ * их в одно число значило бы обещать «всё пересчитано» там, где часть строк осталась
+ * прежней.
+ */
+export interface BaseConvertResult {
+  /** Строк получило новый вектор за этот прогон. */
+  readonly converted: number
+  /** Строк пропущено: текста нет, вектор не из чего строить. */
+  readonly empty: number
+  /** Метки, обновлённые после пересчёта. */
+  readonly written: readonly { readonly file: string, readonly label: string }[]
+  /** Что не далось: файл, таблица (если известна) и причина. */
+  readonly failed: readonly { readonly file: string, readonly table: string | null, readonly error: string }[]
+}
+
+/**
+ * Итог выбора языка дворца из панели.
+ *
+ * `ok: false` — язык не записан, и причина названа: без сервиса настроек значение
+ * осталось бы на этот процесс и молча потерялось при следующем старте.
+ */
+export interface PalaceLanguageResult {
+  readonly ok: boolean
+  /** Записанный язык; при отказе — тот, что просили записать. */
+  readonly language: string
+  readonly error?: string
+}
+
+/**
  * Итог правки словаря: сколько строк легло, куда и как набор выглядит после записи.
  *
  * Панель получает свежий набор тем же ответом, а не вторым запросом: после
@@ -392,6 +425,16 @@ export interface RouteDeps {
   readonly baseStates: () => Promise<{ readonly bases: readonly BaseView[], readonly pendingBases: number }>
   /** Обслуживание: поставить метку модели во все базы, которым она нужна. */
   readonly writeBaseLabels: () => Promise<BaseLabelResult>
+  /** Обслуживание: пересчитать векторы базам, которые стоят не на целевой модели. */
+  readonly convertBases: () => Promise<BaseConvertResult>
+  /**
+   * Обслуживание: выбрать язык дворца — тот, на котором модель пишет записи.
+   *
+   * Это не язык интерфейса: интерфейс переключается своим селектором хоста, а язык
+   * дворца решает, каким словарём и какой моделью описывается содержимое баз. Выбор
+   * записывается в конфигурацию плагина, а не живёт в панели.
+   */
+  readonly writePalaceLanguage: (language: string) => Promise<PalaceLanguageResult>
   /** Подключён ли пересчёт векторов (этап 2 блока Б); false — кнопка умеет только метку. */
   readonly convertAvailable: boolean
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
@@ -1083,6 +1126,28 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // тела у запроса нет: набор баз определяет состояние, а не клиент.
             if (!guardWrite(req, res)) return
             json(res, 200, await deps.writeBaseLabels())
+            return
+          }
+          if (req.method === 'POST' && route === 'base-convert') {
+            // Обслуживание: пересчитать векторы тем базам, которые стоят не на целевой
+            // модели или растеряли векторы. Тела нет по той же причине, что у метки:
+            // что делать — следует из состояния баз, а не из того, что прислал браузер.
+            if (!guardWrite(req, res)) return
+            json(res, 200, await deps.convertBases())
+            return
+          }
+          if (req.method === 'POST' && route === 'palace-language') {
+            // Обслуживание: язык дворца выбран человеком. Пишется в конфигурацию
+            // плагина; неизвестный язык — отказ, а не «ближайший похожий».
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null) { json(res, 400, { error: 'malformed body' }); return }
+            const wanted = body['language']
+            if (typeof wanted !== 'string' || !isEngramLanguage(wanted)) {
+              json(res, 400, { ok: false, error: `unknown palace language: ${String(wanted)}` })
+              return
+            }
+            json(res, 200, await deps.writePalaceLanguage(wanted))
             return
           }
           if (req.method === 'GET' && route === 'models') {
