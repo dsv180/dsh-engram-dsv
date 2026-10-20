@@ -168,6 +168,82 @@ export function parseImportData(raw: unknown): ExportData | string {
 const EMBED_BATCH_SIZE = 32
 
 /**
+ * 导出 Markdown 的回解析（engram_export format=markdown 的产物 → ExportData）。
+ * 有损恢复：MD 行只携带 status/kind/content/id/importance（记录）与 from/type/to（边），
+ * 其余字段取缺省（confidence 0.5、时间取当前、accessCount 0）。不匹配导出行格式的行静默跳过。
+ * 头部带脱敏标记（zh/en/ru 三语）时返回 redacted=true——调用方应提示用户内容是截断预览。
+ */
+export function parseMarkdownExport(raw: string, scope: EngramScope): { data: ExportData; redacted: boolean } | string {
+  const at = Date.now()
+  // 记录行：'- [status/kind] content（id=…，importance …）'（zh 全角括号无空格 / en、ru 半角带空格，双兼容）。
+  const recordRe = /^- \[([a-z]+)\/([a-z]+)\] (.*[^\s])?\s*[（(]id=([^，()\s]+)[，,]\s*importance ([0-9.]+)[)）]\s*$/
+  const edgeRe = /^- (\S+) --([a-z]+)--> (\S+)\s*$/
+  const headerRe = /^#\s*(?:dsh-engram\s*导出|dsh-engram\s*export|Экспорт\s*dsh-engram)\s*[（(](.*)[)）]\s*$/
+  const edgesHeadingRe = /^##\s*(?:关系边|Relation edges|Связи)\s*$/
+  let redacted = false
+  let inEdges = false
+  const records: MemoryRecord[] = []
+  const edges: MemoryEdge[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    const header = headerRe.exec(line)
+    if (header !== null) {
+      const label = header[1] ?? ''
+      redacted = label.includes('脱敏视图') || label.includes('redacted view') || label.includes('обезличенный')
+      continue
+    }
+    if (edgesHeadingRe.test(line)) {
+      inEdges = true
+      continue
+    }
+    if (inEdges) {
+      const edge = edgeRe.exec(line)
+      if (edge === null) continue
+      const from = edge[1]
+      const type = edge[2]
+      const to = edge[3]
+      if (from === undefined || to === undefined || !oneOf(type, EDGE_TYPES)) continue
+      edges.push({ from: asMemoryId(from), to: asMemoryId(to), type, createdAt: at })
+      continue
+    }
+    const record = recordRe.exec(line)
+    if (record === null) continue
+    const status = record[1]
+    const kind = record[2]
+    const content = record[3]
+    const id = record[4]
+    const importanceRaw = record[5]
+    if (status === undefined || kind === undefined || content === undefined || content === ''
+      || id === undefined || id === '' || importanceRaw === undefined) continue
+    if (!oneOf(status, STATUSES) || !oneOf(kind, KINDS)) continue
+    const importance = Number(importanceRaw)
+    if (!Number.isFinite(importance)) continue
+    records.push({
+      id: asMemoryId(id),
+      scope,
+      kind,
+      content,
+      importance,
+      confidence: 0.5,
+      status,
+      createdAt: at,
+      lastAccessedAt: at,
+      accessCount: 0,
+      sourceSessionId: null,
+      sourceRound: null,
+      sourceSeq: null,
+    })
+  }
+  return {
+    data: {
+      exportedAt: at,
+      records,
+      edges,
+    },
+    redacted,
+  }
+}
+
+/**
  * 导入后就地补嵌入（engram_import 工具与面板导入路由共用）：按批嵌入导入条目并经
  * store.attachEmbeddings 回填。嵌入器不可用返回 0；单批失败只跳过该批不中断。
  */

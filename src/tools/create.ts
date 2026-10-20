@@ -16,9 +16,9 @@ import type { EngramEmbedder } from '../embedder/interface.ts'
 import { parseJsonArray, routeFromEvents } from '../llm/client.ts'
 import type { LlmRoute } from '../llm/client.ts'
 import type { EngramStore } from '../store/interface.ts'
-import { embedImportedRecords, parseImportData } from '../store/import.ts'
+import { embedImportedRecords, parseImportData, parseMarkdownExport } from '../store/import.ts'
 import { parseEntityMentions } from '../ingest/hook.ts'
-import type { EngramKind, EngramScope, EntityId, EntityMention, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
+import type { EngramKind, EngramScope, EntityId, EntityMention, ExportData, FactRecord, FactWriteInput, ImageryLabel, MemoryId } from '../types.ts'
 import type { MemoryRecord, SearchHit } from '../types.ts'
 import { EPISODE_PROXIMITY_MS_DEFAULT, EPISODE_TIMELINE_LIMIT_DEFAULT, asEntityId, asFactId, asMemoryId, normalizeEntityName } from '../types.ts'
 import { renderMemoryPacket, sanitizeProtocolText } from '../security/sanitize.ts'
@@ -1587,6 +1587,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
     parameters: {
       path: { type: 'string', description: message('tool.importPathDescription') },
       scope: { type: 'string', enum: ['user', 'project', 'shared'], description: message('tool.importScopeDescription') },
+      format: { type: 'string', enum: ['json', 'markdown'], description: message('tool.importFormatDescription') },
       dryRun: { type: 'boolean', description: message('tool.importDryRunDescription') },
       keepDuplicates: { type: 'boolean', description: message('tool.importKeepDuplicatesDescription') },
       selectedIds: { type: 'array', items: { type: 'string' }, description: message('tool.importSelectedIdsDescription') },
@@ -1599,24 +1600,41 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const input = args as {
         path?: unknown
         scope?: unknown
+        format?: unknown
         dryRun?: unknown
         keepDuplicates?: unknown
         selectedIds?: unknown
       }
       if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error(message('tool.importPathRequired'))
       const scope = scopeOf(input.scope, 'user')
+      // 格式：显式 format 优先；缺省按扩展名识别（.md/.markdown → markdown，其余 JSON）。
+      const markdown = input.format === 'markdown' || (input.format === undefined && /\.(?:md|markdown)$/i.test(input.path))
       // 文件读取错误原样带路径抛出；解析/校验错误带首条问题字段——迁移场景用户要能自己定位坏文件。
-      let raw: unknown
+      let text: string
       try {
-        raw = JSON.parse(await readFile(input.path, 'utf8'))
+        text = await readFile(input.path, 'utf8')
       } catch (error) {
         throw new Error(message('tool.importReadFailed', { path: input.path, error: error instanceof Error ? error.message : String(error) }))
       }
-      const parsed = parseImportData(raw)
-      if (typeof parsed === 'string') throw new Error(message('tool.importInvalidPayload', { error: parsed }))
+      let data: ExportData
+      if (markdown) {
+        const parsedMarkdown = parseMarkdownExport(text, scope)
+        if (typeof parsedMarkdown === 'string') throw new Error(message('tool.importInvalidPayload', { error: parsedMarkdown }))
+        data = parsedMarkdown.data
+      } else {
+        let raw: unknown
+        try {
+          raw = JSON.parse(text)
+        } catch (error) {
+          throw new Error(message('tool.importReadFailed', { path: input.path, error: error instanceof Error ? error.message : String(error) }))
+        }
+        const parsed = parseImportData(raw)
+        if (typeof parsed === 'string') throw new Error(message('tool.importInvalidPayload', { error: parsed }))
+        data = parsed
+      }
       const store = await deps.openStore(scope)
       if (input.dryRun === true) {
-        const preview = await store.importPreview(parsed)
+        const preview = await store.importPreview(data)
         const fresh = preview.entries.filter(e => e.classification === 'new').length
         const dup = preview.entries.filter(e => e.classification === 'duplicate').length
         return {
@@ -1634,7 +1652,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
             }),
         }
       }
-      const result = await store.importData(parsed, {
+      const result = await store.importData(data, {
         ...(Array.isArray(input.selectedIds)
           ? { selectedIds: input.selectedIds.filter((v): v is string => typeof v === 'string').map(id => asMemoryId(id)) }
           : {}),

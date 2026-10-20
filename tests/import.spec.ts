@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openEngramStore } from '../src/store/sqlite.ts'
-import { parseImportData } from '../src/store/import.ts'
+import { parseImportData, parseMarkdownExport } from '../src/store/import.ts'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { EngramStore } from '../src/store/interface.ts'
+import { asEntityId, asMemoryId } from '../src/types.ts'
 import type { ExportData, MemoryRecord } from '../src/types.ts'
 
 let dir: string
@@ -20,7 +22,8 @@ afterEach(async () => {
 })
 
 /** 造一条导出形状的记录（id 固定以便跨用例断言）。 */
-function recordOf(overrides: Partial<MemoryRecord> & { id: string; content: string }): MemoryRecord {
+function recordOf(overrides: { id: string; content: string } & Omit<Partial<MemoryRecord>, 'id'>): MemoryRecord {
+  const { id, ...rest } = overrides
   return {
     scope: 'user',
     kind: 'fact',
@@ -33,7 +36,8 @@ function recordOf(overrides: Partial<MemoryRecord> & { id: string; content: stri
     sourceSessionId: null,
     sourceRound: null,
     sourceSeq: null,
-    ...overrides,
+    ...rest,
+    id: asMemoryId(id),
   }
 }
 
@@ -104,7 +108,7 @@ describe('store.importPreview / importData', () => {
     // attachEmbeddings 只更新已存在行
     const vector = new Float32Array(512).fill(0.1)
     expect(await store.attachEmbeddings([{ id: existingId, embedding: vector }])).toBe(1)
-    expect(await store.attachEmbeddings([{ id: 'missing-id', embedding: vector }])).toBe(0)
+    expect(await store.attachEmbeddings([{ id: asMemoryId('missing-id'), embedding: vector }])).toBe(0)
   })
 
   it('边只在双端可落地时连入；悬挂边丢弃并计数', async () => {
@@ -115,12 +119,12 @@ describe('store.importPreview / importData', () => {
       exportedAt: 1,
       records: [a, b, ghost],
       edges: [
-        { from: 'edge-a', to: 'edge-b', type: 'related', createdAt: 1 },
-        { from: 'ghost', to: 'edge-a', type: 'related', createdAt: 1 },
+        { from: asMemoryId('edge-a'), to: asMemoryId('edge-b'), type: 'related', createdAt: 1 },
+        { from: asMemoryId('ghost'), to: asMemoryId('edge-a'), type: 'related', createdAt: 1 },
       ],
     }
     // 只选 edge-a/edge-b：ghost 不导入，其触及的第二条边悬挂
-    const result = await store.importData(data, { selectedIds: ['edge-a', 'edge-b'] })
+    const result = await store.importData(data, { selectedIds: ['edge-a', 'edge-b'].map(asMemoryId) })
     expect(result.imported).toBe(2)
     expect(result.edgesLinked).toBe(1)
     expect(result.edgesDangling).toBe(1)
@@ -139,7 +143,7 @@ describe('store.importPreview / importData', () => {
     expect(merged.aliases).toContain('项目十')
     expect(merged.aliases).toContain('PX')
     // 新实体直插
-    const fresh = { ...incoming, id: 'fresh-entity', name: '新实体' }
+    const fresh = { ...incoming, id: asEntityId('fresh-entity'), name: '新实体' }
     const second = await store.importData({ exportedAt: 2, records: [], edges: [], entities: [fresh] })
     expect(second.entitiesNew).toBe(1)
   })
@@ -156,7 +160,7 @@ describe('store.importPreview / importData', () => {
     const fakeExec = {
       agent: { id: 'sess-1', session: { id: 'sess-1', snapshotEvents: () => [] } },
       signal: new AbortController().signal,
-    }
+    } as unknown as ToolRunContext
     const tools = createEngramTools({
       openStore: async () => store,
       resolveProjectStore: async () => store,
@@ -178,5 +182,75 @@ describe('store.importPreview / importData', () => {
     expect(await store.get('tool-1' as never)).toBeDefined()
     // 坏路径 loud 失败
     await expect(importTool!.execute({ path: join(dir, 'nope.json'), scope: 'user' }, fakeExec)).rejects.toThrow()
+  })
+})
+
+describe('parseMarkdownExport（导出 MD 回解析）', () => {
+  // zh 行全角括号逗号、en 行半角带空格——两种导出语言都要能解析。
+  const md = [
+    '# dsh-engram 导出（user）',
+    '',
+    '- [active/fact] 中文内容（id=md-1，importance 0.8）',
+    '- [archived/skill] english line (id=md-2, importance 0.4)',
+    '',
+    '## 关系边',
+    '- md-1 --related--> md-2',
+    '',
+  ].join('\n')
+
+  it('zh/en 行双兼容解析出 records + edges，缺省字段补齐', () => {
+    const parsed = parseMarkdownExport(md, 'user')
+    expect(typeof parsed).toBe('object')
+    if (typeof parsed !== 'string') {
+      expect(parsed.redacted).toBe(false)
+      expect(parsed.data.records.map(record => record.id)).toEqual(['md-1', 'md-2'])
+      expect(parsed.data.records[0]?.content).toBe('中文内容')
+      expect(parsed.data.records[0]?.importance).toBe(0.8)
+      expect(parsed.data.records[1]?.confidence).toBe(0.5)
+      expect(parsed.data.edges).toEqual([{ from: 'md-1', to: 'md-2', type: 'related', createdAt: expect.any(Number) }])
+    }
+  })
+
+  it('脱敏标记检测（zh/en 头部）', () => {
+    const zh = parseMarkdownExport('# dsh-engram 导出（user，脱敏视图）\n', 'user')
+    const en = parseMarkdownExport('# dsh-engram export (user, redacted view)\n', 'user')
+    expect(typeof zh).toBe('object')
+    expect(typeof en).toBe('object')
+    if (typeof zh !== 'string') expect(zh.redacted).toBe(true)
+    if (typeof en !== 'string') expect(en.redacted).toBe(true)
+  })
+
+  it('解析结果直接可入库（importData 消费）', async () => {
+    const parsed = parseMarkdownExport(md, 'user')
+    if (typeof parsed === 'string') throw new Error(parsed)
+    const result = await store.importData(parsed.data)
+    expect(result.imported).toBe(2)
+    expect(result.edgesLinked).toBe(1)
+    expect(await store.get(asMemoryId('md-1'))).toBeDefined()
+  })
+
+  it('工具按 .md 扩展名自动识别格式并导入', async () => {
+    const { createEngramTools } = await import('../src/tools/create.ts')
+    const mdPath = join(dir, 'engram-user.md')
+    await writeFile(mdPath, md, 'utf8')
+    const fakeExec = {
+      agent: { id: 'sess-1', session: { id: 'sess-1', snapshotEvents: () => [] } },
+      signal: new AbortController().signal,
+    } as unknown as ToolRunContext
+    const tools = createEngramTools({
+      openStore: async () => store,
+      resolveProjectStore: async () => store,
+      embedder: Promise.resolve(undefined),
+      call: undefined,
+      routeOverride: undefined,
+      queryRewrite: false,
+      exportDir: dir,
+      language: 'zh',
+    })
+    const importTool = tools.find(tool => tool.name === 'engram_import')
+    expect(importTool).toBeDefined()
+    const commit = await importTool!.execute({ path: mdPath, scope: 'user' }, fakeExec) as { text: string }
+    expect(commit.text).toContain('导入完成')
+    expect(await store.get(asMemoryId('md-2'))).toBeDefined()
   })
 })
