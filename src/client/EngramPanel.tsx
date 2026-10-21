@@ -2411,11 +2411,14 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
     api<RegistrySnapshot>('registry')
       .then((snapshot) => {
         if (cancelled) return
-        setLanguages(snapshot.languages)
+        // Поля-новички читаются терпимо к пустоте: сервер плагина и его клиент грузятся
+        // из разных файлов, и сразу после обновления клиент может оказаться новее сервера
+        // (старый процесс в памяти). Без этого панель падала бы целиком с TypeError.
+        setLanguages(snapshot.languages ?? [])
         // Длина окна — из настройки: проверка должна считать ровно так же, как жизнь.
-        setWindowSec(snapshot.palaceChangeWindowSec)
-        setLeft(snapshot.palaceChangeWindowSec)
-        const supported = snapshot.languages.some(row => row.code === machine) ? machine : null
+        setWindowSec(snapshot.palaceChangeWindowSec ?? GUARD_SECONDS)
+        setLeft(snapshot.palaceChangeWindowSec ?? GUARD_SECONDS)
+        const supported = (snapshot.languages ?? []).some(row => row.code === machine) ? machine : null
         setSuggested(supported ?? 'other')
         setChoice(supported ?? 'other')
       })
@@ -2448,8 +2451,10 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
         const preferred = snapshot.palace.state === 'mismatch'
           ? snapshot.palace.dialogue
           : snapshot.palace.machine
-        const supported = snapshot.languages.some(row => row.code === preferred) ? preferred : null
-        setLanguages(snapshot.languages)
+        // Список языков терпит пустоту: старый сервер его не отдаёт, и окно всё равно
+        // должно открыться — с одним выбором «другой язык», а не с пустым полем.
+        const supported = (snapshot.languages ?? []).some(row => row.code === preferred) ? preferred : null
+        setLanguages(snapshot.languages ?? [])
         setPalace(snapshot.palace)
         setSuggested(supported ?? 'other')
         setChoice(supported ?? 'other')
@@ -3586,9 +3591,15 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
    * `languages.json` на этой машине; без такой строки `select` показал бы пустое
    * поле вместо языка, на котором дворец на самом деле стоит.
    */
-  const languageOptions = snapshot.languages.some(row => row.code === chosenLanguage)
-    ? snapshot.languages
-    : [...snapshot.languages, { code: chosenLanguage, label: chosenLanguage.toUpperCase(), builtin: false }]
+  /**
+   * Список языков терпит отсутствие поля: клиент и сервер плагина едут разными файлами,
+   * и сразу после обновления клиент может оказаться новее сервера — тогда `languages`
+   * в снимке нет. Падать из-за этого всей карточкой нельзя: показываем хотя бы текущий язык.
+   */
+  const languages = snapshot.languages ?? []
+  const languageOptions = languages.some(row => row.code === chosenLanguage)
+    ? languages
+    : [...languages, { code: chosenLanguage, label: chosenLanguage.toUpperCase(), builtin: false }]
 
   // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
   // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
