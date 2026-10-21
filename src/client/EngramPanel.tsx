@@ -3083,7 +3083,8 @@ function ImportButton({ t, scope, toast, onImported }: {
     const format = markdown ? 'markdown' : 'json'
     const body = JSON.stringify({ data, format, scope, dryRun: true })
     // 前置体量检查：超上限的 payload 别先传一遍再被服务端拒——当场说清上限。
-    // 量的是真正要发出去的那串字节（与服务端同一把尺子，见 src/body-limits.ts）。
+    // 量的是真正要发出去的那串字节；与服务端同一把尺子（src/body-limits.ts），
+    // 只差 api() 可能追加的 project 字段那几十字节（真超了服务端会回 413，消息也清楚）。
     if (new TextEncoder().encode(body).byteLength > IMPORT_BODY_LIMIT_BYTES) {
       toast.push('error', t('importTooLarge', { limit: formatBytes(IMPORT_BODY_LIMIT_BYTES) }))
       return

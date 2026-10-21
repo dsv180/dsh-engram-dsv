@@ -44,7 +44,7 @@ export const zh: Record<EngramKey, string> = {
   importImporting: '导入中…',
   importDone: '导入完成：写入 {imported} 条（就地嵌入 {embedded} 条），连边 {edges}，丢弃悬挂边 {dangling}',
   importReadFailed: '无法读取文件：{error}',
-  importInvalidPayload: '文件校验失败：{error}',
+  importInvalidPayload: '导入失败：{error}',
   importTooLarge: '文件过大（上限 {limit}），无法导入。',
   allStatuses: '全部状态',
   allKinds: '全部房间',

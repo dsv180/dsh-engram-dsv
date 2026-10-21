@@ -46,7 +46,7 @@ export const ru: Record<EngramKey, string> = {
   importImporting: 'Импорт…',
   importDone: 'Импорт завершён: записано {imported} ({embedded} с векторами на месте), связей {edges}, отброшено висячих {dangling}',
   importReadFailed: 'Не удаётся прочитать файл: {error}',
-  importInvalidPayload: 'Проверка файла не пройдена: {error}',
+  importInvalidPayload: 'Импорт не удался: {error}',
   importTooLarge: 'Файл слишком большой (предел {limit}), импорт невозможен.',
   allStatuses: 'Все состояния',
   allKinds: 'Все комнаты',

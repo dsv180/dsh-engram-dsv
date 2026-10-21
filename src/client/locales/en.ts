@@ -44,7 +44,7 @@ export const en: Record<EngramKey, string> = {
   importImporting: 'Importing…',
   importDone: 'Import complete: {imported} entries written ({embedded} embedded in place), {edges} edges linked, {dangling} dangling edges dropped',
   importReadFailed: 'Cannot read file: {error}',
-  importInvalidPayload: 'File validation failed: {error}',
+  importInvalidPayload: 'Import failed: {error}',
   importTooLarge: 'File is too large (limit {limit}) and cannot be imported.',
   allStatuses: 'All statuses',
   allKinds: 'All rooms',
