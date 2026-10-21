@@ -11,7 +11,7 @@ import type { AddressInfo } from 'node:net'
 import net from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BODY_LIMIT_BYTES, IMPORT_BODY_LIMIT_BYTES } from '../src/body-limits.ts'
-import { readJsonBody, readJsonBodyOrEmpty, type JsonBodyResult } from '../src/http-body.ts'
+import { readJsonBody, type JsonBodyResult } from '../src/http-body.ts'
 
 let server: Server | undefined
 
@@ -162,18 +162,14 @@ describe('readJsonBody 失败原因可辨', () => {
     expect(result.ok && result.body).toEqual({})
   })
 
-  it('readJsonBodyOrEmpty：坏 body 降级为空对象', async () => {
-    const created = createServer((req, res) => {
-      void readJsonBodyOrEmpty(req).then((body) => {
-        const payload = JSON.stringify(body)
-        res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) })
-        res.end(payload)
-      })
-    })
-    server = created
-    await new Promise<void>(resolve => { created.listen(0, '127.0.0.1', resolve) })
-    const port = (created.address() as AddressInfo).port
-    expect(await post(port, '{not json')).toEqual({})
+  it('坏 body 不再降级成空对象——原因必须可辨', async () => {
+    // v0.9.6 之前有个 readJsonBodyOrEmpty：坏 body 一律当空对象，于是超限会掉进
+    // 字段校验、报成「id required」（#34 的同款甩锅）。这个宽容降级已删除。
+    const port = await startReader(BODY_LIMIT_BYTES)
+    const malformed = await post(port, '{not json')
+    expect(malformed.ok === false && malformed.reason).toBe('malformed')
+    const oversized = await post(port, 'x'.repeat(70 * 1024))
+    expect(oversized.ok === false && oversized.reason).toBe('too-large')
   })
 })
 

@@ -11,12 +11,12 @@ import { isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: merges the ctx.webServer service declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ExportData, ListFilter, MemoryRecord, ObservationStatus, ReviewGrade } from './types.ts'
+import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ExportData, ListFilter, MemoryRecord, ObservationStatus } from './types.ts'
 import { asMemoryId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
 import { formatBytes } from './body-limits.ts'
-import { IMPORT_BODY_LIMIT_BYTES, readJsonBody, readJsonBodyOrEmpty } from './http-body.ts'
+import { IMPORT_BODY_LIMIT_BYTES, readJsonBody } from './http-body.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
@@ -92,6 +92,30 @@ function guardWrite(req: IncomingMessage, res: ServerResponse): boolean {
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
+}
+
+/**
+ * 读 JSON body，并把失败原因说清楚：超限 413、坏 JSON 400、不是对象 400。
+ *
+ * 为什么不给「宽容降级成空对象」：那样超限/坏 body 会掉进字段校验，报成
+ * 「id required」「archivePath required」——把服务端的锅甩给调用方（#34 的同款毛病）。
+ * 机器已经能分辨三种原因，就别再合成一句话。
+ *
+ * @returns body；返回 null = 已写好错误响应，调用方直接 return。
+ */
+async function readBody(req: IncomingMessage, res: ServerResponse, language: EngramLanguage): Promise<Record<string, unknown> | null> {
+  const result = await readJsonBody(req)
+  if (result.ok) return result.body
+  if (result.reason === 'too-large') {
+    json(res, 413, { error: messageIn(language, 'misc.bodyTooLarge', { limit: formatBytes(result.limit) }) })
+    return null
+  }
+  if (result.reason === 'malformed') {
+    json(res, 400, { error: messageIn(language, 'misc.bodyMalformed', { error: result.error }) })
+    return null
+  }
+  json(res, 400, { error: messageIn(language, 'misc.bodyNotObject') })
+  return null
 }
 
 /** 从 URL searchParams 收敛 scope（缺省 user）。 */
@@ -517,7 +541,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'review-answer') {
             // 检索练习自评：面板 记得/模糊/忘了 三档映射 SM-2 grade 5/3/1，推进调度。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             const grade = typeof body.grade === 'number' && Number.isInteger(body.grade) && body.grade >= 0 && body.grade <= 5
               ? body.grade as 0 | 1 | 2 | 3 | 4 | 5
@@ -565,20 +590,6 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
                 ...(record.review === undefined ? {} : { reps: record.review.reps, intervalDays: record.review.intervalDays }),
               })),
             })
-            return
-          }
-          if (req.method === 'POST' && route === 'review-answer') {
-            // 复习自评：grade 0-5 推进 SM-2 调度（≥3 通过；<3 重置间隔）。
-            if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
-            if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
-            const grade = Number(body.grade)
-            if (!Number.isInteger(grade) || grade < 0 || grade > 5) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
-            adoptBodySelector(body)
-            const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
-            const record = await (await storeFor(scope)).scheduleReview(body.id as never, grade as ReviewGrade)
-            if (record === undefined) { json(res, 404, { error: messageIn(deps.language, 'misc.recordNotFound', { id: body.id }) }); return }
-            json(res, 200, { record })
             return
           }
           if (req.method === 'GET' && route === 'export') {
@@ -870,7 +881,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'history-backfill/start') {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             const started = deps.history.start(historyRulesOf(body))
             if (!started.ok) { json(res, 409, { ok: false, error: started.reason ?? messageIn(deps.language, 'misc.backfillCannotStart') }); return }
             json(res, 200, { ok: true, status: deps.history.status() })
@@ -897,7 +909,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Панель сохраняет выбор: негодная правка отвергается целиком (400),
             // годная — перезаписывает файл перекрытия и возвращает новый вид.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body)
             if (typeof parsed === 'string') { json(res, 400, { error: parsed }); return }
             saveJevOverride(deps.jev.dbDir, parsed)
@@ -913,7 +926,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // запрос — минимальный ping. Он же подтверждает, что модель отвечает
             // протоколом System One, то есть действительно является Jev.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             const base = effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir))
             const provider = typeof body.provider === 'string' && body.provider.trim() !== ''
               ? body.provider.trim()
@@ -947,7 +961,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // панель берёт его как подсказки к полю модели, сужая до Jev-моделей,
             // когда такие в списке есть.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
             if (provider === '') {
               json(res, 200, {
@@ -969,7 +984,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 闭馆整理手动触发：面板「管家整理」按钮；嵌入不可用时仅归档 + 启发式去重。
             // 可选 candidates：仅把指定 ids 当作合并阶段种子（其它条目仅在与种子相似时被并入）。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             adoptBodySelector(body)
             const rawScope = typeof body.scope === 'string' ? body.scope : 'user'
             const scope: 'user' | 'project' | 'shared' = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
@@ -991,7 +1007,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'restore-backup') {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             if (typeof body.archivePath !== 'string' || body.archivePath === '') {
               json(res, 400, { error: 'archivePath required' })
               return
@@ -1018,7 +1035,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && (route === 'update' || route === 'forget' || route === 'restore')) {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBodyOrEmpty(req)
+            const body = await readBody(req, res, deps.language)
+            if (body === null) return
             if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')

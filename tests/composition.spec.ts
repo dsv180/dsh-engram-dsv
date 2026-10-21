@@ -395,6 +395,38 @@ describe('dsh-engram real Loader composition', () => {
     expect(error).toContain('records')
   })
 
+  it('普通写接口：坏 body 各说各的话，且 64 KiB 上限仍然生效', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 超限 → 413，说清是体积超限，不是「id 缺失」（v0.9.5 之前报的是 id required）。
+    const oversized = await call(port, 'POST', '/api/engram/update', { id: 'x', scope: 'user', content: '内'.repeat(70 * 1024) })
+    expect(oversized.status).toBe(413)
+    const tooLarge = (oversized.json as { error: string }).error
+    expect(tooLarge).toContain('64 KB')
+    expect(tooLarge).not.toContain('id required')
+
+    // 坏 JSON → 400，说清不是合法 JSON。
+    const malformed = await rawPost(port, '/api/engram/update', '{not json')
+    expect(malformed.status).toBe(400)
+    expect(malformed.text).toContain('JSON')
+    expect(malformed.text).not.toContain('id required')
+
+    // 不是对象 → 400，说清是请求体。
+    const notObject = await rawPost(port, '/api/engram/update', '[1,2,3]')
+    expect(notObject.status).toBe(400)
+    expect(notObject.text).toContain('请求体')
+
+    // 正常的小 body：字段校验照旧（id 缺失仍是 id required），没被新逻辑误伤。
+    const missingId = await call(port, 'POST', '/api/engram/update', { scope: 'user', content: '内容' })
+    expect(missingId.status).toBe(400)
+    expect((missingId.json as { error: string }).error).toBe('id required')
+
+    // 正常请求仍然成功。
+    const ok = await call(port, 'POST', '/api/engram/update', { id: 'missing-id', scope: 'user', content: '内容' })
+    expect(ok.status).toBe(404)
+  })
+
   it('导入链路：三类失败各说各的话——超限 413、坏 JSON 400、不是对象 400', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
@@ -420,8 +452,7 @@ describe('dsh-engram real Loader composition', () => {
     expect((notObject.json as { error: string }).error).toContain('请求体')
   })
 
-  it('导入链路：请求中途断掉的导入不会带崩服务', { timeout: 60_000 }, async () => {
-    const loaded = await loadComposition()
+  it('导入链路：请求中途断掉的导入不会带崩服务', { timeout: 60_000 }, async () => {    const loaded = await loadComposition()
     const port = loaded.webServer.port
 
     // 发到一半就掐断：body 读取会抛「请求已中断」。路由必须自己吞掉（不能变成未捕获拒绝），

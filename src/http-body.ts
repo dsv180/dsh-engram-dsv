@@ -80,15 +80,3 @@ export async function readJsonBody(req: IncomingMessage, limit: number = BODY_LI
   }
   return { ok: true, body: parsed as Record<string, unknown> }
 }
-
-/**
- * 读取 JSON body 并宽容降级：坏 body 视为空对象。
- *
- * 给「body 整体可选」的普通写接口用（补做、配置、复习等）——它们的 body 都是
- * 小结构，坏 body 落到字段校验上照样 400，不需要区分原因。要区分原因的路由
- * （导入）自己用 {@link readJsonBody}。
- */
-export async function readJsonBodyOrEmpty(req: IncomingMessage, limit: number = BODY_LIMIT_BYTES): Promise<Record<string, unknown>> {
-  const result = await readJsonBody(req, limit)
-  return result.ok ? result.body : {}
-}
