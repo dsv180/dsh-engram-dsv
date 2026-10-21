@@ -1,53 +1,61 @@
 /**
- * Jev System One 模型 HTTP 客户端：对一段状态文本并行提问多个 Noul（是否）判断，
- * 返回问题 id → 概率。API 形状是 state/questions JSON（POST {baseUrl}/v1/systemone），
- * 非 OpenAI chat 兼容，无法经宿主 ctx.llm 路由，因此独立成 HTTP 客户端。
- * 网络失败、非 2xx、响应缺失字段都向上抛错，由调用方逐点降级回纯规则判定。
+ * HTTP-клиент модели Jev (System One): задаёт пачке «Noul»-вопросов (да/нет) по
+ * одному тексту состояния и получает вероятности. Формат запроса — JSON вида
+ * state/questions (POST на адрес соединения), он не совместим с OpenAI-chat,
+ * поэтому роутинг через хостовый `ctx.llm` невозможен и клиент остаётся свой.
+ *
+ * Реквизиты соединения (адрес, ключ, модель) клиент не хранит и не читает сам:
+ * их собирает мост `./host.ts` из данных хоста DSH — так провайдер и токен
+ * вводятся ровно в одном месте, у хоста.
+ *
+ * Сетевой сбой, не-2xx, отсутствие полей в ответе — всё бросает ошибку наверх,
+ * а вызывающий по каждой точке молча откатывается к чистым правилам.
  * @module @kenz1117/dsh-engram/jev/client
  */
 
 import type { ResolvedJevConfig } from '../config.ts'
 import type { JudgeQuestion, JudgeAnswers, MemoryJudge } from '../write-disposition.ts'
+import type { JevConnection } from './host.ts'
 
-/** Jev 响应里单个问题的答案体（只消费 Noul 原语的 noul 字段）。 */
+/** Тело ответа по одному вопросу (потребляем только поле вероятности `noul`). */
 interface JevAnswerBody {
   noul?: unknown
 }
 
 /**
- * 调用 Jev /v1/systemone 端点并行回答 Noul 问题。
- * @param config - 已解析的 Jev 子配置（调用方先判 enabled）。
- * @param state - 待判断的状态文本（如两条记忆正文的对照）。
- * @param questions - Noul 问题列表；空列表直接返回空结果，不发请求。
- * @param signal - 外部取消信号；与配置超时信号合并监听，超时按配置 timeoutMs 兜底。
- * @returns 问题 id → Noul 概率（0-1，数字即信念）。
- * @throws 网络、非 2xx、响应缺 answers、答案缺失或非 0-1 数字时抛错。
+ * Задать Noul-вопросы эндпоинту System One и получить вероятности.
+ * @param connection - собранное соединение (адрес, ключ, модель, тайм-аут).
+ * @param state - текст состояния, по которому идёт суждение (например, две записи рядом).
+ * @param questions - список Noul-вопросов; пустой список возвращает пустой результат без запроса.
+ * @param signal - внешний сигнал отмены; складывается с тайм-аутом из connection.timeoutMs.
+ * @returns идентификатор вопроса → вероятность Noul (0-1; число и есть убеждённость).
+ * @throws при сетевом сбое, не-2xx, отсутствии `answers`, пропуске ответа или не-числе вне 0-1.
  */
 export async function askNoul(
-  config: ResolvedJevConfig,
+  connection: JevConnection,
   state: string,
   questions: readonly JudgeQuestion[],
   signal: AbortSignal = new AbortController().signal,
 ): Promise<JudgeAnswers> {
   if (questions.length === 0) return {}
-  const response = await fetch(new URL('/v1/systemone', config.baseUrl), {
+  const response = await fetch(connection.endpoint, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.apiKey ?? ''}`,
+      Authorization: `Bearer ${connection.apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: config.model,
+      model: connection.model,
       state,
       questions: Object.fromEntries(questions.map(question => [question.id, {
         type: 'noul',
         instructions: question.instructions,
       }])),
     }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(connection.timeoutMs)]),
   })
   if (!response.ok) {
-    throw new Error(`jev: HTTP ${response.status} from ${config.baseUrl}`)
+    throw new Error(`jev: HTTP ${response.status} from ${connection.endpoint}`)
   }
   const payload = (await response.json()) as { answers?: Record<string, JevAnswerBody> | null }
   if (payload.answers === undefined || payload.answers === null) {
@@ -65,20 +73,49 @@ export async function askNoul(
 }
 
 /**
- * 从已解析配置构建可注入摄取与工具链路的判断器。
- * @param config - 已解析的 Jev 子配置（含三阈值）。
- * @returns MemoryJudge 实现；ask 不接收外部取消信号，仅受配置超时约束。
+ * Собрать судью для конвейеров записи и инструментов из разрешённой конфигурации.
+ *
+ * Реквизиты соединения берутся у хоста лениво — при первом вопросе этого судьи —
+ * и запоминаются на время его жизни: одна операция задаёт десятки вопросов, а
+ * чтение конфигурации провайдера и секрета — это обращения к сервисам хоста.
+ * Помнится только удачная сборка: неудачную следующая попытка повторяет, иначе
+ * разовый сбой сервиса хоста залипал бы на всю жизнь судьи.
+ *
+ * @param config - разрешённая конфигурация Jev (включая три порога).
+ * @param resolveConnection - сборщик соединения из данных хоста; строка = текст ошибки.
+ * @returns реализация MemoryJudge; ask не принимает внешний сигнал отмены, только тайм-аут.
  */
-export function createMemoryJudge(config: ResolvedJevConfig): MemoryJudge {
+export function createMemoryJudge(
+  config: ResolvedJevConfig,
+  resolveConnection: () => Promise<JevConnection | string>,
+): MemoryJudge {
+  let cached: JevConnection | undefined
+  let attempt: Promise<JevConnection | string> | undefined
+  const connection = async (): Promise<JevConnection | string> => {
+    if (cached !== undefined) return cached
+    // Параллельные вопросы одной операции делят одну попытку, а не собирают каждый своё.
+    attempt ??= resolveConnection()
+    const resolved = await attempt
+    attempt = undefined
+    if (typeof resolved === 'string') return resolved
+    cached = resolved
+    return resolved
+  }
   return {
     deferMergeAbove: config.deferMergeAbove,
     deferAcceptBelow: config.deferAcceptBelow,
     contradictMinProbability: config.contradictMinProbability,
-    ask: (state, questions) => askNoul(config, state, questions),
+    ask: async (state, questions) => {
+      const resolved = await connection()
+      // Провайдер, модель или ключ недоступны: ошибка уходит наверх, и вызывающий
+      // молча откатывается к чистым правилам — тот же путь, что при сетевом сбое.
+      if (typeof resolved === 'string') throw new Error(resolved)
+      return askNoul(resolved, state, questions)
+    },
   }
 }
 
-/** 连接测试结果：ok = 端点可达且返回了合法 Noul 概率；失败时 error 给原因。 */
+/** Итог проверки связи: ok = адрес доступен и вернул корректную вероятность Noul. */
 export interface JevConnectionTestResult {
   readonly ok: boolean
   readonly elapsedMs: number
@@ -87,14 +124,16 @@ export interface JevConnectionTestResult {
 }
 
 /**
- * 连接测试：向端点发一个最小 ping 问题，验证 baseUrl/model/apiKey 三者组合可用。
- * 不抛错——失败原因以 error 字段返回，供面板直接展示。
- * @param config - 待测试的生效配置（enabled 不参与判断；apiKey/baseUrl/model 用调用方给的值）。
+ * Проверка связи: минимальный ping-вопрос на эндпоинт — проверяет, что связка
+ * «провайдер + модель + ключ» рабочая. Она же и есть проверка «модель действительно
+ * Jev»: обычная чат-модель на запрос System One вероятностью не ответит.
+ * Не бросает ошибку — причина возвращается полем error, чтобы панель её показала.
+ * @param connection - проверяемое соединение (вызывающий уже собрал его из данных хоста).
  */
-export async function testJevConnection(config: ResolvedJevConfig): Promise<JevConnectionTestResult> {
+export async function testJevConnection(connection: JevConnection): Promise<JevConnectionTestResult> {
   const startedAt = Date.now()
   try {
-    const answers = await askNoul(config, 'Connectivity test: this state exists.', [{
+    const answers = await askNoul(connection, 'Connectivity test: this state exists.', [{
       id: 'ping',
       instructions: 'This is a connectivity test. Return any probability between 0 and 1.',
     }])

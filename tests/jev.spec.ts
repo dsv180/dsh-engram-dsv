@@ -3,16 +3,28 @@ import { askNoul, createMemoryJudge, testJevConnection } from '../src/jev/client
 import { clearJevObservations, listJevObservations, recordJevObservation } from '../src/jev/observe.ts'
 import { confirmContradictions, decideWrite } from '../src/write-disposition.ts'
 import type { ResolvedJevConfig } from '../src/config.ts'
+import type { JevConnection } from '../src/jev/host.ts'
 import type { EngramStore } from '../src/store/interface.ts'
 import type { JudgeQuestion, MemoryJudge } from '../src/write-disposition.ts'
 import type { MemoryId, MemoryRecord } from '../src/types.ts'
 
-/** 测试用 Jev 配置：enabled 场景的标准夹具。 */
+/**
+ * Тестовое соединение: адрес уже полный — клиент ничего не досчитывает, ключ и модель
+ * приходят сюда готовыми от моста к хосту, поэтому подставлять их в тестах не нужно.
+ */
+const connection: JevConnection = {
+  endpoint: 'https://jev.test/v1/systemone',
+  apiKey: 'test-key',
+  model: 'jev-test',
+  timeoutMs: 3000,
+}
+
+/** Тестовая конфигурация Jev: выбран провайдер и модель, три порога стандартные. */
 const jevConfig: ResolvedJevConfig = {
   enabled: true,
-  apiKey: 'test-key',
-  baseUrl: 'https://jev.test',
+  provider: 'aitunnel',
   model: 'jev-test',
+  endpoint: 'https://jev.test/v1/systemone',
   timeoutMs: 3000,
   deferMergeAbove: 0.85,
   deferAcceptBelow: 0.15,
@@ -69,13 +81,13 @@ afterEach(() => {
 })
 
 describe('askNoul', () => {
-  it('POST state/questions 到 {baseUrl}/v1/systemone 并解析 noul 概率', async () => {
+  it('POST state/questions на адрес соединения и разбор вероятности noul', async () => {
     const fetchMock = stubFetch({ answers: { same_memory: { noul: 0.7 } } })
-    const answers = await askNoul(jevConfig, '状态文本', [{ id: 'same_memory', instructions: '同一事实吗' }])
+    const answers = await askNoul(connection, '状态文本', [{ id: 'same_memory', instructions: '同一事实吗' }])
     expect(answers).toEqual({ same_memory: 0.7 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
-    expect(url.toString()).toBe('https://jev.test/v1/systemone')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://jev.test/v1/systemone')
     expect(init.method).toBe('POST')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-key')
     const body = JSON.parse(init.body as string) as { model: string; state: string; questions: Record<string, { type: string; instructions: string }> }
@@ -86,35 +98,70 @@ describe('askNoul', () => {
 
   it('空问题列表短路，不发请求', async () => {
     const fetchMock = stubFetch({ answers: {} })
-    const answers = await askNoul(jevConfig, '状态文本', [])
+    const answers = await askNoul(connection, '状态文本', [])
     expect(answers).toEqual({})
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('非 2xx 抛错', async () => {
     stubFetch({ error: 'nope' }, 503)
-    await expect(askNoul(jevConfig, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/HTTP 503/)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/HTTP 503/)
   })
 
   it('响应缺失 answers 抛错', async () => {
     stubFetch({})
-    await expect(askNoul(jevConfig, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/missing answers/)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/missing answers/)
   })
 
   it('noul 非数字或越界抛错', async () => {
     stubFetch({ answers: { q: { noul: 'high' } } })
-    await expect(askNoul(jevConfig, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
     stubFetch({ answers: { q: { noul: 1.5 } } })
-    await expect(askNoul(jevConfig, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
+    await expect(askNoul(connection, 's', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/noul probability/)
   })
 })
 
 describe('createMemoryJudge', () => {
-  it('三阈值与超时从配置透传', () => {
-    const judge = createMemoryJudge(jevConfig)
+  it('три порога берутся из конфигурации, соединение резолвится сборщиком', async () => {
+    const judge = createMemoryJudge(jevConfig, async () => connection)
     expect(judge.deferMergeAbove).toBe(0.85)
     expect(judge.deferAcceptBelow).toBe(0.15)
     expect(judge.contradictMinProbability).toBe(0.8)
+    // Сборщик не вызывается на холостом ходу: соединение нужно только при первом вопросе.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ answers: { q: { noul: 0.3 } } }), { status: 200 })))
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).resolves.toEqual({ q: 0.3 })
+  })
+
+  it('сборщик вернул текст ошибки: ask бросает её наверх (вызывающий уходит в чистые правила)', async () => {
+    const judge = createMemoryJudge(jevConfig, async () => 'Jev: провайдер недоступен')
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/провайдер недоступен/)
+  })
+
+  it('неудачная сборка соединения не залипает: следующий вопрос спрашивает хост снова', async () => {
+    let calls = 0
+    const judge = createMemoryJudge(jevConfig, async () => {
+      calls += 1
+      return calls === 1 ? 'Jev: провайдер недоступен' : connection
+    })
+    // Первый вопрос: сборка не удалась — ошибка уходит наверх, писать нечем.
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).rejects.toThrow(/провайдер недоступен/)
+    // Второй: хост спрашивается заново (а не отдаётся залипшая ошибка), вопрос доходит до сети.
+    const fetchMock = stubFetch({ answers: { q: { noul: 0.4 } } })
+    await expect(judge.ask('s', [{ id: 'q', instructions: 'i' }])).resolves.toEqual({ q: 0.4 })
+    expect(calls).toBe(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('удачная сборка помнится: два вопроса одной операции обходятся одной сборкой', async () => {
+    let calls = 0
+    const judge = createMemoryJudge(jevConfig, async () => {
+      calls += 1
+      return connection
+    })
+    stubFetch({ answers: { q: { noul: 0.4 } } })
+    await judge.ask('s', [{ id: 'q', instructions: 'i' }])
+    await judge.ask('s', [{ id: 'q', instructions: 'i' }])
+    expect(calls).toBe(1)
   })
 })
 
@@ -289,7 +336,7 @@ describe('observe 环形缓冲', () => {
 describe('testJevConnection', () => {
   it('成功返回 ok 与 ping 概率', async () => {
     stubFetch({ answers: { ping: { noul: 0.42 } } })
-    const result = await testJevConnection(jevConfig)
+    const result = await testJevConnection(connection)
     expect(result.ok).toBe(true)
     expect(result.probability).toBe(0.42)
     expect(result.error).toBeUndefined()
@@ -298,7 +345,7 @@ describe('testJevConnection', () => {
 
   it('失败不抛错，error 返回原因', async () => {
     stubFetch({}, 401)
-    const result = await testJevConnection(jevConfig)
+    const result = await testJevConnection(connection)
     expect(result.ok).toBe(false)
     expect(result.probability).toBeUndefined()
     expect(result.error).toContain('HTTP 401')

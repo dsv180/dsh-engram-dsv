@@ -52,6 +52,14 @@ export interface MemoryJudge {
   ask(state: string, questions: readonly JudgeQuestion[]): Promise<JudgeAnswers>
 }
 
+/**
+ * Поставщик судьи: спрашивается в момент операции и читает действующую конфигурацию.
+ * Благодаря ему включение Jev и выбор провайдера, модели или адреса в панели действуют
+ * без перезапуска — в том числе в инструментах, где судья иначе собирался бы один раз
+ * при загрузке плагина. `undefined` = Jev сейчас выключен, работать по чистым правилам.
+ */
+export type JudgeProvider = () => MemoryJudge | undefined
+
 /** decideWrite 的可选注入项：judge 与 content 同时提供时模糊带才走 Jev 裁决。 */
 export interface DecideWriteOptions {
   /** Jev 判断器；undefined = 纯规则判定。 */

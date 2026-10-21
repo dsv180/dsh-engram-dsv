@@ -49,6 +49,7 @@ import { openEngramStore } from './store/sqlite.ts'
 import type { EngramStore } from './store/interface.ts'
 import { createEngramTools } from './tools/create.ts'
 import { resolveJevField } from './jev/runtime.ts'
+import { readJevCatalog, readProviderModels, resolveJevConnection } from './jev/host.ts'
 import { currentUserRequestText, renderMemoryPacket } from './security/sanitize.ts'
 import { wrapWithRationale } from './selection-rationale.ts'
 import { buildAssessReminder, evidenceBatches } from './retrieve/evidence.ts'
@@ -288,7 +289,8 @@ async function preStep(
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(resolved.jev, resolved.dbDir),
+        // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -308,7 +310,8 @@ async function preStep(
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(resolved.jev, resolved.dbDir),
+        // Провайдер Jev: панель → cordis.yml → маршрут этой сессии (тот же, что у извлечения).
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => state.route?.provider),
         call: params => streamText(ctx, { ...params, sessionId: agent.session.id }),
         logRequest,
         signal,
@@ -762,7 +765,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     call: callParams => streamText(ctx, { ...callParams, sessionId: '' }),
     logRequest: logIngestRequest,
     // 面板覆盖免缓存装配：每次回填运行时读 jev-config.json，面板保存立即生效。
-    ...resolveJevField(resolved.jev, resolved.dbDir),
+    ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => (resolved.routeOverride ?? preStepState.route)?.provider),
   })
 
   /** 回填任务（进程内单例；面板轮询它的进度，工具同步等待自己的那一次运行）。 */
@@ -849,8 +852,11 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     embedder,
     call: callParams => streamText(ctx, { ...callParams, sessionId: callParams.sessionId ?? '' }),
     routeOverride: resolved.routeOverride,
-    // 面板覆盖免缓存装配：工具每次调用时读 jev-config.json，面板保存立即生效。
-    ...resolveJevField(resolved.jev, resolved.dbDir),
+    // 面板覆盖免缓存装配：поставщик судьи читает jev-config.json в момент вызова инструмента,
+    // поэтому сохранение в панели действует сразу, без перезапуска DSH.
+    // Читатель маршрута ленивый: инструменты регистрируются до первой сессии, и
+    // провайдер берётся в момент вопроса, а не в момент регистрации.
+    ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => preStepState.route?.provider),
     queryRewrite: resolved.queryRewrite,
     exportDir: `${resolved.dbDir}/exports`,
     language: resolved.language,
@@ -875,8 +881,18 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
       pluginVersion: VERSION,
       language: resolved.language,
       embedder,
-      // Jev 面板配置：yml 基线 + dbDir（覆盖文件路径派生），读写全走 jev/runtime 纯函数。
-      jev: { base: resolved.jev, dbDir: resolved.dbDir },
+      // Настройки Jev для панели: база из cordis.yml, каталог файла перекрытия и мост
+      // к хосту — список провайдеров DSH и сборка соединения с их адресом и ключом.
+      jev: {
+        base: resolved.jev,
+        dbDir: resolved.dbDir,
+        host: {
+          catalog: () => readJevCatalog(ctx),
+          models: provider => readProviderModels(ctx, provider),
+          connection: (provider, model, timeoutMs, endpoint) =>
+            resolveJevConnection(ctx, provider, model, timeoutMs, endpoint),
+        },
+      },
       history: {
         estimate: historyApi.estimate,
         start: historyApi.start,
@@ -921,7 +937,7 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
         embedder,
         mode,
         routeOverride: resolved.routeOverride,
-        ...resolveJevField(resolved.jev, resolved.dbDir),
+        ...resolveJevField(ctx, resolved.jev, resolved.dbDir, () => (resolved.routeOverride ?? routeFromEvents(events))?.provider),
         call: params => streamText(ctx, { ...params, sessionId: session.id }),
         logRequest: logIngestRequest,
         signal: AbortSignal.timeout(FINAL_INGEST_TIMEOUT_MS),

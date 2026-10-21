@@ -35,7 +35,7 @@ import type { AssessVerdict, NextStrategy } from '../retrieve/evidence.ts'
 import { placardImprovementHint } from '../imagery/score.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunResult } from '../ingest/history.ts'
 import { applyMerge, confirmContradictions, decideWrite } from '../write-disposition.ts'
-import type { MemoryJudge, WriteDisposition } from '../write-disposition.ts'
+import type { JudgeProvider, MemoryJudge, WriteDisposition } from '../write-disposition.ts'
 import type { EngramLanguage } from '../i18n/language.ts'
 import { message } from '../i18n/messages.ts'
 import { resolveRoomInput, roomLabel } from '../i18n/rooms.ts'
@@ -55,8 +55,12 @@ export interface ToolDeps {
   readonly call: ((params: { route: LlmRoute; system: string; userText: string; maxTokens: number; purpose: string; signal: AbortSignal; sessionId: string | undefined }) => Promise<string>) | undefined
   /** 显式路由覆盖（Config provider+model）；缺省从会话日志解析。 */
   readonly routeOverride: LlmRoute | undefined
-  /** Jev 判断器（Config jev.enabled 时注入）；undefined = 纯规则四态，DEFER 落库即建边。 */
-  readonly judge?: MemoryJudge
+  /**
+   * Поставщик судьи Jev: спрашивается в начале вызова инструмента, поэтому включение
+   * Jev и выбор провайдера, модели или адреса в панели действуют без перезапуска.
+   * Отсутствует или вернул undefined = судьи нет, чистые правила (DEFER пишется и сразу связывается).
+   */
+  readonly resolveJudge?: JudgeProvider
   /** 是否启用检索查询改写（Config queryRewrite）；false 时 engram_search 直接单查询。 */
   readonly queryRewrite: boolean
   /** 导出文件目录（engram_export 写入）。 */
@@ -372,10 +376,11 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       embedding?: Float32Array
       imagery?: ImageryLabel
     },
+    judge: MemoryJudge | undefined,
   ): Promise<WriteOutcome> {
     const { embedding } = item
     // judge + content 成对提供时，DEFER 模糊带交 Jev 三路裁决；未注入 judge 时行为与纯规则四态一致。
-    const decision = await decideWrite(store, item.kind, embedding, deps.judge === undefined ? {} : { judge: deps.judge, content: item.content })
+    const decision = await decideWrite(store, item.kind, embedding, judge === undefined ? {} : { judge, content: item.content })
     if (decision.disposition === 'merge') {
       const record = await applyMerge(store, decision, item.content)
       return { disposition: 'merge', record, relatedId: decision.into.id, similarity: decision.similarity, candidates: [] }
@@ -397,9 +402,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const candidates = (await store.findContradictions(embedding as Float32Array))
         .filter(candidate => candidate.id !== record.id)
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
-      const confirmed = deps.judge === undefined
+      const confirmed = judge === undefined
         ? candidates
-        : (await confirmContradictions(deps.judge, item.content, candidates)) ?? candidates
+        : (await confirmContradictions(judge, item.content, candidates)) ?? candidates
       for (const candidate of confirmed) {
         await store.linkEdge(record.id, candidate.id, 'contradicts')
       }
@@ -477,6 +482,9 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       : await embedder.embed(prepared.map(item => item.content.trim()))
     // 第三步：逐条处置写入；单条失败记入 failed 不阻塞其余（defer 的矛盾边照建，可经 engram_review 查看）。
     const saved: { id: string; kind: string; importance: number; slot?: { room: string; index: number }; disposition: Exclude<WriteDisposition, 'drop'>; mergedInto?: string }[] = []
+    // Поставщик судьи спрашивается один раз на вызов инструмента: панель могла измениться
+    // после сборки плагина, а вопросы одной операции делят одно соединение.
+    const judge = deps.resolveJudge?.()
     for (const [position, item] of prepared.entries()) {
       try {
         const embedding = vectors?.[position]
@@ -487,7 +495,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
           ...(item.importance === undefined ? {} : { importance: item.importance }),
           sourceSessionId,
           ...(embedding === undefined ? {} : { embedding }),
-        })
+        }, judge)
         // merge 处置无新条目，实体挂被并入的既有条目；其余挂新条目。
         const nodeId = outcome.disposition === 'merge' && outcome.relatedId !== undefined
           ? asMemoryId(outcome.relatedId)
@@ -599,6 +607,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       const embeddings = embedder === undefined ? undefined : await embedder.embed([content.trim()])
       const imagery = placardOf(input.placard)
       const mentions = parseEntityMentions(input.entities)
+      const judge = deps.resolveJudge?.()
       const outcome = await writeWithDisposition(store, {
         scope,
         kind: input.kind as EngramKind,
@@ -607,7 +616,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         sourceSessionId,
         ...(embeddings?.[0] === undefined ? {} : { embedding: embeddings[0] }),
         ...(imagery === undefined ? {} : { imagery }),
-      })
+      }, judge)
       // 实体关联：merge 挂被并入的既有条目，accept/defer 挂新条目；失败静默。
       if (mentions.length > 0) {
         const nodeId = outcome.disposition === 'merge' && outcome.relatedId !== undefined
