@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from '../src/i18n/dictionary-ai.ts'
-import { FILL_REQUEST_MAX, splitFillBatch } from '../src/i18n/dictionary-limits.ts'
+import { FILL_REQUEST_MAX, needsTranslation, splitFillBatch } from '../src/i18n/dictionary-limits.ts'
 import { messageVocabulary } from '../src/i18n/messages.ts'
 
 /** Настоящие английские строки набора сообщений: короткие и однострочные — их читать. */
@@ -175,6 +175,17 @@ describe('партия режется по числу терминов и по �
 describe('партия ограничена и очищена', () => {
   it('пустое и повтор убираются, порядок сохраняется', () => {
     expect(fillBatch(['A', ' ', 'B', 'A', ' C '])).toEqual(['A', 'B', 'C'])
+  })
+
+  it('строки из одних подстановок не спрашиваются: переводить в них нечего', () => {
+    // Такие строки живут в наборе сообщений («{reason} {count}», «, », «…») и каждый
+    // проход уходили в запрос, оставляя ту же пустую клетку.
+    expect(needsTranslation('{reason} {count}')).toBe(false)
+    expect(needsTranslation(', ')).toBe(false)
+    expect(needsTranslation('—')).toBe(false)
+    expect(needsTranslation('{name} (id={id})')).toBe(true)
+    expect(needsTranslation('- {belief} ({count} sources)')).toBe(true)
+    expect(fillBatch(['{reason} {count}', '{n} suggestions', ', '])).toEqual(['{n} suggestions'])
   })
 
   it('слишком большая партия отклоняется до запроса', () => {

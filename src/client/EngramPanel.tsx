@@ -19,7 +19,7 @@ import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
 // поэтому в клиентскую сборку не тянется ни модель, ни её клиент.
-import { splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
+import { needsTranslation, splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
@@ -3950,7 +3950,9 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
   /** Клетки без перевода: только их и отдаём модели — заполнение не перекрывает готовое. */
   const fillable = useMemo(() => {
     if (view === null) return [] as readonly string[]
-    return view.rows.filter(row => cell(row).trim() === '').map(row => row.left)
+    // Строки из одних подстановок и знаков не спрашиваем: переводить в них нечего, а
+    // каждый проход тратил на них партию и оставлял те же пустые клетки (см. needsTranslation).
+    return view.rows.filter(row => cell(row).trim() === '' && needsTranslation(row.left)).map(row => row.left)
   }, [view, cell])
 
   const save = (): void => {

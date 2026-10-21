@@ -17,7 +17,7 @@
 import type { EngramLanguage } from './language.ts'
 import { message } from './messages.ts'
 import { EngramError } from '../types.ts'
-import { FILL_REQUEST_MAX } from './dictionary-limits.ts'
+import { FILL_REQUEST_MAX, needsTranslation } from './dictionary-limits.ts'
 
 /**
  * Язык в запросе: модель должна понимать, на какой язык переводить.
@@ -326,6 +326,8 @@ export function fillBatch(terms: readonly string[]): readonly string[] {
   for (const term of terms) {
     const value = term.trim()
     if (value === '' || seen.has(value)) continue
+    // Строки из одних подстановок переводить нечего — см. needsTranslation.
+    if (!needsTranslation(value)) continue
     seen.add(value)
     list.push(value)
   }
