@@ -215,6 +215,25 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
   return { status: response.status, json, text, contentType: response.headers.get('content-type') ?? '' }
 }
 
+/** 原样 POST 一段文本（不走 JSON.stringify）——用来看服务端对坏请求体的说法。 */
+async function rawPost(port: number, path: string, raw: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(port, '127.0.0.1', () => {
+      socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${String(Buffer.byteLength(raw))}\r\nConnection: close\r\n\r\n${raw}`)
+    })
+    let text = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk: string) => { text += chunk })
+    socket.on('error', reject)
+    socket.on('end', () => {
+      const separator = text.indexOf('\r\n\r\n')
+      const head = separator === -1 ? '' : text.slice(0, separator)
+      const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(head)?.[1] ?? '0')
+      resolve({ status, text: separator === -1 ? '' : text.slice(separator + 4) })
+    })
+  })
+}
+
 describe('dsh-engram real Loader composition', () => {
   it('装载后 21 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
@@ -374,6 +393,31 @@ describe('dsh-engram real Loader composition', () => {
     expect(badFile.status).toBe(400)
     const error = (badFile.json as { error: string }).error
     expect(error).toContain('records')
+  })
+
+  it('导入链路：三类失败各说各的话——超限 413、坏 JSON 400、不是对象 400', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 超限 → 413，且消息里带上限与出路（不能含糊成「不是 JSON 对象」）。
+    const huge = await call(port, 'POST', '/api/engram/import', {
+      data: { records: Array.from({ length: 200_000 }, (_, index) => ({ content: `第${String(index)}条${'内'.repeat(40)}` })) },
+      format: 'json', scope: 'user', dryRun: true,
+    })
+    expect(huge.status).toBe(413)
+    const tooLarge = (huge.json as { error: string }).error
+    expect(tooLarge).toContain('16 MB')
+    expect(tooLarge).toContain('engram_import')
+
+    // 请求体不是合法 JSON → 400，报「不是合法 JSON」而不是别的。
+    const malformed = await rawPost(port, '/api/engram/import', '{not json')
+    expect(malformed.status).toBe(400)
+    expect(malformed.text).toContain('JSON')
+
+    // 请求体不是对象 → 400，报「请求体」。
+    const notObject = await call(port, 'POST', '/api/engram/import', [1, 2, 3])
+    expect(notObject.status).toBe(400)
+    expect((notObject.json as { error: string }).error).toContain('请求体')
   })
 
   it('导入链路：请求中途断掉的导入不会带崩服务', { timeout: 60_000 }, async () => {

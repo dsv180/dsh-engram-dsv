@@ -54,7 +54,8 @@ export async function readJsonBody(req: IncomingMessage, limit: number = BODY_LI
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > limit) {
-        // 超限后不再攒：内存占用封顶在 limit，剩下的请求体读完丢弃即可。
+        // 超限后不再攒：本读取器持有的字节封顶在 limit，剩下的请求体由 Node 流自己丢弃。
+        // （进程 RSS 仍会随 body 大小涨——那是 Node 的流缓冲与 GC 滞后，不是这里攒下来的。）
         tooLarge = true
         chunks.length = 0
         return

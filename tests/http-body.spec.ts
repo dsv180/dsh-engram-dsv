@@ -112,7 +112,9 @@ describe('readJsonBody 上限口径', () => {
     expect(result.ok === false && result.reason).toBe('too-large')
   })
 
-  it('超限时内存占用封顶在上限内（不把 body 攒进内存）', async () => {
+  it('超限后不再累积 body——只报上限与原因', async () => {
+    // 注：这里断言的是「读取器不再攒 body」（chunks 封顶在 limit）与「报出上限」。
+    // 进程 RSS 仍会随 body 大小涨——那是 Node 流缓冲与 GC 滞后，与本读取器无关。
     const port = await startReader(1024)
     const result = await post(port, 'x'.repeat(64 * 1024))
     expect(result.ok === false && result.reason).toBe('too-large')
