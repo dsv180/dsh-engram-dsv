@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connect as netConnect } from 'node:net'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -373,6 +374,27 @@ describe('dsh-engram real Loader composition', () => {
     expect(badFile.status).toBe(400)
     const error = (badFile.json as { error: string }).error
     expect(error).toContain('records')
+  })
+
+  it('导入链路：请求中途断掉的导入不会带崩服务', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 发到一半就掐断：body 读取会抛「请求已中断」。路由必须自己吞掉（不能变成未捕获拒绝），
+    // 且服务要活着继续应答下一次请求。
+    await new Promise<void>((resolve) => {
+      const socket = netConnect(port, () => {
+        socket.write('POST /api/engram/import HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 999999\r\n\r\n')
+        socket.write('{"data":{"records":[]}')
+        socket.destroy() // 半路掐断
+      })
+      socket.on('error', () => resolve())
+      socket.on('close', () => resolve())
+    })
+
+    // 服务仍健在：下一个请求正常应答。
+    const alive = await call(port, 'GET', '/api/engram/stats')
+    expect(alive.status).toBe(200)
   })
 
   it('情景时间线 HTTP 链路：组头带会话摘要，around 查邻近扩展', { timeout: 60_000 }, async () => {
