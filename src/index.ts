@@ -796,12 +796,27 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   /** Каталог моделей в том виде, в каком его понимает правило состояния базы. */
   const catalogModels: readonly CatalogModel[] = [...registry.models.values()]
     .map(row => ({ id: row.id, label: row.label, dimensions: row.dimensions }))
-  /** Ожидание базы: метка для выбранной модели и языка плюс её строка каталога. */
-  const baseTarget = {
-    label: localModel?.label,
-    model: localModel === undefined
-      ? undefined
-      : { id: localModel.id, label: registry.models.get(localModel.id)?.label, dimensions: registry.models.get(localModel.id)?.dimensions },
+  /**
+   * Язык, под который считаются метки и пересчёт баз.
+   *
+   * Меняется вместе со сменой языка дворца, не дожидаясь перезапуска: собранное условие
+   * существует ровно для того, чтобы язык и базы менялись одним действием. Если бы здесь
+   * остался язык, прочитанный при сборке плагина, «Выполнить» записало бы новый язык, а
+   * базы подписало и пересчитало под старый — и человек получил бы ровно то расхождение,
+   * от которого условие защищает.
+   */
+  let basesLanguage: EngramLanguage = resolved.language
+  /** Ожидание базы под текущий язык: пересчитывается, а не берётся из сборки плагина. */
+  const baseTargetNow = (): {
+    readonly label: string | undefined
+    readonly model: { readonly id: string, readonly label: string | undefined, readonly dimensions: number | undefined } | undefined
+  } => {
+    const model = resolveLocalModel(registry, basesLanguage, resolved.embedder.localModel, resolved.embedder.localPooling)
+    const record = model === undefined ? undefined : registry.models.get(model.id)
+    return {
+      label: model?.label,
+      model: model === undefined ? undefined : { id: model.id, label: record?.label, dimensions: record?.dimensions },
+    }
   }
   // Слова пользователя для вычистки секретов. Действуют поверх языковых наборов и
   // независимо от языка: пользователь добавляет их как раз потому, что пакета не хватило
@@ -1066,14 +1081,14 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       // Объявление схемы описывает другую версию — состояние не проверяем и не
       // выдумываем: карточка покажет «не проверено» и причину.
       const verdict = census.checkable
-        ? judgeBase({ facts: census.facts, target: baseTarget, language: resolved.language, catalog: catalogModels })
+        ? judgeBase({ facts: census.facts, target: baseTargetNow(), language: basesLanguage, catalog: catalogModels })
         : undefined
       bases.push({
         file,
         scope,
         title: scope === 'project' ? titles.get(file) ?? null : null,
         label: census.facts.label ?? null,
-        targetLabel: baseTarget.label ?? null,
+        targetLabel: baseTargetNow().label ?? null,
         state: verdict?.state ?? null,
         action: verdict?.action ?? null,
         rows: verdict?.rows ?? census.facts.rows,
@@ -1164,7 +1179,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   const writeBaseLabels = async (): Promise<BaseLabelResult> => {
     const written: { file: string, label: string }[] = []
     const failed: { file: string, error: string }[] = []
-    if (baseTarget.label === undefined) return { written, failed }
+    if (baseTargetNow().label === undefined) return { written, failed }
     const { bases } = await baseStates()
     for (const base of bases) {
       if (base.action !== 'write-label' || base.targetLabel === null) continue
@@ -1199,7 +1214,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       written: [],
       failed: [],
     }
-    const dimensions = baseTarget.model?.dimensions
+    const dimensions = baseTargetNow().model?.dimensions
     if (dimensions === undefined) return result
     const active = await embedder
     if (active === undefined) {
@@ -1536,6 +1551,9 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       convertBases,
       writePalaceLanguage: async (language: string) => {
         const reason = await writePalaceLanguage(settingsOf(ctx), language)
+        // Язык записан — с этого момента базы подписываются и пересчитываются под него,
+        // не дожидаясь перезапуска: иначе «Выполнить» оставило бы базы на прежнем языке.
+        if (reason === undefined) basesLanguage = language
         return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
       },
       palaceChangeWindowSec: resolved.palaceChangeWindowSec,
