@@ -3524,6 +3524,45 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
   // словарь серверного языка выбранный язык больше не перекрывает.
   const tt = (key: EngramKey, params?: Record<string, string | number>): string => t(key, params)
 
+  /**
+   * Длина окна: считается по настройке, а не по константе — сервер проверяет тем же
+   * числом. Читается из снимка, а снимка до загрузки ещё нет, поэтому здесь терпит
+   * пустоту: значение нужно таймеру, а таймер обязан стоять до ранних выходов
+   * (ниже), иначе первый рендер рисует на один хук меньше, чем второй, и React
+   * падает с ошибкой #310 — «хуков больше, чем в прошлом рендере».
+   */
+  const windowSec = snapshot?.palaceChangeWindowSec ?? GUARD_SECONDS
+
+  /**
+   * Окно собранного условия: тикает, пока начато, и по нулю возвращает всё назад.
+   *
+   * Сброс — не наказание, а восстановление: выбор возвращается к языку, на котором стоят
+   * базы, предохранитель встаёт на место, и человек видит, что окно закрылось. Молчаливое
+   * «ничего не произошло» здесь хуже всего: непонятно, сработало ли нажатие.
+   *
+   * Стоит до ранних выходов — порядок хуков не должен зависеть от того, пришёл ли снимок.
+   * Зависимости — стабильные ссылки (`t` меняется только вместе с языком панели); локальная
+   * `tt` создаётся на каждый рендер и в зависимостях перезапускала бы таймер вхолостую.
+   */
+  useEffect(() => {
+    if (startedAt === null) {
+      setLeft(windowSec)
+      return undefined
+    }
+    const tick = (): void => {
+      const rest = windowLeft(startedAt, Date.now(), windowSec)
+      setLeft(rest)
+      if (rest > 0) return
+      setStartedAt(null)
+      setPending(null)
+      setGuard('on')
+      toast.push('reset', t('guardReset', { seconds: windowSec }))
+    }
+    tick()
+    const id = setInterval(tick, 500)
+    return () => { clearInterval(id) }
+  }, [startedAt, windowSec, setGuard, toast, t])
+
   if (error !== null) {
     return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
   }
@@ -3541,8 +3580,6 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
   /** Что показано в выборе: несохранённый выбор, иначе записанный язык. */
   const chosenLanguage = pending ?? currentLanguage
   const languageChanged = chosenLanguage !== currentLanguage
-  /** Окно считается по настройке, а не по константе: сервер проверяет тем же числом. */
-  const windowSec = snapshot.palaceChangeWindowSec
   /**
    * Список выбора языка дворца: языки реестра с сервера плюс текущий, если его там
    * нет. Записанный язык мог прийти из настройки или быть объявлен файлом
@@ -3609,32 +3646,6 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
 
   /** Первое из трёх событий открывает окно; следующие его не продлевают. */
   const beginWindow = (): void => { setStartedAt(current => current ?? Date.now()) }
-
-  /**
-   * Окно собранного условия: тикает, пока начато, и по нулю возвращает всё назад.
-   *
-   * Сброс — не наказание, а восстановление: выбор возвращается к языку, на котором стоят
-   * базы, предохранитель встаёт на место, и человек видит, что окно закрылось. Молчаливое
-   * «ничего не произошло» здесь хуже всего: непонятно, сработало ли нажатие.
-   */
-  useEffect(() => {
-    if (startedAt === null) {
-      setLeft(windowSec)
-      return undefined
-    }
-    const tick = (): void => {
-      const rest = windowLeft(startedAt, Date.now(), windowSec)
-      setLeft(rest)
-      if (rest > 0) return
-      setStartedAt(null)
-      setPending(null)
-      setGuard('on')
-      toast.push('reset', tt('guardReset', { seconds: windowSec }))
-    }
-    tick()
-    const id = setInterval(tick, 500)
-    return () => { clearInterval(id) }
-  }, [startedAt, windowSec, setGuard, toast, tt])
 
   /** Выбор языка: первое событие окна, в настройку ничего не пишется. */
   const pickLanguage = (language: string): void => {
