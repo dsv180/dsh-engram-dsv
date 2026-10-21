@@ -383,7 +383,7 @@ describe('dsh-engram real Loader composition', () => {
     // 发到一半就掐断：body 读取会抛「请求已中断」。路由必须自己吞掉（不能变成未捕获拒绝），
     // 且服务要活着继续应答下一次请求。
     await new Promise<void>((resolve) => {
-      const socket = netConnect(port, () => {
+      const socket = netConnect(port, '127.0.0.1', () => {
         socket.write('POST /api/engram/import HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 999999\r\n\r\n')
         socket.write('{"data":{"records":[]}')
         socket.destroy() // 半路掐断
