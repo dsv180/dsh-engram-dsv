@@ -318,6 +318,63 @@ describe('dsh-engram real Loader composition', () => {
     expect(evil.status).toBe(403)
   })
 
+  it('导入链路：大体积导出件能进能出（issue #34——117/165 KB 的导出件曾被当成「不是 JSON 对象」拒掉）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 复刻现场导出件的体量与形态：1200 条中文记录，JSON 落在 165 KB 上下。
+    const records = Array.from({ length: 1200 }, (_, index) => ({
+      id: `issue-34-${String(index)}`,
+      scope: 'user',
+      kind: 'fact',
+      content: `中文记忆内容第${String(index)}条${'内'.repeat(20)}`,
+      importance: 0.5,
+      confidence: 0.5,
+      status: 'active',
+      createdAt: 1_700_000_000_000,
+      lastAccessedAt: 1_700_000_000_000,
+      accessCount: 0,
+      sourceSessionId: null,
+      sourceRound: null,
+      sourceSeq: null,
+    }))
+    const payload = { exportedAt: 1_700_000_000_000, records, edges: [] }
+    const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8')
+    expect(bytes).toBeGreaterThan(64 * 1024) // 旧上限（64 KiB）装不下——这就是现场被拒的原因
+
+    // 预览（dryRun）：大 body 必须过。
+    const preview = await call(port, 'POST', '/api/engram/import', { data: payload, format: 'json', scope: 'user', dryRun: true })
+    expect(preview.status).toBe(200)
+    expect((preview.json as { preview: { entries: unknown[] } }).preview.entries).toHaveLength(records.length)
+
+    // 正式提交：1200 条全部写入。
+    const commit = await call(port, 'POST', '/api/engram/import', { data: payload, format: 'json', scope: 'user' })
+    expect(commit.status).toBe(200)
+    expect((commit.json as { imported: number }).imported).toBe(records.length)
+
+    // 中文内容要原样落库——逐块解码会把跨块的多字节字符切成 U+FFFD。
+    const listed = await call(port, 'GET', '/api/engram/list?scope=user&limit=5')
+    const contents = (listed.json as { records: { content: string }[] }).records.map(record => record.content)
+    expect(contents.some(content => content.includes('内'.repeat(20)))).toBe(true)
+    expect(contents.every(content => !content.includes('�'))).toBe(true)
+  })
+
+  it('导入链路：坏请求体与坏文件各说各的话，不甩锅给用户', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 请求体本身不是 JSON 对象 → 说请求体，不说文件。
+    const badBody = await call(port, 'POST', '/api/engram/import', [1, 2, 3])
+    expect(badBody.status).toBe(400)
+    expect((badBody.json as { error: string }).error).toContain('请求体')
+
+    // 文件本身是数组 → 说文件，并给出怎么改（数组要包一层 records）。
+    const badFile = await call(port, 'POST', '/api/engram/import', { data: [1, 2, 3], format: 'json', scope: 'user', dryRun: true })
+    expect(badFile.status).toBe(400)
+    const error = (badFile.json as { error: string }).error
+    expect(error).toContain('records')
+  })
+
   it('情景时间线 HTTP 链路：组头带会话摘要，around 查邻近扩展', { timeout: 60_000 }, async () => {
     let anchorId = ''
     const loaded = await loadComposition([], undefined, async (dbDir) => {

@@ -132,7 +132,7 @@ const parseEntity = (raw: unknown, index: number): EntityRecord | string => {
  * 空文件（records 为空数组）合法——预览为空、提交零写入。
  */
 export function parseImportData(raw: unknown): ExportData | string {
-  if (!isObj(raw)) return '导入文件不是 JSON 对象'
+  if (!isObj(raw)) return '文件顶层不是 JSON 对象（顶层须是 {"records": [...]}；若文件本身就是数组，请包成 {"records": 数组}）'
   if (!Array.isArray(raw.records)) return 'records 不是数组（不是 dsh-engram 导出文件？）'
   if (raw.edges !== undefined && !Array.isArray(raw.edges)) return 'edges 不是数组'
   if (raw.entities !== undefined && !Array.isArray(raw.entities)) return 'entities 不是数组'

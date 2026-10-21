@@ -15,6 +15,8 @@ import type { EngramEntityKind, EngramKind, EngramScope, EngramStatus, ExportDat
 import { asMemoryId } from './types.ts'
 import type { EngramStore } from './store/interface.ts'
 import { embedImportedRecords, parseImportData, parseMarkdownExport } from './store/import.ts'
+import { formatBytes } from './body-limits.ts'
+import { IMPORT_BODY_LIMIT_BYTES, readJsonBody, readJsonBodyOrEmpty } from './http-body.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
@@ -85,21 +87,6 @@ function guardWrite(req: IncomingMessage, res: ServerResponse): boolean {
     return false
   }
   return true
-}
-
-/** 读取并解析 JSON body（上限 64 KiB，防坏/恶意 body 拖住 handler）。 */
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
-  let body = ''
-  for await (const chunk of req) {
-    body += String(chunk)
-    if (body.length > 65_536) return null
-  }
-  try {
-    const parsed: unknown = JSON.parse(body === '' ? '{}' : body)
-    return parsed !== null && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
-  } catch {
-    return null
-  }
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -530,8 +517,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'review-answer') {
             // 检索练习自评：面板 记得/模糊/忘了 三档映射 SM-2 grade 5/3/1，推进调度。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const body = await readJsonBodyOrEmpty(req)
+            if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             const grade = typeof body.grade === 'number' && Number.isInteger(body.grade) && body.grade >= 0 && body.grade <= 5
               ? body.grade as 0 | 1 | 2 | 3 | 4 | 5
               : null
@@ -583,8 +570,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           if (req.method === 'POST' && route === 'review-answer') {
             // 复习自评：grade 0-5 推进 SM-2 调度（≥3 通过；<3 重置间隔）。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const body = await readJsonBodyOrEmpty(req)
+            if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             const grade = Number(body.grade)
             if (!Number.isInteger(grade) || grade < 0 || grade > 5) { json(res, 400, { error: 'grade must be an integer 0-5' }); return }
             adoptBodySelector(body)
@@ -628,8 +615,23 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 面板导入（#33）：body = { data, scope?, format?: 'json'|'markdown', dryRun?, keepDuplicates?, selectedIds? }。
             // format=markdown 时 data 是导出 MD 原文（有损恢复，见 parseMarkdownExport）；dryRun=true 只分类不写库。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            const bodyObj = typeof body === 'object' && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {}
+            // 导入 payload 是整份导出（实测 165 KB 量级），不能沿用普通接口的 64 KiB 上限——
+            // 沿用会把合法导出件当成坏 body 拒掉，还报成「不是 JSON 对象」（issue #34）。
+            const bodyResult = await readJsonBody(req, IMPORT_BODY_LIMIT_BYTES)
+            if (!bodyResult.ok) {
+              // 三种失败分开报：超限是 413（服务端上限，可改路径导入），其余是 400（请求体本身不对）。
+              if (bodyResult.reason === 'too-large') {
+                json(res, 413, { error: messageIn(deps.language, 'misc.importBodyTooLarge', { limit: formatBytes(bodyResult.limit) }) })
+                return
+              }
+              if (bodyResult.reason === 'malformed') {
+                json(res, 400, { error: messageIn(deps.language, 'misc.importBodyMalformed', { error: bodyResult.error }) })
+                return
+              }
+              json(res, 400, { error: messageIn(deps.language, 'misc.importBodyNotObject') })
+              return
+            }
+            const bodyObj = bodyResult.body
             const scope = scopeOf(typeof bodyObj.scope === 'string' ? bodyObj.scope : null, 'user')
             let data: ExportData
             let redacted = false
@@ -868,8 +870,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'history-backfill/start') {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            const started = deps.history.start(historyRulesOf(body ?? {}))
+            const body = await readJsonBodyOrEmpty(req)
+            const started = deps.history.start(historyRulesOf(body))
             if (!started.ok) { json(res, 409, { ok: false, error: started.reason ?? messageIn(deps.language, 'misc.backfillCannotStart') }); return }
             json(res, 200, { ok: true, status: deps.history.status() })
             return
@@ -895,8 +897,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // Панель сохраняет выбор: негодная правка отвергается целиком (400),
             // годная — перезаписывает файл перекрытия и возвращает новый вид.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body ?? {})
+            const body = await readJsonBodyOrEmpty(req)
+            const parsed = parseJevPatch(loadJevOverride(deps.jev.dbDir), body)
             if (typeof parsed === 'string') { json(res, 400, { error: parsed }); return }
             saveJevOverride(deps.jev.dbDir, parsed)
             const catalog = await deps.jev.host.catalog()
@@ -911,16 +913,16 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // запрос — минимальный ping. Он же подтверждает, что модель отвечает
             // протоколом System One, то есть действительно является Jev.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
+            const body = await readJsonBodyOrEmpty(req)
             const base = effectiveJevConfig(deps.jev.base, loadJevOverride(deps.jev.dbDir))
-            const provider = typeof body?.provider === 'string' && body.provider.trim() !== ''
+            const provider = typeof body.provider === 'string' && body.provider.trim() !== ''
               ? body.provider.trim()
               : base.provider
-            const model = typeof body?.model === 'string' && body.model.trim() !== ''
+            const model = typeof body.model === 'string' && body.model.trim() !== ''
               ? body.model.trim()
               : base.model
             // Адрес из поля панели; пусто — шаблон от провайдера (решает мост).
-            const endpoint = typeof body?.endpoint === 'string' && body.endpoint.trim() !== ''
+            const endpoint = typeof body.endpoint === 'string' && body.endpoint.trim() !== ''
               ? body.endpoint.trim()
               : base.endpoint
             if (provider === undefined || model === undefined) {
@@ -945,8 +947,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // панель берёт его как подсказки к полю модели, сужая до Jev-моделей,
             // когда такие в списке есть.
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
+            const body = await readJsonBodyOrEmpty(req)
+            const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
             if (provider === '') {
               json(res, 200, {
                 models: [],
@@ -967,11 +969,11 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // 闭馆整理手动触发：面板「管家整理」按钮；嵌入不可用时仅归档 + 启发式去重。
             // 可选 candidates：仅把指定 ids 当作合并阶段种子（其它条目仅在与种子相似时被并入）。
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
+            const body = await readJsonBodyOrEmpty(req)
             adoptBodySelector(body)
-            const rawScope = typeof body?.scope === 'string' ? body.scope : 'user'
+            const rawScope = typeof body.scope === 'string' ? body.scope : 'user'
             const scope: 'user' | 'project' | 'shared' = rawScope === 'project' ? 'project' : rawScope === 'shared' ? 'shared' : 'user'
-            const candidates = Array.isArray(body?.candidates)
+            const candidates = Array.isArray(body.candidates)
               ? body.candidates.filter((value: unknown): value is string => typeof value === 'string')
               : undefined
             const store = await storeFor(scope)
@@ -989,8 +991,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && route === 'restore-backup') {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            if (body === null || typeof body.archivePath !== 'string' || body.archivePath === '') {
+            const body = await readJsonBodyOrEmpty(req)
+            if (typeof body.archivePath !== 'string' || body.archivePath === '') {
               json(res, 400, { error: 'archivePath required' })
               return
             }
@@ -1016,8 +1018,8 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
           }
           if (req.method === 'POST' && (route === 'update' || route === 'forget' || route === 'restore')) {
             if (!guardWrite(req, res)) return
-            const body = await readJsonBody(req)
-            if (body === null || typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
+            const body = await readJsonBodyOrEmpty(req)
+            if (typeof body.id !== 'string' || body.id === '') { json(res, 400, { error: 'id required' }); return }
             adoptBodySelector(body)
             const scope = scopeOf(typeof body.scope === 'string' ? body.scope : null, 'user')
             const store = await storeFor(scope)

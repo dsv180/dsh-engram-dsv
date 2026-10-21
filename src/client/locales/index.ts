@@ -47,6 +47,7 @@ export type EngramKey =
   | 'importDone'
   | 'importReadFailed'
   | 'importInvalidPayload'
+  | 'importTooLarge'
   | 'allStatuses'
   | 'allKinds'
   | 'redactedAll'

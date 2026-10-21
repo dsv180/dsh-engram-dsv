@@ -16,6 +16,7 @@ import { SpiralMap, type SpiralRecord } from './SpiralMap.tsx'
 import spiralStyles from './spiral.module.css'
 import { useToast, type ToastController } from './Toast.tsx'
 import { usePersistedState, usePersistedString } from './UiStorage.ts'
+import { IMPORT_BODY_LIMIT_BYTES, formatBytes } from '../body-limits.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
@@ -3080,11 +3081,18 @@ function ImportButton({ t, scope, toast, onImported }: {
       }
     }
     const format = markdown ? 'markdown' : 'json'
+    const body = JSON.stringify({ data, format, scope, dryRun: true })
+    // 前置体量检查：超上限的 payload 别先传一遍再被服务端拒——当场说清上限。
+    // 量的是真正要发出去的那串字节（与服务端同一把尺子，见 src/body-limits.ts）。
+    if (new TextEncoder().encode(body).byteLength > IMPORT_BODY_LIMIT_BYTES) {
+      toast.push('error', t('importTooLarge', { limit: formatBytes(IMPORT_BODY_LIMIT_BYTES) }))
+      return
+    }
     try {
       const response = await api<{ preview: ImportPreviewView }>('import', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ data, format, scope, dryRun: true }),
+        body,
       })
       setPreview(response.preview)
       setPreviewSource(data)
@@ -3098,11 +3106,18 @@ function ImportButton({ t, scope, toast, onImported }: {
   const commit = async (): Promise<void> => {
     if (preview === null || busy) return
     setBusy(true)
+    const body = JSON.stringify({ data: previewSource, format: previewFormat, scope, selectedIds: [...selected], keepDuplicates })
+    // 同一把尺子：提交体比预览体略大（多了 selectedIds），也要先过上限再发。
+    if (new TextEncoder().encode(body).byteLength > IMPORT_BODY_LIMIT_BYTES) {
+      setBusy(false)
+      toast.push('error', t('importTooLarge', { limit: formatBytes(IMPORT_BODY_LIMIT_BYTES) }))
+      return
+    }
     try {
       const result = await api<ImportResultView>('import', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ data: previewSource, format: previewFormat, scope, selectedIds: [...selected], keepDuplicates }),
+        body,
       })
       setPreview(null)
       toast.push(result.imported === 0 ? 'info' : 'success', t('importDone', {
