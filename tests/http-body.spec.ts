@@ -118,6 +118,20 @@ describe('readJsonBody 上限口径', () => {
     expect(result.ok === false && result.reason).toBe('too-large')
     expect(result.ok === false && result.reason === 'too-large' && result.limit).toBe(1024)
   })
+
+  it('分块上传（无 Content-Length）同样受上限约束——不能只靠 Content-Length 早判', async () => {
+    const port = await startReader(1024)
+    const result = await postChunked(port, [Buffer.alloc(4096, 0x78)])
+    expect(result.ok === false && result.reason).toBe('too-large')
+  })
+
+  it('分块上传的正常 body 读得出来（多块拼接后仍是一个完整 JSON）', async () => {
+    const port = await startReader(BODY_LIMIT_BYTES)
+    const payload = Buffer.from(JSON.stringify({ content: '中文' }), 'utf8')
+    const result = await postChunked(port, [payload.subarray(0, 5), payload.subarray(5)])
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.body['content']).toBe('中文')
+  })
 })
 
 describe('readJsonBody 失败原因可辨', () => {
