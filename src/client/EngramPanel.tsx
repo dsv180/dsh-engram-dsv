@@ -20,6 +20,7 @@ import { usePersistedState, usePersistedString } from './UiStorage.ts'
 // Пределы — общие с сервером (src/i18n/dictionary-limits.ts): модуль без зависимостей,
 // поэтому в клиентскую сборку не тянется ни модель, ни её клиент.
 import { needsTranslation, splitDictionaryPatch, splitFillBatch } from '../i18n/dictionary-limits.ts'
+import { windowLeft } from '../registry/palace-change.ts'
 import pluginPackageJson from '../../package.json' with { type: 'json' }
 
 /** 客户端 bundle 版本：单一来源 = package.json（构建时内联）。版本握手横幅用（审计 F8）。 */
@@ -2385,6 +2386,8 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
   const [languages, setLanguages] = useState<readonly PalaceLanguageOption[]>([])
   /** Предохранитель: пока снят — идёт отсчёт окна. */
   const [guard, setGuard] = useState(true)
+  /** Длина окна из настройки: её же проверяет сервер, поэтому в проверке она настоящая. */
+  const [windowSec, setWindowSec] = useState(GUARD_SECONDS)
   const [left, setLeft] = useState(GUARD_SECONDS)
   const [suggested, setSuggested] = useState<PalaceAskChoice | null>(null)
   const [choice, setChoice] = useState<PalaceAskChoice | null>(null)
@@ -2409,6 +2412,9 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
       .then((snapshot) => {
         if (cancelled) return
         setLanguages(snapshot.languages)
+        // Длина окна — из настройки: проверка должна считать ровно так же, как жизнь.
+        setWindowSec(snapshot.palaceChangeWindowSec)
+        setLeft(snapshot.palaceChangeWindowSec)
         const supported = snapshot.languages.some(row => row.code === machine) ? machine : null
         setSuggested(supported ?? 'other')
         setChoice(supported ?? 'other')
@@ -2422,13 +2428,13 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
     if (guard) return
     if (left <= 0) {
       setGuard(true)
-      setLeft(GUARD_SECONDS)
-      toast?.push('reset', t('guardReset'))
+      setLeft(windowSec)
+      toast?.push('reset', t('guardReset', { seconds: windowSec }))
       return
     }
     const id = setTimeout(() => { setLeft(left - 1) }, 1000)
     return () => { clearTimeout(id) }
-  }, [guard, left, toast, t])
+  }, [guard, left, windowSec, toast, t])
   useEffect(() => {
     if (dryRun === true) return
     let cancelled = false
@@ -2571,7 +2577,7 @@ function PalaceLanguageAsk({ t, overlayHost, dryRun, toast, onClose }: {
                   onChange={(event) => {
                     const next = event.target.checked
                     setGuard(next)
-                    setLeft(GUARD_SECONDS)
+                    setLeft(windowSec)
                   }} />
                 {' '}
                 {guard ? t('guardArmed') : t('guardDisarmed', { seconds: left })}
@@ -3367,6 +3373,13 @@ interface RegistrySnapshot {
     readonly state: string
   } | null
   readonly defaultLanguage: string | null
+  /**
+   * Длина окна собранного условия смены языка дворца, секунды (настройка).
+   *
+   * Одно число на панель и сервер: панель считает по нему отсчёт и показывает остаток,
+   * сервер — принимает ли запрос смены языка. Приходит снимком, а не константой клиента.
+   */
+  readonly palaceChangeWindowSec: number
   /** Языки дворца, которые знает поставка: от неё же зависит, что предлагать в выборе. */
   readonly languages: readonly PalaceLanguageOption[]
   readonly remote: boolean
@@ -3413,11 +3426,11 @@ interface PalaceLanguageOption {
 const LANGUAGE_CODE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
 
 /**
- * Окно предохранителя в проверке, секунды.
+ * Окно предохранителя до ответа сервера, секунды.
  *
- * В работе длина будет настройкой (`palaceChangeWindowSec`), а не константой;
- * здесь пока прототип — проверяем сам механизм: сняли предохранитель, пошёл
- * отсчёт, на нуле он встал обратно.
+ * Рабочее значение — настройка `palaceChangeWindowSec`: она приходит в снимке
+ * обслуживания, и по ней же считает сервер. Это число нужно только для первой
+ * отрисовки окна проверки, пока снимок не пришёл, — и совпадает с умолчанием настройки.
  */
 const GUARD_SECONDS = 30
 
@@ -3478,8 +3491,17 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
    * молча оставило предохранитель снятым.
    */
   const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseFuse', 'on', ['on', 'off'])
-  /** Выбранный здесь язык дворца; null — показываем тот, что записан в настройке. */
-  const [languageChoice, setLanguageChoice] = useState<string | null>(null)
+  /**
+   * Язык, выбранный в блоке «Язык дворца», но ещё не записанный.
+   *
+   * Пока он не отправлен, в настройке ничего не меняется: выбор — это первое из трёх
+   * событий собранного условия, а не сама смена языка (решение 20–21.10).
+   */
+  const [pending, setPending] = useState<string | null>(null)
+  /** Момент первого из трёх событий: с него идёт окно. null — окно не начато. */
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  /** Остаток окна в секундах: подпись у предохранителя и признак «ещё можно». */
+  const [left, setLeft] = useState(0)
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
   const toast = useToast()
@@ -3515,7 +3537,12 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
    * этот процесс считает прямо сейчас. До перезапуска они могут расходиться, и панель
    * обязана показывать оба, а не выбирать за человека, какой из них настоящий.
    */
-  const chosenLanguage = languageChoice ?? snapshot.palace?.setting ?? snapshot.language
+  const currentLanguage = snapshot.palace?.setting ?? snapshot.language
+  /** Что показано в выборе: несохранённый выбор, иначе записанный язык. */
+  const chosenLanguage = pending ?? currentLanguage
+  const languageChanged = chosenLanguage !== currentLanguage
+  /** Окно считается по настройке, а не по константе: сервер проверяет тем же числом. */
+  const windowSec = snapshot.palaceChangeWindowSec
   /**
    * Список выбора языка дворца: языки реестра с сервера плюс текущий, если его там
    * нет. Записанный язык мог прийти из настройки или быть объявлен файлом
@@ -3580,22 +3607,96 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
       .finally(() => { setBusy(false) })
   }
 
-  /** Выбрать язык дворца: он пишется в конфигурацию плагина, а не живёт в панели. */
+  /** Первое из трёх событий открывает окно; следующие его не продлевают. */
+  const beginWindow = (): void => { setStartedAt(current => current ?? Date.now()) }
+
+  /**
+   * Окно собранного условия: тикает, пока начато, и по нулю возвращает всё назад.
+   *
+   * Сброс — не наказание, а восстановление: выбор возвращается к языку, на котором стоят
+   * базы, предохранитель встаёт на место, и человек видит, что окно закрылось. Молчаливое
+   * «ничего не произошло» здесь хуже всего: непонятно, сработало ли нажатие.
+   */
+  useEffect(() => {
+    if (startedAt === null) {
+      setLeft(windowSec)
+      return undefined
+    }
+    const tick = (): void => {
+      const rest = windowLeft(startedAt, Date.now(), windowSec)
+      setLeft(rest)
+      if (rest > 0) return
+      setStartedAt(null)
+      setPending(null)
+      setGuard('on')
+      toast.push('reset', tt('guardReset', { seconds: windowSec }))
+    }
+    tick()
+    const id = setInterval(tick, 500)
+    return () => { clearInterval(id) }
+  }, [startedAt, windowSec, setGuard, toast, tt])
+
+  /** Выбор языка: первое событие окна, в настройку ничего не пишется. */
   const pickLanguage = (language: string): void => {
-    void api<{ ok: boolean, language: string, error?: string }>('palace-language', {
+    if (language === currentLanguage) { setPending(null); return }
+    setPending(language)
+    beginWindow()
+  }
+
+  /** Предохранитель: снятие — тоже событие окна, постановка обратно окно не отменяет. */
+  const toggleGuard = (checked: boolean): void => {
+    setGuard(checked ? 'on' : 'off')
+    if (!checked) beginWindow()
+  }
+
+  /** Причина отказа сервера — словами: код отказа человеку ничего не говорит. */
+  const reasonText = (reason?: string): string => reason === 'window'
+    ? tt('palaceChangeReasonWindow')
+    : reason === 'not-changed' ? tt('palaceChangeReasonChanged')
+      : reason === 'not-a-code' ? tt('palaceChangeReasonCode') : tt('palaceChangeReasonStart')
+
+  /**
+   * Смена языка собранным условием: язык + снятый предохранитель + нажатие, всё в окне.
+   *
+   * Язык, метки и пересчёт уходят одним запросом: сервер проверяет окно и только потом
+   * пишет настройку, ставит метки и пересчитывает векторы. Разделять это на три запроса
+   * значило бы оставить состояния «язык уже новый, базы ещё старые» без присмотра.
+   */
+  const applyChange = (): void => {
+    if (busy || guard === 'on') return
+    if (!languageChanged) { run(); return }
+    if (startedAt === null || left <= 0) return
+    const started = startedAt
+    setBusy(true)
+    void api<{
+      ok: boolean
+      language: string
+      error?: string
+      reason?: string
+      labels?: { readonly written: readonly unknown[], readonly failed: readonly unknown[] } | null
+      convert?: { readonly converted: number, readonly failed: readonly unknown[] } | null
+    }>('palace-change', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ language }),
+      body: JSON.stringify({ language: chosenLanguage, from: currentLanguage, startedAt: started }),
     })
-      .then(result => {
-        if (!result.ok) {
-          toast.push('error', `${tt('palacePickFailed')}: ${result.error ?? ''}`)
+      .then(async (answer) => {
+        if (!answer.ok) {
+          toast.push('error', tt('palaceChangeRefused', { reason: reasonText(answer.reason) }))
           return
         }
-        setLanguageChoice(result.language)
-        toast.push('success', tt('palaceSaved', { language: result.language.toUpperCase() }))
+        toast.push('success', tt('palaceChangeDone', {
+          language: answer.language.toUpperCase(),
+          labels: answer.labels?.written.length ?? 0,
+          converted: answer.convert?.converted ?? 0,
+        }))
+        setPending(null)
+        setStartedAt(null)
+        setGuard('on')
+        setSnapshot(await api<RegistrySnapshot>('registry'))
       })
-      .catch((pickError: Error) => { toast.push('error', pickError.message) })
+      .catch((changeError: Error) => { toast.push('error', changeError.message) })
+      .finally(() => { setBusy(false) })
   }
 
   return (
@@ -3614,17 +3715,47 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
         <dd>
           {resolvedLabel}
           {' · '}
-          <span className={styles.regMono}>{tt('registryModelLocale')} —</span>
+          <span className={styles.regMono}>{tt('registryModelLocale')} — {currentLanguage.toUpperCase()}</span>
+        </dd>
+      </dl>
+
+      {/* Язык дворца: смена языка и пересчёт баз — одно собранное условие. Выбор здесь
+          ничего не пишет: он только открывает окно, а записывает язык «Выполнить». */}
+      <div className={styles.regGroup}>
+        <span className={styles.regGroupTitle}>{tt('palaceChangeTitle')}</span>
+        <p className={styles.regNote}>{tt('palaceChangeHint', { seconds: windowSec })}</p>
+        <div className={styles.palaceChangeRow}>
           <select className={`${styles.input} ${styles.regLang}`} value={chosenLanguage}
-            aria-label={tt('registryPalaceLanguage')}
+            aria-label={tt('palaceChangeTitle')}
             onChange={event => { pickLanguage(event.target.value) }}>
             {languageOptions.map(row => (
               <option key={row.code} value={row.code}>{row.label}</option>
             ))}
           </select>
-          <span className={styles.regMono}>— {tt('registryPalaceLanguage')}</span>
-        </dd>
-      </dl>
+          <label className={styles.regGuard}>
+            <input type="checkbox" checked={guard === 'on'}
+              onChange={event => { toggleGuard(event.target.checked) }} />
+            <span>{guard === 'on' ? tt('guardArmed') : tt('guardDisarmed', { seconds: left })}</span>
+          </label>
+          <button type="button" className={`${styles.button} ${styles.primary}`}
+            disabled={busy || guard === 'on' || (languageChanged ? (startedAt === null || left <= 0) : todo === 'none')}
+            onClick={applyChange}>
+            {busy ? tt('baseRunBusy') : tt('baseRun')}
+          </button>
+        </div>
+        {languageChanged && (
+          <p className={styles.regNote}>
+            {tt('palaceChangeLeft', { seconds: left })}
+            {' · '}
+            {guard === 'on' ? tt('palaceChangeNeedFuse') : ''}
+          </p>
+        )}
+        {/* Что именно произойдёт — одной строкой рядом с кнопкой: «Выполнить» без
+            объяснения не говорит, что за ним стоит. */}
+        <p className={styles.regActionNote}>
+          {languageChanged ? tt('baseActionConvert') : actionText}
+        </p>
+      </div>
       {/* Разошлись настройка и живой процесс — говорим об этом прямо: иначе человек
           решит, что выбор не сработал, хотя он записан и ждёт перезапуска. */}
       {chosenLanguage !== snapshot.language && (
@@ -3674,20 +3805,6 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
         {snapshot.pendingBases > 0 && (
           <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
         )}
-        <label className={styles.regGuard}>
-          <input type="checkbox" checked={guard === 'on'}
-            onChange={event => { setGuard(event.target.checked ? 'on' : 'off') }} />
-          <span>{tt('baseGuard')}</span>
-        </label>
-        <div className={styles.regActions}>
-          <button type="button" className={`${styles.button} ${styles.primary}`}
-            disabled={busy || guard === 'on' || todo === 'none'} onClick={run}>
-            {busy ? tt('baseRunBusy') : tt('baseRun')}
-          </button>
-          {/* Текст действия стоит справа от кнопки на её высоте: кнопка читается
-              вместе с ним как одна фраза «Выполнить → что именно будет сделано». */}
-          <span className={styles.regActionNote}>{actionText}</span>
-        </div>
       </div>
 
       <div className={styles.regGroup}>

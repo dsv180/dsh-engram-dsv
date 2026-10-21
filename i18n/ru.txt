@@ -494,3 +494,6 @@ Preview (nothing written): {total} entries — {fresh} new, {dup} duplicates (sk
 engram_import: cannot read {path}: {error}	engram_import: не удаётся прочитать {path}: {error}
 Target store to import into (user/project/shared; default user)	Целевое хранилище импорта (user/project/shared; по умолчанию user)
 Import only these ids (default: everything admitted by the classification rules)	Импортировать только эти id (по умолчанию: всё, допущенное правилами классификации)
+
+How to bring a new language into the memory palace: returns the instruction text (docs/agent-language-guide.ru.md, currently a Russian draft). Use it when the user's language is not zh/en: read it, then walk the user through registering the language, the dictionaries and the switch.	Как ввести новый язык в Дворец памяти: отдаёт текст инструкции (docs/agent-language-guide.ru.md, пока черновик по-русски). Нужен, когда языка пользователя нет среди zh/en: прочитайте инструкцию и вместе с человеком пройдите регистрацию языка, словари и переключение.
+[dsh-engram] language guide file is missing: {file} — {error}	[dsh-engram] не найден файл инструкции по языку: {file} — {error}

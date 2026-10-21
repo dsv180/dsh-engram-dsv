@@ -55,9 +55,11 @@ export const zh = {
   'misc.jevBaseUrlMustBeHttp': 'invalid: jev.baseUrl 必须是 http(s) URL',
   'misc.jevModelMustNotBeEmpty': 'invalid: jev.model 不能为空',
   'misc.jevTimeoutMsMustBeInteger': 'invalid: jev.timeoutMs 必须是 1000-60000 的整数毫秒',
+  // tools/create.ts — инструкция по языку (В.08)
+  'tool.languageGuideDescription': '如何把新语言引入记忆宫殿：返回说明文本（文件 docs/agent-language-guide.ru.md，目前只有俄文草稿）。用户的语言不在 zh/en 之内时使用：先读说明，再与用户一起完成登记语言、词典和切换。',
+  'tool.languageGuideMissing': '[dsh-engram] 找不到语言说明文件 {file}：{error}',
   // i18n/dictionary-file.ts
   'misc.warnDictionaryProblems': '[dsh-engram] 译文词典：有 {count} 行问题已跳过，这些文本仍为英文：{sample}',
-  // src/registry/registry-file.ts
   'misc.warnRegistryProblems': '[dsh-engram] 模型登记表：有 {count} 行问题已跳过：{sample}',
 } as const
 
@@ -108,5 +110,9 @@ export const en = {
   'misc.warnDictionaryProblems': '[dsh-engram] The translation dictionary skipped {count} problem line(s); those texts stay English: {sample}',
   // src/registry/registry-file.ts
   'misc.warnRegistryProblems': '[dsh-engram] The model registry skipped {count} problem line(s): {sample}',
+  // tools/create.ts — language guide (В.08)
+  'tool.languageGuideDescription': 'How to bring a new language into the memory palace: returns the instruction text (docs/agent-language-guide.ru.md, currently a Russian draft). Use it when the user\'s language is not zh/en: read it, then walk the user through registering the language, the dictionaries and the switch.',
+  'tool.languageGuideMissing': '[dsh-engram] language guide file is missing: {file} — {error}',
+  // src/registry/registry-file.ts
 } as const
 

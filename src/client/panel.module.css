@@ -873,6 +873,10 @@ select.input { padding-right: 28px; appearance: none; }
 .regActionNote { margin-left: 28px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
 /* Обслуживание: предохранитель — отдельной строкой над кнопкой. Стоит по умолчанию,
    поэтому отмеченное состояние подкрашено: снятый предохранитель виден сразу. */
+/* Язык дворца: выбор, предохранитель и кнопка в одну строку. Кнопка справа от
+   предохранителя: три решения читаются как одно действие, слева направо. */
+.palaceChangeRow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
+.palaceChangeRow .regGuard { margin-top: 0; }
 .regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); cursor: pointer; }
 .regGuard input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
 .regGuard:has(input:checked) { color: var(--dsw-alias-label-primary); }

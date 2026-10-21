@@ -20,6 +20,7 @@ import type { EngramEmbedder } from './embedder/interface.ts'
 import type { HistoryBackfillRules, HistoryEstimate, HistoryRunProgress, HistoryRunResult } from './ingest/history.ts'
 import type { ProjectPalaceKind } from './project/registry.ts'
 import type { BaseActionId, BaseStateId } from './registry/base-state.ts'
+import { checkPalaceChange } from './registry/palace-change.ts'
 import type { ResolvedHistoryRules, ResolvedJevConfig } from './config.ts'
 import { effectiveJevConfig, jevConfigView, loadJevOverride, parseJevPatch, saveJevOverride } from './jev/runtime.ts'
 import { testJevConnection } from './jev/client.ts'
@@ -267,6 +268,14 @@ export interface RegistryView {
    * иначе язык, добавленный файлом, был бы на сервере, но не в списке выбора.
    */
   readonly languages: readonly { readonly code: string, readonly label: string, readonly builtin: boolean }[]
+  /**
+   * Длина окна собранного условия смены языка дворца, секунды.
+   *
+   * Одно число на панель и сервер: панель считает по нему отсчёт и подпись, сервер —
+   * принимает ли запрос смены языка. Расходиться им нельзя, поэтому настройка едет
+   * тем же ответом, что и языки.
+   */
+  readonly palaceChangeWindowSec: number
   /** Выбрана ли удалённая модель: тогда локальная строка не выбирается вовсе. */
   readonly remote: boolean
   /** Выбранная локальная модель и правило, по которому она выбрана; нечем выбрать — null. */
@@ -514,6 +523,13 @@ export interface RouteDeps {
    * записывается в конфигурацию плагина, а не живёт в панели.
    */
   readonly writePalaceLanguage: (language: string) => Promise<PalaceLanguageResult>
+  /**
+   * Длина окна собранного условия, секунды (настройка `palaceChangeWindowSec`).
+   *
+   * Отдаётся панели в снимке обслуживания, чтобы отсчёт и подпись считались по одному
+   * числу с сервером: иначе панель показывала бы «ещё 30 секунд», а сервер уже отказывал.
+   */
+  readonly palaceChangeWindowSec: number
   /** Подключён ли пересчёт векторов (этап 2 блока Б); false — кнопка умеет только метку. */
   readonly convertAvailable: boolean
   /** 历史回填（面板「历史回填」tab）：估算 / 启动 / 取消 / 查进度 + 部署默认规则。 */
@@ -1274,6 +1290,36 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // что делать — следует из состояния баз, а не из того, что прислал браузер.
             if (!guardWrite(req, res)) return
             json(res, 200, await deps.convertBases())
+            return
+          }
+          if (req.method === 'POST' && route === 'palace-change') {
+            // Смена языка дворца собранным условием (решение 20–21.10): язык выбран,
+            // предохранитель снят, «Выполнить» нажато — всё в одном окне, отсчёт с
+            // первого события. Тело: { language, from, startedAt }.
+            //
+            // Проверка здесь, а не только в панели: панель может быть старой, а запрос —
+            // прийти снаружи. Язык и окно проверяются одной формулой с панелью
+            // (см. registry/palace-change), и отказ называет причину.
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null) { json(res, 400, { error: 'malformed body' }); return }
+            const verdict = checkPalaceChange({
+              language: typeof body['language'] === 'string' ? body['language'] : '',
+              from: typeof body['from'] === 'string' ? body['from'] : '',
+              startedAt: typeof body['startedAt'] === 'number' ? body['startedAt'] : Number.NaN,
+            }, Date.now(), deps.palaceChangeWindowSec)
+            if (!verdict.ok) {
+              json(res, 409, { ok: false, reason: verdict.reason })
+              return
+            }
+            const written = await deps.writePalaceLanguage(String(body['language']))
+            if (!written.ok) { json(res, 200, { ...written, labels: null, convert: null }); return }
+            // Что делать с базами, решает их новое состояние, а не клиент: после записи
+            // языка целевая метка другая, и базы, стоявшие на прежнем языке, становятся
+            // «чужой модели». Сначала метки (там, где модель угадывается), затем пересчёт.
+            const labels = await deps.writeBaseLabels()
+            const convert = await deps.convertBases()
+            json(res, 200, { ...written, labels, convert })
             return
           }
           if (req.method === 'POST' && route === 'palace-language') {

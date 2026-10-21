@@ -118,6 +118,17 @@ export interface EngramConfig {
   autoSlot?: boolean
   /** 新记忆是否进入 SM-2 间隔重复调度（初始 1 天后到期）；默认 true。false 时复习队列恒空、decay 行为同旧版。 */
   reviewScheduling?: boolean
+  /**
+   * Окно смены языка дворца, в секундах: сколько даётся на собранное условие — выбрать
+   * язык, снять предохранитель, нажать «Выполнить». Отсчёт идёт с первого из трёх
+   * событий; окно истекло — выбор возвращается к языку баз, предохранитель встаёт.
+   *
+   * Настройка, а не константа в коде: пользователь просил менять её без пересборки
+   * («минута это много, 30 сек» — и это его решение, а не наше). Значение читает и
+   * панель (отсчёт и подпись), и сервер (проверка собранного условия при запросе).
+   * По умолчанию 30.
+   */
+  palaceChangeWindowSec?: number
   /** 历史回填默认规则：时间窗天数，0 = 不限；默认 7。 */
   historyBackfillDays?: number
   /** 历史回填默认规则：单个会话最多摄取轮数；默认 20。 */
@@ -219,6 +230,11 @@ export interface ResolvedEngramConfig {
   readonly queryRewrite: boolean
   readonly autoSlot: boolean
   readonly reviewScheduling: boolean
+  /**
+   * Окно собранного условия смены языка дворца, в секундах. Читают оба: панель считает
+   * по нему отсчёт, сервер — принимает ли он запрос смены языка (окно истекло — отказ).
+   */
+  readonly palaceChangeWindowSec: number
   /** 历史回填默认规则（历史会话 → 记忆宫殿的一次性/按需回填）。 */
   readonly historyBackfill: ResolvedHistoryRules
   /** Jev System One 裁决子配置（默认关闭）。 */
@@ -243,7 +259,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'ingest', 'reflect', 'provider', 'model', 'decayAfterDays', 'decayImportanceBelow',
   'injectTokenBudget', 'injectItemBudgetStart', 'injectItemBudgetDecay', 'injectItemBudgetFloor',
   'rankRecencyWeight', 'rankProofWeight', 'queryRewrite',
-  'autoSlot', 'reviewScheduling', 'assessReminder',
+  'autoSlot', 'reviewScheduling', 'assessReminder', 'palaceChangeWindowSec',
   'historyBackfillDays', 'historyBackfillMaxTurnsPerSession', 'historyBackfillMaxTotalTurns',
   'historyBackfillIncludeSubagents', 'historyBackfillIncludeSeeded', 'historyBackfillIncludeNoCwd',
   'jev', 'embedder', 'language', 'redactWords',
@@ -281,6 +297,7 @@ export const Config: z<EngramConfig> = z.object({
   queryRewrite: z.boolean(),
   autoSlot: z.boolean(),
   reviewScheduling: z.boolean(),
+  palaceChangeWindowSec: z.number().step(1).min(5).max(600),
   assessReminder: z.boolean(),
   historyBackfillDays: z.number().step(1).min(0).max(3650),
   historyBackfillMaxTurnsPerSession: z.number().step(1).min(1).max(500),
@@ -388,6 +405,10 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
   if (config.assessReminder !== undefined && typeof config.assessReminder !== 'boolean') {
     throw new Error('dsh-engram: assessReminder must be a boolean')
   }
+  if (config.palaceChangeWindowSec !== undefined
+    && (!Number.isInteger(config.palaceChangeWindowSec) || config.palaceChangeWindowSec < 5 || config.palaceChangeWindowSec > 600)) {
+    throw new Error('dsh-engram: palaceChangeWindowSec must be an integer in [5, 600] (seconds)')
+  }
   if (config.rankRecencyWeight !== undefined && (config.rankRecencyWeight < 0 || config.rankRecencyWeight > 2)) {
     throw new Error('dsh-engram: rankRecencyWeight must be in [0, 2]')
   }
@@ -494,6 +515,7 @@ export function resolveConfig(config: EngramConfig = {}): ResolvedEngramConfig {
     queryRewrite: config.queryRewrite ?? true,
     autoSlot: config.autoSlot ?? true,
     reviewScheduling: config.reviewScheduling ?? true,
+    palaceChangeWindowSec: config.palaceChangeWindowSec ?? 30,
     historyBackfill: {
       days: config.historyBackfillDays ?? 7,
       maxTurnsPerSession: config.historyBackfillMaxTurnsPerSession ?? 20,

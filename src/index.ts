@@ -559,6 +559,8 @@ function registrySnapshot(input: {
   readonly language: string
   /** Язык дворца: чем определён и были ли расхождения сигналов. */
   readonly palace: RegistryView['palace']
+  /** Длина окна собранного условия (настройка `palaceChangeWindowSec`). */
+  readonly palaceChangeWindowSec: number
   readonly remote: boolean
   readonly model: LocalModelChoice | undefined
   readonly messages: LoadedDictionary
@@ -579,6 +581,7 @@ function registrySnapshot(input: {
     language: input.language,
     palace: input.palace,
     defaultLanguage: input.registry.defaultLanguage ?? null,
+    palaceChangeWindowSec: input.palaceChangeWindowSec,
     // Языки — тем же ответом, что и модели с привязками: список выбора в панели
     // обязан приходить от реестра, а не из своей копии в сборке клиента.
     languages: input.registry.languages.map(row => ({ code: row.code, label: row.label, builtin: row.builtin })),
@@ -757,6 +760,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     registry,
     language: resolved.language,
     palace: palaceLanguageView,
+    palaceChangeWindowSec: resolved.palaceChangeWindowSec,
     remote: resolved.embedder.remote !== undefined,
     model: localModel,
     messages,
@@ -1534,6 +1538,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
         const reason = await writePalaceLanguage(settingsOf(ctx), language)
         return reason === undefined ? { ok: true, language } : { ok: false, language, error: reason }
       },
+      palaceChangeWindowSec: resolved.palaceChangeWindowSec,
       dictionary: dictionaryDeps,
       dictionaryFill: dictionaryFillDeps,
       localePacks: localePacksDeps,
