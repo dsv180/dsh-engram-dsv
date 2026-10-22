@@ -400,7 +400,7 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
       const confirmed = deps.judge === undefined
         ? candidates
-        : (await confirmContradictions(deps.judge, item.content, candidates)) ?? candidates
+        : (await confirmContradictions(deps.judge, item.content, candidates, store)) ?? candidates
       for (const candidate of confirmed) {
         await store.linkEdge(record.id, candidate.id, 'contradicts')
       }

@@ -599,7 +599,7 @@ export async function ingestPreviousTurn(deps: IngestDeps): Promise<IngestOutcom
       // judge 在场时矛盾边先经 Jev 确认（失败返回 undefined = 降级为全量建边，与旧行为一致）。
       const neighbors = deps.judge === undefined
         ? [decision.neighbor]
-        : (await confirmContradictions(deps.judge, content, [decision.neighbor])) ?? [decision.neighbor]
+        : (await confirmContradictions(deps.judge, content, [decision.neighbor], target)) ?? [decision.neighbor]
       for (const neighbor of neighbors) {
         // Запись уже сохранена: защитно пропускаем саму себя, чтобы не создать
         // связь «противоречит сама себе» (см. то же место в tools/create.ts).

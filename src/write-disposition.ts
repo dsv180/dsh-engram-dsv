@@ -61,6 +61,29 @@ export interface DecideWriteOptions {
 }
 
 /**
+ * След сорванного решения Jev в журнале операций.
+ *
+ * В памяти процесса уже есть кольцевой буфер (`jev/observe`), но он умирает вместе с
+ * перезапуском: спустя день «запись прошла по чистым правилам» и «Jev молчал» в журнале
+ * неразличимы. Пишем одну строку на срыв — вид, вопрос, причину и длительность; текст
+ * памяти не пишем: журнал не должен становиться вторым хранилищем чужих записей.
+ *
+ * Ошибка журнала не имеет права ломать запись памяти — поэтому глушим её здесь, а не у
+ * вызывающего: иначе отказ аудита выглядел бы отказом сохранения.
+ * @param store - база, куда пойдёт строка; undefined = писать некуда (старый вызов).
+ * @param detail - что именно сорвалось.
+ */
+async function auditJevFallback(
+  store: EngramStore | undefined,
+  detail: { readonly site: 'band' | 'contradiction', readonly question: string, readonly reason: string, readonly elapsedMs: number },
+): Promise<void> {
+  if (store === undefined) return
+  try {
+    await store.audit('jev-fallback', 'AUX', JSON.stringify(detail))
+  } catch { /* журнал не влияет на запись памяти */ }
+}
+
+/**
  * 模糊带的 Jev 三路裁决。
  * @returns 高置信同 → merge；高置信异 → accept；低置信、答案缺失或 judge 抛错 → undefined（保持 defer）。
  */
@@ -70,6 +93,7 @@ async function resolveBand(
   similarity: number,
   kind: EngramKind,
   content: string,
+  store?: EngramStore,
 ): Promise<WriteDecision | undefined> {
   const startedAt = Date.now()
   try {
@@ -93,7 +117,15 @@ async function resolveBand(
         ? 'fallback'
         : p >= judge.deferMergeAbove ? 'merge' : p <= judge.deferAcceptBelow ? 'accept' : 'defer',
     })
-    if (p === undefined) return undefined
+    if (p === undefined) {
+      await auditJevFallback(store, {
+        site: 'band',
+        question: 'same_memory',
+        reason: 'ответ без вероятности',
+        elapsedMs: Date.now() - startedAt,
+      })
+      return undefined
+    }
     if (p >= judge.deferMergeAbove) return { disposition: 'merge', into: neighbor, similarity }
     if (p <= judge.deferAcceptBelow) return { disposition: 'accept' }
     return undefined
@@ -108,6 +140,12 @@ async function resolveBand(
       elapsedMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
       verdict: 'fallback',
+    })
+    await auditJevFallback(store, {
+      site: 'band',
+      question: 'same_memory',
+      reason: error instanceof Error ? error.message : String(error),
+      elapsedMs: Date.now() - startedAt,
     })
     return undefined
   }
@@ -138,7 +176,7 @@ export async function decideWrite(
   }
   const { judge, content } = options
   if (judge !== undefined && content !== undefined) {
-    const verdict = await resolveBand(judge, nearest.record, nearest.similarity, kind, content)
+    const verdict = await resolveBand(judge, nearest.record, nearest.similarity, kind, content, store)
     if (verdict !== undefined) return verdict
   }
   return { disposition: 'defer', neighbor: nearest.record, similarity: nearest.similarity }
@@ -155,6 +193,7 @@ export async function confirmContradictions(
   judge: MemoryJudge,
   incoming: string,
   candidates: readonly MemoryRecord[],
+  store?: EngramStore,
 ): Promise<readonly MemoryRecord[] | undefined> {
   try {
     const verdicts = await Promise.all(candidates.map(async candidate => {
@@ -178,6 +217,14 @@ export async function confirmContradictions(
           error: undefined,
           verdict: p === undefined ? 'fallback' : p >= judge.contradictMinProbability ? 'confirm' : 'reject',
         })
+        if (p === undefined) {
+          await auditJevFallback(store, {
+            site: 'contradiction',
+            question: 'contradicts',
+            reason: 'ответ без вероятности',
+            elapsedMs: Date.now() - startedAt,
+          })
+        }
         return p !== undefined && p >= judge.contradictMinProbability ? candidate : undefined
       } catch (error) {
         // 沿用原契约：任一候选失败即整个确认降级（全量建边）；先记观测再 rethrow。
@@ -190,6 +237,12 @@ export async function confirmContradictions(
           elapsedMs: Date.now() - startedAt,
           error: error instanceof Error ? error.message : String(error),
           verdict: 'fallback',
+        })
+        await auditJevFallback(store, {
+          site: 'contradiction',
+          question: 'contradicts',
+          reason: error instanceof Error ? error.message : String(error),
+          elapsedMs: Date.now() - startedAt,
         })
         throw error
       }
