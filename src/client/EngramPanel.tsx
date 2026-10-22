@@ -207,6 +207,10 @@ const OP_KEY: Record<string, EngramKey> = {
   'compress-request': 'opCompressRequest',
   'distill-request': 'opDistillRequest',
   'profile-edit': 'opProfileEdit',
+  // Находки обслуживания тоже попадают в общий журнал: без метки человек читал бы
+  // служебные имена (`jev-fallback`, `vectors-missing`) в русском списке как есть.
+  'jev-fallback': 'opJevFallback',
+  'vectors-missing': 'opVectorsMissing',
 }
 const REL_KEY: Record<string, EngramKey> = {
   supersededBy: 'relSupersededBy',
@@ -260,6 +264,29 @@ function formatOpDetail(t: T, op: string, detail: string | null): string {
       // detail 不是预期的 JSON：落到底部原样展示。
     }
     return ` ${detail}`
+  }
+  if (op === 'jev-fallback') {
+    // Одна строка на срыв: где спрашивали, что сорвалось и сколько ждали. Полный JSON
+    // здесь читать нечего — он и писался так, чтобы человеку хватило одной строки.
+    try {
+      const parsed = JSON.parse(detail) as { site?: unknown, question?: unknown, reason?: unknown, elapsedMs?: unknown }
+      return ' ' + t('opJevFallbackDetail', {
+        site: String(parsed.site ?? '—'),
+        question: String(parsed.question ?? '—'),
+        reason: String(parsed.reason ?? '—'),
+        ms: Number(parsed.elapsedMs ?? 0),
+      })
+    } catch {
+      return ` ${detail}`
+    }
+  }
+  if (op === 'vectors-missing') {
+    try {
+      const parsed = JSON.parse(detail) as { count?: unknown, scope?: unknown }
+      return ' ' + t('opVectorsMissingDetail', { count: Number(parsed.count ?? 0), scope: String(parsed.scope ?? '—') })
+    } catch {
+      return ` ${detail}`
+    }
   }
   if (op !== 'write' && op !== 'update' && op !== 'superseded') return ` ${detail}`
   try {
