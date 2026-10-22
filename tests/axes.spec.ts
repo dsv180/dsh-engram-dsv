@@ -44,8 +44,8 @@ const CATALOG: readonly CatalogModel[] = [MINILM, BGE]
 function registry(): LoadedRegistry {
   return {
     models: new Map([
-      [MINILM.id, { id: MINILM.id, label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384 }],
-      [BGE.id, { id: BGE.id, label: 'bge-small-zh', pooling: 'mean', dtype: 'q8', dimensions: 512 }],
+      [MINILM.id, { id: MINILM.id, label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384, languages: [] }],
+      [BGE.id, { id: BGE.id, label: 'bge-small-zh', pooling: 'mean', dtype: 'q8', dimensions: 512, languages: ['zh'] }],
     ]),
     bindings: new Map([['zh', BGE.id], ['*', MINILM.id]]),
     defaultLanguage: 'en',

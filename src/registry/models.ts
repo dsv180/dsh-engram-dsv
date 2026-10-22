@@ -22,6 +22,7 @@
  */
 
 import type { ModelDtype, PoolingMode } from '../embedder/local.ts'
+import { isLanguageCode } from '../i18n/language.ts'
 
 /** Способы сведения токенов, которые понимает разбор. */
 const POOLING_MODES: readonly PoolingMode[] = ['mean', 'cls']
@@ -95,6 +96,11 @@ export interface ModelRecord {
    * поле необязательное.
    */
   readonly dimensions: number | undefined
+  /**
+   * Языки, которые модель умеет. Пустой список — модель языков не объявила (так
+   * бывает у удалённой: обоих её концов не знает никто).
+   */
+  readonly languages: readonly string[]
 }
 
 /** Вид замечания к реестру. */
@@ -259,6 +265,30 @@ export function parseModels(text: string): ParsedModels {
       issues.push({ kind: 'badField', detail: `${at}.dimensions = ${String(dimensions)}` })
       return
     }
+    /**
+     * Языки, которые модель умеет: их объявляет сама модель, как размерность и
+     * сведение. Список необязателен — удалённая модель языков не объявляет.
+     *
+     * Нужен затем, чтобы панель предлагала завести словарь для языка, который
+     * действительно есть чем считать: иначе в выборе оказались бы языки, которых
+     * модель не знает, и векторы для них ничего не значили бы.
+     */
+    const rawLanguages = record.languages
+    const languages: string[] = []
+    if (rawLanguages !== undefined) {
+      if (!Array.isArray(rawLanguages)) {
+        issues.push({ kind: 'badField', detail: `${at}.languages — не массив` })
+        return
+      }
+      for (const code of rawLanguages) {
+        // Кривой код — замечание, а не отказ строке: остальные языки модели целы.
+        if (typeof code !== 'string' || !isLanguageCode(code)) {
+          issues.push({ kind: 'badField', detail: `${at}.languages = ${String(code)}` })
+          continue
+        }
+        if (!languages.includes(code)) languages.push(code)
+      }
+    }
     if (models.has(id)) {
       issues.push({ kind: 'duplicateId', detail: id })
       return
@@ -269,6 +299,7 @@ export function parseModels(text: string): ParsedModels {
       pooling: pooling as PoolingMode,
       dtype: dtype as ModelDtype,
       dimensions: dimensions as number | undefined,
+      languages,
     })
   })
 

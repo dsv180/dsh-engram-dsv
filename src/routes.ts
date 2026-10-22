@@ -108,6 +108,17 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
+/**
+ * Язык из тела запроса: код языка либо ничего.
+ *
+ * Пустое и отсутствующее значение — не ошибка: без языка набор читается на том,
+ * на котором плагин считает сейчас. Всё остальное, что не похоже на код языка,
+ * отбрасывается здесь, а не в вызывающем: `fr` пройдёт, `../../x` — нет.
+ */
+function languageOf(raw: unknown): EngramLanguage | undefined {
+  return typeof raw === 'string' && isLanguageCode(raw) ? raw : undefined
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
@@ -214,6 +225,13 @@ export interface RegistryModelView {
   readonly dtype: string
   /** Объявленная размерность; у удалённой модели её нет — null. */
   readonly dimensions: number | null
+  /**
+   * Языки, которые модель умеет. Пусто — модель их не объявила.
+   *
+   * Панель берёт отсюда список языков, для которых имеет смысл заводить словарь:
+   * язык, которого модель не знает, считался бы ею вслепую.
+   */
+  readonly languages: readonly string[]
 }
 
 /** Ответ `GET registry`: чем считается содержимое базы и какими словами оно описано. */
@@ -268,6 +286,16 @@ export interface RegistryView {
    * иначе язык, добавленный файлом, был бы на сервере, но не в списке выбора.
    */
   readonly languages: readonly { readonly code: string, readonly label: string, readonly builtin: boolean }[]
+  /**
+   * Языки из объявленных моделями, у которых словарь уже есть: файл поставки или
+   * файл пользователя.
+   *
+   * Считается по файлам, а не по реестру языков: словарь мог быть заведён и для
+   * языка, которого в реестре нет. Панель вычитает этот список из языков моделей —
+   * так в выборе «Создать словарь» остаются ровно те языки, для которых заведение
+   * имеет смысл.
+   */
+  readonly dictionaryLanguages: readonly string[]
   /**
    * Длина окна собранного условия смены языка дворца, секунды.
    *
@@ -388,6 +416,20 @@ export interface DictionarySaveResult {
 }
 
 /**
+ * Итог заведения пустого словаря для языка, которого в плагине ещё нет.
+ *
+ * Заводятся оба набора сразу: язык без пары файлов — половина словаря, и человек,
+ * выбравший его в панели, увидел бы английский текст в одном месте и перевод в
+ * другом. Строк в новом файле нет вовсе: это заготовка, а не перевод.
+ */
+export interface DictionaryCreateResult {
+  readonly set: DictionarySet
+  readonly file: string
+  readonly lines: number
+  readonly bytes: number
+}
+
+/**
  * Итог заполнения партии словаря моделью: переводы и то, кто их дал.
  *
  * Пустой список переводов — не ошибка формата: модель вправе не перевести строку,
@@ -468,14 +510,32 @@ export interface RouteDeps {
    */
   readonly registry: () => RegistryView
   /**
+   * Какие из перечисленных языков уже имеют словарь (файл поставки или файл человека).
+   *
+   * Спрашивается по кодам, а не отдаётся готовым списком: набор языков задают модели
+   * в реестре, и меняется он файлом, а не пересборкой. Проверка — здесь, а не в
+   * панели: файлы словарей лежат на серверной стороне.
+   */
+  readonly dictionaryLanguages: (codes: readonly string[]) => readonly string[]
+  /**
    * Правка словарей: прочитать набор терминов и записать пользовательский слой.
    *
    * Пишется только пользовательский слой в каталоге данных; поставка не трогается
    * (см. i18n/dictionary-edit.ts). Чтение отдаёт строки, файлы и претензии разбора.
+   *
+   * Язык — необязательный: без него берётся язык, на котором плагин считает сейчас.
+   * Панель передаёт выбранный в блоке «Язык Плагина», чтобы таблица и счётчики
+   * относились к тому языку, на который человек смотрит, а не к тому, что случайно
+   * оказался текущим.
    */
   readonly dictionary: {
-    readonly read: (set: DictionarySet) => DictionarySetView
-    readonly write: (set: DictionarySet, entries: ReadonlyMap<string, string>) => DictionarySaveResult
+    readonly read: (set: DictionarySet, language?: EngramLanguage) => DictionarySetView
+    readonly write: (set: DictionarySet, entries: ReadonlyMap<string, string>, language?: EngramLanguage) => DictionarySaveResult
+    /**
+     * Завести пустой словарь для языка, которого в плагине ещё нет: оба набора
+     * пишутся в пользовательский слой, каждая строка — с пустым переводом.
+     */
+    readonly create: (language: EngramLanguage) => readonly DictionaryCreateResult[]
   }
   /**
    * Заполнение словаря моделью: перевести партию английских строк на язык набора.
@@ -1210,8 +1270,12 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
             // обслуживания хватает счёта строк и претензий разбора.
             // Плюс состояние каждой базы — оно считается здесь, а не при сборке плагина.
             const states = await deps.baseStates()
+            const view = deps.registry()
+            // Языки, объявленные моделями: из них панель выбирает, чему заводить словарь.
+            const modelLanguages = [...new Set(view.models.flatMap(row => row.languages))]
             json(res, 200, {
-              ...deps.registry(),
+              ...view,
+              dictionaryLanguages: deps.dictionaryLanguages(modelLanguages),
               // Язык дворца пересчитывается здесь вместе с базами: и то и другое меняется
               // на ходу, а снимок из сборки плагина этого не знает.
               palace: deps.palaceLanguage(states.bases),
@@ -1238,7 +1302,14 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 400, { ok: false, error: `unknown dictionary set: ${set}` })
               return
             }
-            json(res, 200, deps.dictionary.read(set))
+            // Язык набора: панель показывает словари того языка, на который человек
+            // смотрит в блоке «Язык Плагина». Без параметра — текущий язык плагина.
+            const language = url.searchParams.get('language')
+            if (language !== null && !isLanguageCode(language)) {
+              json(res, 400, { ok: false, error: `unknown language: ${language}` })
+              return
+            }
+            json(res, 200, deps.dictionary.read(set, language ?? undefined))
             return
           }
           if (req.method === 'POST' && route === 'dictionary') {
@@ -1257,7 +1328,22 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               json(res, 400, { ok: false, error: `unknown dictionary set: ${String(set)}` })
               return
             }
-            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body['entries'])))
+            json(res, 200, deps.dictionary.write(set, entriesFromRequest(body['entries']), languageOf(body['language'])))
+            return
+          }
+          if (req.method === 'POST' && route === 'dictionary-create') {
+            // Заведение пустого словаря для языка, которого в плагине ещё нет. Тело:
+            // { language }. Заводятся оба набора сразу и только в пользовательском
+            // слое: поставка принадлежит выпуску, и дописывать в неё новый язык нельзя.
+            if (!guardWrite(req, res)) return
+            const body = await readJsonBody(req)
+            if (body === null) { json(res, 400, { error: 'malformed body' }); return }
+            const language = languageOf(body['language'])
+            if (language === undefined) {
+              json(res, 400, { ok: false, error: `unknown language: ${String(body['language'])}` })
+              return
+            }
+            json(res, 200, { ok: true, written: deps.dictionary.create(language) })
             return
           }
           if (req.method === 'POST' && route === 'dictionary-fill') {

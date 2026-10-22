@@ -651,10 +651,14 @@ select.input { padding-right: 28px; appearance: none; }
 /* 区域之间的距离由父容器的 gap 统一给出（.mainCol / .sideCol / .corridorLayout），
    这里不再叠 margin-bottom——否则会出现「上方贴死、下方过松」的不对称间距。 */
 .section { min-width: 0; }
-.sectionHead { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
+.sectionHead { position: relative; display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
 .sectionTitle { margin: 0; font-size: var(--fs-ctrl); font-weight: 600; color: var(--dsw-alias-label-primary); }
 .sectionHint { font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); line-height: 1.4; }
-.sectionAction { margin-left: auto; align-self: center; }
+/* Действие блока — справа от заголовка, но вне потока: кнопка выше строки текста, и в
+   потоке она поднимает всю шапку, а с ней и зазор до карточки — тогда одинаковые блоки
+   расходятся по высоте. Здесь шапка сохраняет рост строки, а кнопка встаёт на её уровень
+   с отступом в один шаг, чтобы не касаться карточки блока выше. */
+.sectionAction { position: absolute; right: 0; top: var(--space-1); height: 22px; font-size: var(--fs-micro); }
 
 /* ---------- 今日速览（v0.8.5 比例收敛：主指标 32px + 健康环 64px，与宿主面板同级） ---------- */
 .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center; padding: var(--space-1) 0; }
@@ -861,6 +865,9 @@ select.input { padding-right: 28px; appearance: none; }
 .regKV { display: flex; flex-wrap: wrap; gap: 2px var(--space-4); align-items: baseline; margin: var(--space-3) 0 0; }
 .regKV dt { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
 .regKV dd { margin: 0; color: var(--dsw-alias-label-primary); }
+/* Пояснение к значению — в той же строке, что и само значение, а не отдельной строкой
+   под ним: «Язык диалогов с агентом: RU · на этом языке вы ведёте диалоги». */
+.regHint { margin-left: var(--space-3); color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); }
 /* Обслуживание: выбор языка дворца стоит в строке модели, поэтому ниже общего .input. */
 .regLang { width: auto; height: 22px; padding: 0 4px; margin: 0 2px; font-size: var(--fs-micro); }
 .regNote { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
@@ -871,12 +878,32 @@ select.input { padding-right: 28px; appearance: none; }
 .regActions { display: flex; align-items: center; gap: 0; margin-top: var(--space-3); }
 /* Отступ от кнопки равен её высоте (28px): описание стоит «на одном дыхании» с кнопкой. */
 .regActionNote { margin-left: 28px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
-/* Обслуживание: предохранитель — отдельной строкой над кнопкой. Стоит по умолчанию,
-   поэтому отмеченное состояние подкрашено: снятый предохранитель виден сразу. */
-/* Язык дворца: выбор, предохранитель и кнопка в одну строку. Кнопка справа от
-   предохранителя: три решения читаются как одно действие, слева направо. */
+/* Обслуживание: предохранитель стоит у кнопки, в той же строке перед ней — он охраняет
+   нажатие, а не чтение. Отмеченное состояние подкрашено: закрытый замок виден сразу. */
+/* Язык дворца: слева направо — язык словом, язык баз буквами, состояние баз, и правым
+   краем куда менять. Первые четыре поля только читают, действует один выбор. */
 .palaceChangeRow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
-.palaceChangeRow .regGuard { margin-top: 0; }
+/* Заведение словаря — правым краем той же строки: margin-left: auto отодвигает группу
+   от левой, поэтому строка читается как две задачи, а не как один длинный ряд. */
+.rowEnd { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+/* Поле выбора языка с поиском: та же мера, что у выбора слева, но шире — в него пишут.
+   Стрелка своя, а не родная от `<datalist>`: список у поля свой (см. .dictLangList). */
+.dictLangInput { width: 140px; height: 22px; padding: 0 18px 0 6px; margin: 0 2px; font-size: var(--fs-micro); }
+.dictLangField { position: relative; display: inline-flex; align-items: center; }
+.dictLangField::after { content: '▾'; position: absolute; right: 8px; font-size: 9px; line-height: 1; color: var(--dsw-alias-label-tertiary); pointer-events: none; }
+/* Список языков: слой поверх страницы, а не внутри панели — иначе прокрутка панели
+   обрезала бы его. Высоту задаёт поле в момент открытия: свободное место по стороне.
+   Полоса прокрутки своя и постоянная: у «тонкой» системной полосы ползунок появляется
+   только под курсором, и список выглядел бы необрезаемым, хотя в нём сорок шесть строк. */
+.dictLangList { position: fixed; z-index: 60; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; padding: 4px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; box-shadow: 0 12px 32px -12px color-mix(in srgb, var(--dsw-alias-label-primary) 34%, transparent); }
+.dictLangList::-webkit-scrollbar { width: 10px; }
+.dictLangList::-webkit-scrollbar-track { background: transparent; }
+.dictLangList::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 50%, transparent); background-clip: content-box; }
+.dictLangList::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--dsw-alias-label-secondary) 65%, transparent); background-clip: content-box; }
+.dictLangOption { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: var(--fs-micro); line-height: 1.5; text-align: left; cursor: pointer; }
+.dictLangOption[data-active='true'] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); }
+.dictLangOptionCode { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-family: var(--dsw-font-mono, ui-monospace); font-size: 10px; text-transform: uppercase; }
+.dictLangEmpty { margin: 0; padding: 6px 8px; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.5; }
 .regGuard { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); cursor: pointer; }
 .regGuard input { accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
 .regGuard:has(input:checked) { color: var(--dsw-alias-label-primary); }
@@ -884,6 +911,48 @@ select.input { padding-right: 28px; appearance: none; }
 /* Обслуживание: заголовок группы с кнопкой справа («Словарь >» открывает правку). */
 .regGroupHead { display: flex; align-items: center; gap: var(--space-3); }
 .dictOpen { margin-left: auto; }
+
+/* ---------- «Язык Плагина» и «Язык Дворца памяти» ----------
+   Оба блока — обычные section панели: свой sectionHead и своя panelCard, как у
+   «Догрузки» и «Jev». Отдельной группы у них нет намеренно: вложенность давала
+   заголовкам другой отступ сверху и другой зазор до рамки, чем у соседей по вкладке. */
+/* Значение в строке состояния: тем же размером, что и у прочих значений панели
+   (выбор языка, буквенный индекс). Без этого слово «Русский» наследовало размер
+   текста рамки и было вдвое крупнее своей же подписи. */
+.regValue { font-size: var(--fs-micro); color: var(--dsw-alias-label-primary); }
+/* Верхний ряд блока «Язык Дворца памяти»: подписи и индикаторы слева, выбор языка
+   прижат вправо. */
+.regLangPush { margin-left: auto; }
+/* Пустая строка между таблицами моделей и баз: без неё две таблицы читаются как одна.
+   Мера — как у промежутка между блоками, а не как у строки таблицы: 16 px рядом с
+   плотными строками глаз считает той же таблицей, и разделение не видно. */
+.tableGap { height: var(--space-5); }
+/* Состояние баз — цветом и весом, по одному на каждое из трёх слов.
+   В порядке — зелёный: это не тревога, а ответ «делать нечего».
+   Ремонт — красный обычный: беда есть, но она правится на месте.
+   Конвертация — красный жирный: за ней стоит смена языка, а не только правка строк. */
+.baseStateGood, .baseStateBad, .baseStateAlarm { font-size: var(--fs-micro); }
+.baseStateGood { color: var(--dsw-alias-state-success-primary, #2e7d32); }
+.baseStateBad { color: var(--dsw-alias-state-error-primary); font-weight: 500; }
+.baseStateAlarm { color: var(--dsw-alias-state-error-primary); font-weight: 700; }
+/* Подпись перед выбором языка: «Текущий язык:» — обычный текст, не заголовок. */
+.regLabel { color: var(--dsw-alias-label-secondary); font-size: var(--fs-micro); }
+/* Непереведённые строки: «заполнено» меньше, чем «всего строк». Красим число, а не
+   строку: красная строка читается как поломка, а число — как недостача. */
+.regFilledShort { color: var(--dsw-alias-state-error-primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+.regIncomplete { margin: 6px 0 0; color: var(--dsw-alias-label-primary); font-weight: 700; font-size: var(--fs-micro); line-height: 1.5; }
+/* Ряд под таблицей баз: предохранитель, кнопка и что именно будет сделано — в одну
+   строку, слева направо. */
+.baseRunRow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3); }
+.baseRunRow .regGuard { margin-top: 0; }
+.baseRunNote { color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1.4; }
+/* Оговорка «язык и модель не меняются» — своей строкой и от левого края: она не
+   продолжает пояснение за кнопкой, а называет условие задачи. flex-basis: 100%
+   переносит её на следующую строку ряда, где она и встаёт влево. */
+.baseRunScope { flex-basis: 100%; }
+/* Перехват последней починки: что вызвано и что ответило. Моноширинным — здесь важен
+   не текст, а факт: имена маршрутов и числа не должны разъезжаться по ширине. */
+.baseRunTrace { margin: var(--space-2) 0 0; color: var(--dsw-alias-label-secondary); font-family: var(--dsw-font-mono, ui-monospace); font-size: var(--fs-micro); line-height: 1.5; word-break: break-word; }
 
 /* ---------- Оверлеи панели: экран поверх всего окна плагина ----------
    .overlayHost — пустой якорь портала (высоты не занимает). Сам экран позиционируется fixed,

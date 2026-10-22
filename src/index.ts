@@ -26,7 +26,7 @@ import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
 import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
-import { PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
+import { DICTIONARY_SETS, PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
 import { FILL_MAX_TOKENS, FILL_SPLIT_DEPTH, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
 import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from './i18n/dictionary-ai.ts'
 import type { FillPair } from './i18n/dictionary-ai.ts'
@@ -565,6 +565,8 @@ function registrySnapshot(input: {
   readonly model: LocalModelChoice | undefined
   readonly messages: LoadedDictionary
   readonly panel: LoadedDictionary
+  /** Языки моделей, у которых файл словаря уже есть (см. `dictionaryLanguages`). */
+  readonly dictionaryLanguages: readonly string[]
 }): RegistryView {
   const dictionary = (name: string, loaded: LoadedDictionary): RegistryView['dictionaries'][number] => ({
     name,
@@ -585,6 +587,7 @@ function registrySnapshot(input: {
     // Языки — тем же ответом, что и модели с привязками: список выбора в панели
     // обязан приходить от реестра, а не из своей копии в сборке клиента.
     languages: input.registry.languages.map(row => ({ code: row.code, label: row.label, builtin: row.builtin })),
+    dictionaryLanguages: [...input.dictionaryLanguages],
     remote: input.remote,
     resolved: input.model === undefined ? null : {
       id: input.model.id,
@@ -599,6 +602,7 @@ function registrySnapshot(input: {
       pooling: row.pooling,
       dtype: row.dtype,
       dimensions: row.dimensions ?? null,
+      languages: [...row.languages],
     })),
     bindings: [...input.registry.bindings].map(([language, model]) => ({ language, model })),
     files: input.registry.files,
@@ -756,6 +760,21 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
    * а это — заготовка для остальных чтений снимка.
    */
   const palaceLanguageView: RegistryView['palace'] = null
+  /**
+   * Языки, у которых файл словаря уже есть: в поставке или у человека.
+   *
+   * Проверяем файлы, а не разбор: вопрос ровно один — «словарь заведён или нет», и ответ
+   * даёт наличие файла в любом из двух наборов. Разбор читал бы мегабайты ради признака.
+   */
+  const languagesWithDictionary = (codes: readonly string[]): readonly string[] => codes.filter(code =>
+    DICTIONARY_SETS.some(set => {
+      const paths = dictionaryPaths({ set, language: code as EngramLanguage, dbDir: resolved.dbDir })
+      return existsSync(paths.delivery) || existsSync(paths.user)
+    }))
+  /** Языки, объявленные моделями реестра: из них панель выбирает, чему заводить словарь. */
+  const modelLanguages = (): readonly string[] => [...new Set(
+    [...registry.models.values()].flatMap(row => row.languages),
+  )]
   const snapshotView = (messages: LoadedDictionary, panel: LoadedDictionary): RegistryView => registrySnapshot({
     registry,
     language: resolved.language,
@@ -765,6 +784,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
     model: localModel,
     messages,
     panel,
+    dictionaryLanguages: languagesWithDictionary(modelLanguages()),
   })
   let registryView = snapshotView(dictionary, panelDictionary)
   /**
@@ -1268,9 +1288,9 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
    * серверные сообщения сразу, панель по свежему снимку обслуживания.
    */
   const dictionaryDeps: RouteDeps['dictionary'] = {
-    read: set => readDictionarySet({ set, language: resolved.language, dbDir: resolved.dbDir }),
-    write: (set, patch): DictionarySaveResult => {
-      const sources = { set, language: resolved.language, dbDir: resolved.dbDir }
+    read: (set, language) => readDictionarySet({ set, language: language ?? resolved.language, dbDir: resolved.dbDir }),
+    write: (set, patch, language): DictionarySaveResult => {
+      const sources = { set, language: language ?? resolved.language, dbDir: resolved.dbDir }
       // Панель присылает только изменённые клетки: накладываем их на текущий слой, чтобы
       // не тронутые человеком строки не стёрлись и запрос остался соразмерен правке.
       const current = readDictionaryLayer(dictionaryPaths(sources).user).entries
@@ -1279,6 +1299,17 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       reloadDictionaries()
       return { set, ...written, view: readDictionarySet(sources) }
     },
+    /**
+     * Пустой словарь нового языка: оба набора, одни заголовки, ни одной строки.
+     *
+     * Пустая карта — именно пустой словарь: формат не хранит строку без перевода
+     * (пустая клетка означает «снять правку»), поэтому заготовка — это файл с
+     * заголовком, который панель затем заполняет терминами и переводами.
+     */
+    create: language => DICTIONARY_SETS.map(set => {
+      const written = writeDictionarySet({ set, language, dbDir: resolved.dbDir, entries: new Map<string, string>() })
+      return { set, file: written.file, lines: written.written, bytes: written.bytes }
+    }),
   }
 
   /**
@@ -1545,6 +1576,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       pluginVersion: VERSION,
       language: resolved.language,
       registry: () => registryView,
+      dictionaryLanguages: languagesWithDictionary,
       baseStates,
       palaceLanguage: palaceLanguageState,
       writeBaseLabels,

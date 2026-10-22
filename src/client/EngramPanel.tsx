@@ -343,10 +343,19 @@ function withProjectParam(path: string, selector: string): string {
 async function api<T>(path: string, init?: RequestInit, forceProject = false): Promise<T> {
   const selector = activeProjectSelector
   let target = path
+  // Записи у сервера закрыты Content-Type-замком: POST без `application/json` отбивается
+  // ответом 415 unsupported content-type ещё до обработчика. Держим это правило здесь, в
+  // единственном выходе к серверу, а не в каждом вызове: иначе один забытый заголовок
+  // выглядит как «кнопка ничего не делает» — именно так и вышло с починкой баз.
   let requestInit = init
-  const projectScoped = selector !== null && (forceProject || isProjectScoped(path, init))
+  if (init !== undefined && (init.method ?? '').toUpperCase() === 'POST') {
+    const headers = new Headers(init.headers)
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json')
+    requestInit = { ...init, headers }
+  }
+  const projectScoped = selector !== null && (forceProject || isProjectScoped(path, requestInit))
   if (projectScoped) {
-    const body = init?.body
+    const body = requestInit?.body
     const fromBody = typeof body === 'string' && body !== '' ? withProjectField(body, selector) : undefined
     if (fromBody !== undefined && init !== undefined) requestInit = { ...init, body: fromBody }
     else target = withProjectParam(path, selector)
@@ -3341,6 +3350,19 @@ function ExportMenu({ t, scope, project, toast }: {
   )
 }
 
+/**
+ * Ответ ручек починки (`base-label`, `base-convert`).
+ *
+ * Обе возвращают сделанное и не сделанное списками: `written` — базы, которым записали
+ * метку, `converted` — сколько строк пересчитали векторы, `failed` — что не вышло и
+ * почему. Код ответа при этом 200, поэтому «сервер отказал» видно только здесь.
+ */
+interface BaseRepairPart {
+  readonly written: readonly { readonly file?: string }[]
+  readonly converted?: number
+  readonly failed: readonly { readonly file?: string, readonly error?: string }[]
+}
+
 /** Одна база дворца в ответе `registry` (host 侧 BaseView). */
 interface RegistryBase {
   readonly file: string
@@ -3389,7 +3411,12 @@ interface RegistrySnapshot {
   readonly languages: readonly PalaceLanguageOption[]
   readonly remote: boolean
   readonly resolved: { readonly id: string; readonly label: string | null; readonly source: string; readonly pooling: string; readonly dtype: string } | null
-  readonly models: readonly { readonly id: string; readonly label: string | null; readonly pooling: string; readonly dtype: string; readonly dimensions: number | null }[]
+  readonly models: readonly { readonly id: string; readonly label: string | null; readonly pooling: string; readonly dtype: string; readonly dimensions: number | null; readonly languages: readonly string[] }[]
+  /**
+   * Языки моделей, у которых словарь уже заведён. Список терпит отсутствие поля по той
+   * же причине, что и `languages`: клиент и сервер едут разными файлами.
+   */
+  readonly dictionaryLanguages?: readonly string[]
   readonly bindings: readonly { readonly language: string; readonly model: string }[]
   readonly files: readonly string[]
   readonly problems: readonly { readonly file: string; readonly kind: string; readonly detail: string }[]
@@ -3439,15 +3466,19 @@ const LANGUAGE_CODE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
  */
 const GUARD_SECONDS = 30
 
+/**
+ * Сколько висит сообщение об итоге обслуживания.
+ *
+ * Обычного срока тоста не хватает: пока человек читает причину отказа, сообщение уже
+ * ушло, и остаётся впечатление «мелькнуло и всё». Полминуты — чтобы успеть прочитать,
+ * и не настолько много, чтобы сообщение мешало.
+ */
+const TOAST_LONG_MS = 30_000
+
 /** 文件全路径只留文件名：卡片里要的是「какой файл», а не «где лежит пакет». */
 function baseName(path: string): string {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return cut < 0 ? path : path.slice(cut + 1)
-}
-
-/** Имя модели для человека: метка каталога, а полный идентификатор — по наведению. */
-function modelLabel(snapshot: RegistrySnapshot, id: string): string {
-  return snapshot.models.find(row => row.id === id)?.label ?? id
 }
 
 /**
@@ -3476,26 +3507,66 @@ const BASE_STATE_KEY: Readonly<Record<string, EngramKey>> = {
  * Тексты берутся из вшитых словарей панели (locales/*.ts): в них уже есть все
  * ключи обслуживания, и они переключаются вместе с языком панели.
  */
-function RegistryCard({ t, overlayHost, onTestPanel }: {
+/**
+ * Название языка для списка: из реестра, а если языка там нет — из справочника браузера.
+ *
+ * `Intl.DisplayNames` — стандартная часть браузера, а не данные плагина. Свой список
+ * названий на полсотни языков пришлось бы заводить и переводить руками на каждый язык,
+ * тогда как браузер уже знает, как называется `de` по-русски и по-китайски.
+ *
+ * Справочник создаётся один раз на язык панели и запоминается: это не бесплатная операция,
+ * а вызывается она на каждый рендер строки словарей.
+ */
+const displayNameCache = new Map<string, Intl.DisplayNames | null>()
+function languageLabel(code: string, known: readonly PalaceLanguageOption[], locale: string): string {
+  const registered = known.find(row => row.code === code)?.label
+  if (registered !== undefined) return registered
+  let names = displayNameCache.get(locale)
+  if (names === undefined) {
+    try {
+      names = new Intl.DisplayNames([locale], { type: 'language' })
+    } catch {
+      // Старый браузер без `DisplayNames` — показываем код: он всегда верен.
+      names = null
+    }
+    displayNameCache.set(locale, names)
+  }
+  const label = names?.of(code)
+  return label === undefined || label === '' ? code.toUpperCase() : label
+}
+
+function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
   readonly t: T
   /** Якорь оверлеев панели (вне `.panel`): сюда порталом уходит экран правки словаря. */
   readonly overlayHost: { readonly current: HTMLDivElement | null }
   /** Открыть проверку окна первого запуска — без записи и без смены языка дворца. */
   readonly onTestPanel?: () => void
+  /** Язык самой панели: он же умолчание для выбора языка в блоке «Язык Плагина». */
+  readonly lang: PanelLang
 }): React.ReactElement {
   const [snapshot, setSnapshot] = useState<RegistrySnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   /**
-   * Временный предохранитель от конвертации баз (решение 20.10): пока он отмечен,
-   * кнопка «Выполнить» заблокирована — предохранитель по умолчанию стоит, снимает
-   * его человек. Убирается к концу работ.
+   * Замок на смену языка дворца: по умолчанию закрыт.
    *
-   * Ключ хранения отличается от прежнего (`library.baseGuard`): там могло остаться
-   * значение от старой семантики («нажимается, но ничего не делает»), и оно бы
-   * молча оставило предохранитель снятым.
+   * Порядок действий задаёт он же: снял замок — ожил выбор языка, выбрал другой язык —
+   * ожила кнопка «Выполнить». Пока язык не изменён, кнопка молчит: пересчёт баз идёт
+   * только вместе со сменой языка.
+   *
+   * Состояние намеренно НЕ хранится между заходами: снятый замок, переживающий выход из
+   * панели, оставлял бы дорогое действие открытым для случайного нажатия.
    */
-  const [guard, setGuard] = usePersistedState<'on' | 'off'>('library.baseFuse', 'on', ['on', 'off'])
+  const [locked, setLocked] = useState(true)
+  /**
+   * Перехват последней починки: что вызвано и что ответил сервер.
+   *
+   * Тост живёт секунды и уносит причину с собой — человек видит «мелькнуло» и не знает,
+   * чем кончилось. Поэтому итог остаётся строкой под кнопкой и держится до следующего
+   * нажатия или до перезагрузки страницы. Это же и есть перехват: если строка не
+   * изменилась после нажатия, значит нажатие не дошло до обработчика.
+   */
+  const [lastRepair, setLastRepair] = useState<string | null>(null)
   /**
    * Язык, выбранный в блоке «Язык дворца», но ещё не записанный.
    *
@@ -3509,6 +3580,21 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
   const [left, setLeft] = useState(0)
   /** Открыт ли экран правки словаря: он перекрывает окно плагина целиком. */
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
+  /**
+   * Язык, словари которого показывает блок «Язык Плагина».
+   *
+   * Умолчание — язык самой панели (тот, что стоит в верхнем переключателе): человек
+   * чаще всего смотрит переводы того языка, на котором читает интерфейс. Дальше это
+   * независимый выбор: он не переключает панель и ничего не пишет в настройки.
+   */
+  const [dictLanguage, setDictLanguage] = useState<string>(lang)
+  /** Счётчики словарей выбранного языка; null — ещё не прочитаны. */
+  const [dictStats, setDictStats] = useState<readonly DictStatView[] | null>(null)
+  /** Просьба перечитать счётчики: после заведения словаря язык тот же, а данные новые. */
+  const [dictReload, setDictReload] = useState(0)
+  /** Язык, выбранный справа в поле «Создать словарь» (подпись, а не код: так ищут глазами). */
+  const [createLanguage, setCreateLanguage] = useState<string>('')
+  const [dictError, setDictError] = useState<string | null>(null)
   const toast = useToast()
 
   useEffect(() => {
@@ -3523,6 +3609,35 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
     })()
     return () => { alive = false }
   }, [])
+
+  /**
+   * Счётчики словарей выбранного языка: «всего строк / заполнено / откуда прочитано».
+   *
+   * Считаются по таблице правки (`GET dictionary?set=…&language=…`), а не по снимку
+   * обслуживания: снимок описывает язык, на котором плагин считает сейчас, а человек
+   * смотрит на язык, выбранный в блоке. Всего строк — это термины набора (строки
+   * таблицы), заполнено — те, у которых правая клетка непустая.
+   */
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const [messages, panel] = await Promise.all([
+          api<DictionarySetView>(`dictionary?set=messages&language=${encodeURIComponent(dictLanguage)}`),
+          api<DictionarySetView>(`dictionary?set=panel&language=${encodeURIComponent(dictLanguage)}`),
+        ])
+        if (!alive) return
+        setDictStats([
+          { set: 'messages', label: 'registryDictionaryMessages', view: messages },
+          { set: 'panel', label: 'registryDictionaryPanel', view: panel },
+        ])
+        setDictError(null)
+      } catch (cause) {
+        if (alive) setDictError(cause instanceof Error ? cause.message : String(cause))
+      }
+    })()
+    return () => { alive = false }
+  }, [dictLanguage, dictReload])
 
   // Тексты карточки — из вшитых словарей панели (locales/*.ts): в них есть все
   // ключи обслуживания, и они переключаются вместе с языком панели. Файловый
@@ -3560,13 +3675,22 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
       if (rest > 0) return
       setStartedAt(null)
       setPending(null)
-      setGuard('on')
+      setLocked(true)
       toast.push('reset', t('guardReset', { seconds: windowSec }))
     }
     tick()
     const id = setInterval(tick, 500)
     return () => { clearInterval(id) }
-  }, [startedAt, windowSec, setGuard, toast, t])
+  }, [startedAt, windowSec, toast, t])
+
+  /**
+   * Языки реестра. Стоит до ранних выходов: от них зависят подписи языков в блоке
+   * обслуживания, а он собирается уже после ранних выходов.
+   *
+   * Список терпит отсутствие поля: клиент и сервер плагина едут разными файлами, и сразу
+   * после обновления клиент может оказаться новее сервера — тогда `languages` в снимке нет.
+   */
+  const languages = snapshot?.languages ?? []
 
   if (error !== null) {
     return <div className={styles.empty}><b>{tt('registryFailed')}</b><span>{error}</span></div>
@@ -3591,69 +3715,54 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
    * `languages.json` на этой машине; без такой строки `select` показал бы пустое
    * поле вместо языка, на котором дворец на самом деле стоит.
    */
-  /**
-   * Список языков терпит отсутствие поля: клиент и сервер плагина едут разными файлами,
-   * и сразу после обновления клиент может оказаться новее сервера — тогда `languages`
-   * в снимке нет. Падать из-за этого всей карточкой нельзя: показываем хотя бы текущий язык.
-   */
-  const languages = snapshot.languages ?? []
   const languageOptions = languages.some(row => row.code === chosenLanguage)
     ? languages
     : [...languages, { code: chosenLanguage, label: chosenLanguage.toUpperCase(), builtin: false }]
 
-  // Одна кнопка на все базы (решение 20.10): что она сделает, определяется
-  // состоянием баз, а не выбором в интерфейсе — поэтому текст рядом считается
-  // здесь же. Действий два: подписать базу (метки нет, но модель угадывается)
-  // или пересчитать векторы (чужая модель, пересортица, записи без вектора).
+  /**
+   * Язык дворца словом — «Русский», а не `RU`. Код остаётся для машин и для
+   * `select`, где он служит значением; в строке состояния человек читает название,
+   * и взять его можно только из реестра языков.
+   */
+  const palaceLanguageName = languages.find(row => row.code === currentLanguage)?.label
+    ?? currentLanguage.toUpperCase()
+
+  // Состояние баз одной строкой для верхнего ряда: это индикатор, а не действие.
   const actions = snapshot.bases.map(base => base.action)
   const todo: 'convert' | 'repair' | 'write-label' | 'none' = actions.includes('convert')
     ? 'convert'
     : actions.includes('repair') ? 'repair' : actions.includes('write-label') ? 'write-label' : 'none'
 
-  const actionText = todo === 'write-label'
-    ? tt('baseActionWriteLabel', { label: snapshot.bases[0]?.targetLabel ?? '' })
-    : todo === 'convert' ? tt('baseActionConvert') : todo === 'repair' ? tt('baseActionRepair') : tt('baseActionNone')
+  /**
+   * Состояние баз одним из трёх слов — только они и есть: в порядке, требует
+   * ремонта, требует конвертации.
+   *
+   * «Ремонт» здесь широкий и означает «надо поправить записи»: и растерянные
+   * векторы, и базу без метки модели — второе лечится тем же нажатием. Отдельного
+   * четвёртого состояния у строки нет намеренно: человеку важно, придётся ли ему
+   * что-то делать, а не как называется причина.
+   *
+   * У конвертации приоритет не по важности, а по существу: она пересчитывает всё
+   * подряд и заодно устраняет то, что чинил бы ремонт. Показывать «ремонт» рядом с
+   * базой, которую всё равно ждёт пересчёт, значило бы предлагать два действия там,
+   * где нужно одно.
+   */
+  const baseKind: 'ok' | 'repair' | 'convert' = todo === 'convert'
+    ? 'convert'
+    : todo === 'none' ? 'ok' : 'repair'
 
-  const run = (): void => {
-    // Предохранитель: пока он отмечен, кнопка заблокирована; здесь — вторая линия
-    // защиты на случай, если состояние успело разойтись с разметкой.
-    if (guard === 'on' || todo === 'none') return
-    setBusy(true)
-    // Что делать — решает состояние баз, а не клиент: маршрут выбирается по нему.
-    const call = todo === 'write-label'
-      ? api<{ written: readonly { file: string, label: string }[], failed: readonly { file: string, error: string }[] }>(
-          'base-label',
-          { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
-        ).then(result => {
-          if (result.failed.length > 0) {
-            toast.push('error', `${tt('baseFailed')}: ${result.failed.map(row => `${row.file} — ${row.error}`).join('; ')}`)
-          } else {
-            toast.push('success', tt('baseDone', { label: result.written[0]?.label ?? '' }))
-          }
-        })
-      : api<{
-          converted: number
-          empty: number
-          written: readonly { file: string, label: string }[]
-          failed: readonly { file: string, table: string | null, error: string }[]
-        }>('base-convert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
-        .then(result => {
-          // Пустые строки называются отдельно от сбоев: первые — факт о содержимом
-          // базы, вторые — то, что не далось. Одно число скрыло бы разницу.
-          const summary = tt('baseConvertDone', { n: result.converted })
-          const extra = result.empty > 0 ? ` · ${tt('baseConvertEmpty', { n: result.empty })}` : ''
-          if (result.failed.length > 0) {
-            const detail = result.failed.map(row => `${row.table ?? row.file} — ${row.error}`).join('; ')
-            toast.push('error', `${summary}${extra} · ${tt('baseFailed')}: ${detail}`)
-          } else {
-            toast.push('success', `${summary}${extra}`)
-          }
-        })
-    void call
-      .catch((runError: Error) => { toast.push('error', runError.message) })
-      .then(async () => { setSnapshot(await api<RegistrySnapshot>('registry')) })
-      .finally(() => { setBusy(false) })
-  }
+  const baseStateText = baseKind === 'convert'
+    ? tt('baseStateConvert')
+    : baseKind === 'repair' ? tt('baseStateRepair') : tt('baseStateOk')
+
+  /**
+   * Цвет сообщения: у беды два оттенка — ремонт обычный, конвертация жирная, потому
+   * что за ней стоит смена языка, а не только правка строк. Порядок в порядке
+   * зелёный: это не тревога, а ответ «делать нечего».
+   */
+  const baseStateClass = baseKind === 'ok'
+    ? styles.baseStateGood
+    : baseKind === 'convert' ? styles.baseStateAlarm : styles.baseStateBad
 
   /** Первое из трёх событий открывает окно; следующие его не продлевают. */
   const beginWindow = (): void => { setStartedAt(current => current ?? Date.now()) }
@@ -3665,10 +3774,19 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
     beginWindow()
   }
 
-  /** Предохранитель: снятие — тоже событие окна, постановка обратно окно не отменяет. */
-  const toggleGuard = (checked: boolean): void => {
-    setGuard(checked ? 'on' : 'off')
-    if (!checked) beginWindow()
+  /**
+   * Замок: пока он закрыт, ни выбор языка, ни починка не срабатывают.
+   *
+   * При смене языка снятие замка — ещё и первое событие окна: человек открыл дорогу к
+   * выбору, дальше он выбирает язык, и только тогда оживает «Выполнить».
+   *
+   * При ремонте окна нет вовсе (решение 22.10): починка не меняет ни язык, ни модель,
+   * это правка строк в тех же самых базах. Охраняет её один замок — снят, значит можно
+   * нажимать; отсчёт, который через полминуты запер бы кнопку, здесь только мешал бы.
+   */
+  const toggleLock = (next: boolean): void => {
+    setLocked(next)
+    if (!next && baseKind === 'convert') beginWindow()
   }
 
   /** Причина отказа сервера — словами: код отказа человеку ничего не говорит. */
@@ -3678,15 +3796,16 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
       : reason === 'not-a-code' ? tt('palaceChangeReasonCode') : tt('palaceChangeReasonStart')
 
   /**
-   * Смена языка собранным условием: язык + снятый предохранитель + нажатие, всё в окне.
+   * Смена языка собранным условием: снят замок + выбран другой язык + нажатие, всё в окне.
    *
    * Язык, метки и пересчёт уходят одним запросом: сервер проверяет окно и только потом
    * пишет настройку, ставит метки и пересчитывает векторы. Разделять это на три запроса
    * значило бы оставить состояния «язык уже новый, базы ещё старые» без присмотра.
+   *
+   * Без смены языка кнопка не работает вовсе: пересчёт идёт только вместе с языком.
    */
   const applyChange = (): void => {
-    if (busy || guard === 'on') return
-    if (!languageChanged) { run(); return }
+    if (busy || locked || !languageChanged) return
     if (startedAt === null || left <= 0) return
     const started = startedAt
     setBusy(true)
@@ -3714,199 +3833,630 @@ function RegistryCard({ t, overlayHost, onTestPanel }: {
         }))
         setPending(null)
         setStartedAt(null)
-        setGuard('on')
+        setLocked(true)
         setSnapshot(await api<RegistrySnapshot>('registry'))
       })
       .catch((changeError: Error) => { toast.push('error', changeError.message) })
       .finally(() => { setBusy(false) })
   }
 
+  /**
+   * Починка баз: всё, что можно поправить без смены языка и модели.
+   *
+   * Два запроса, а не один, потому что это два разных дела: сначала метки моделей
+   * (маршрут `base-label` — он пишет строку только тем базам, которым она нужна),
+   * потом пересчёт строк с пустыми и неправильными векторами (`base-convert`). Окно и
+   * выбор языка здесь не участвуют вовсе: ни настройка, ни модель не меняются, а
+   * охраняет нажатие один замок.
+   *
+   * Порядок именно такой: метка говорит, на какой модели стоит база, и пересчёт,
+   * начатый раньше неё, считал бы по догадке.
+   *
+   * Отказ сервера не прячется за словом «готово»: обе ручки возвращают списки `failed`,
+   * и сервер умеет отказать целиком с кодом 200 — когда, например, модель эмбеддингов
+   * ещё не поднялась. Раньше панель смотрела только на числа и говорила «починено» при
+   * нулях; человек видел мгновенный тост, а база оставалась с дырками. Теперь сначала
+   * называются отказы, и только если их нет — итог по числам.
+   */
+  const repairBases = (): void => {
+    if (busy || locked) return
+    setBusy(true)
+    const steps: string[] = []
+    const began = Date.now()
+    setLastRepair(tt('baseRepairRunning'))
+    // Аргументов у обеих ручек нет: всё, что им нужно, они берут из настроек. Заголовок
+    // JSON подставляет сам `api` — у него это правило для всех POST.
+    const post = { method: 'POST' } as const
+    void api<BaseRepairPart>('base-label', post)
+      .then(async (labels) => {
+        steps.push(`base-label: меток ${labels.written.length}, отказов ${labels.failed.length}`)
+        const convert = await api<BaseRepairPart>('base-convert', post)
+        steps.push(`base-convert: пересчитано ${convert.converted ?? 0}, отказов ${convert.failed.length}`)
+        const failures = [...labels.failed, ...convert.failed]
+        const written = labels.written.length
+        const converted = convert.converted ?? 0
+        // Держим итог на экране: тост уходит через секунды, а разбираться приходится
+        // потом. Длительность тоста — на случай, если человек смотрит не в панель.
+        if (failures.length > 0) {
+          const first = failures.map(row => row.error ?? '').find(text => text !== '') ?? ''
+          steps.push(first === '' ? `отказов ${failures.length}` : first)
+          toast.push('error', tt('baseRepairFailed', {
+            error: first === '' ? tt('baseRepairFailedCount', { n: failures.length }) : first,
+          }), TOAST_LONG_MS)
+        } else if (written === 0 && converted === 0) {
+          // Сервер не назвал ни одной ошибки, но и не сделал ничего. Молчать об этом
+          // нельзя: для человека это выглядит как «кнопка не работает».
+          steps.push('ничего не сделано')
+          toast.push('warning', tt('baseRepairNothing'), TOAST_LONG_MS)
+        } else {
+          toast.push('success', tt('baseRepairDone', { labels: written, converted }), TOAST_LONG_MS)
+        }
+        steps.push(`${((Date.now() - began) / 1000).toFixed(1)} с`)
+        setLastRepair(tt('baseRepairTrace', { steps: steps.join(' → ') }))
+        setSnapshot(await api<RegistrySnapshot>('registry'))
+      })
+      .catch((repairError: Error) => {
+        steps.push(`ошибка: ${repairError.message}`)
+        setLastRepair(tt('baseRepairTrace', { steps: steps.join(' → ') }))
+        toast.push('error', tt('baseRepairFailed', { error: repairError.message }), TOAST_LONG_MS)
+      })
+      .finally(() => { setBusy(false) })
+  }
+
+  /**
+   * Языки для выбора в блоке «Язык Плагина»: те, что знает реестр языков, плюс язык
+   * панели, если его там ещё нет. Своего списка клиент не держит намеренно — иначе
+   * язык, добавленный файлом, появлялся бы на сервере, но не в выборе.
+   */
+  const pluginLanguageOptions = languages.some(row => row.code === dictLanguage)
+    ? languages
+    : [...languages, { code: dictLanguage, label: dictLanguage.toUpperCase(), builtin: false }]
+
+  /**
+   * «Открыть словарь» — только для языков, которые приходят словарём из файла. У zh и
+   * en текст вшит в код: правка файлом их не перекрывает, и кнопка открыла бы таблицу,
+   * которая ничего не меняет.
+   */
+  const canOpenDictionary = languages.some(row => row.code === dictLanguage && !row.builtin)
+
+  /** Есть ли непереведённые строки: «заполнено» меньше, чем «всего строк». */
+  const dictIncomplete = dictStats !== null && dictStats.some(stat => dictFilledOf(stat.view) < stat.view.rows.length)
+
+  /**
+   * Языки, для которых «Создать словарь» имеет смысл: их объявляют модели реестра,
+   * у них нет вшитого набора (файлом его не перекрыть) и нет файла словаря — заведение
+   * поверх стёрло бы правки в пользовательском слое.
+   *
+   * Список — из моделей, а не из реестра языков: язык, которого модель не знает,
+   * считался бы ею вслепую, и словарь для него был бы пустой работой.
+   */
+  const createOptions = ((): readonly { readonly code: string, readonly label: string }[] => {
+    const builtin = new Set(languages.filter(row => row.builtin).map(row => row.code))
+    const known = new Set(snapshot.dictionaryLanguages ?? [])
+    return [...new Set(snapshot.models.flatMap(row => row.languages ?? []))]
+      .filter(code => !builtin.has(code) && !known.has(code))
+      .map(code => ({ code, label: languageLabel(code, languages, lang) }))
+      .sort((left, right) => left.label.localeCompare(right.label, lang))
+  })()
+
+  /** Язык из списка: подпись — то, что человек видит и набирает. */
+  const createCode = createOptions.find(row => row.label === createLanguage)?.code
+
+  /** Заводить словарь можно ровно тому языку, который предложен в списке. */
+  const canCreateDictionary = createCode !== undefined
+
+  /** Язык диалогов с агентом: у сессии без реплик его ещё нет. */
+  const dialogueLabel = snapshot.palace?.dialogue == null
+    ? tt('palaceDialogueNone')
+    : snapshot.palace.dialogue.toUpperCase()
+
+  /** Язык, на котором стоят базы по меткам. */
+  const basesLabel = snapshot.palace?.bases == null
+    ? tt('palaceBasesNone')
+    : snapshot.palace.bases === 'mixed' ? tt('palaceBasesMixed') : snapshot.palace.bases.toUpperCase()
+
+  /**
+   * Метки языков у модели. Привязка `*` означает «все языки без явной привязки» — она
+   * и есть метка этой модели, поэтому показывается словом, а не звёздочкой.
+   */
+  const languagesOfModel = (modelId: string): string => {
+    const bound = snapshot.bindings.filter(row => row.model === modelId)
+    if (bound.length === 0) return tt('registryNone')
+    return bound.map(row => row.language === '*'
+      ? tt('registryAllLanguages')
+      : languages.find(option => option.code === row.language)?.label ?? row.language.toUpperCase())
+      .join(' · ')
+  }
+
+  /**
+   * Завести словарь выбранного справа языка и сразу открыть его — то же, что «Открыть
+   * словарь», только для только что созданного языка.
+   *
+   * Открытие — не любезность: файл заводится пустым (формат не хранит строку без
+   * перевода), и единственное, что человек может с ним сделать, — заполнять строки в
+   * таблице. Поэтому за созданием сразу идёт таблица этого языка, а блок «Язык Плагина»
+   * переключается на него же: иначе открытая таблица и подписи блока говорили бы о
+   * разных языках.
+   */
+  const createDictionary = (): void => {
+    const code = createCode
+    if (code === undefined) return
+    void api<{ ok: boolean, written: readonly { set: string, file: string, lines: number, bytes: number }[] }>(
+      'dictionary-create',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ language: code }) },
+    )
+      .then(async answer => {
+        toast.push('success', tt('dictCreateDone', { files: answer.written.map(row => baseName(row.file)).join(', ') }))
+        // Язык из списка уходит: словарь у него теперь есть. Поле очищаем, чтобы не
+        // показывать выбор, которого больше нет, а снимок перечитываем — список языков
+        // без словаря приходит с сервера, а не считается по памяти панели.
+        setCreateLanguage('')
+        setDictLanguage(code)
+        setDictionaryOpen(true)
+        setSnapshot(await api<RegistrySnapshot>('registry'))
+        setDictReload(value => value + 1)
+      })
+      .catch((cause: Error) => { toast.push('error', tt('dictCreateFailed', { error: cause.message })) })
+  }
+
   return (
-    <div>
-      <div className={styles.sectionHead}>
-        <h4 className={styles.sectionTitle}>{tt('registryTitle')}</h4>
-        <span className={styles.sectionHint}>{tt('registryHint')}</span>
-        {onTestPanel === undefined ? null : (
-          <button type="button" className={`${styles.button} ${styles.sectionAction}`}
-            onClick={onTestPanel}>{tt('panelTestOpen')}</button>
-        )}
-      </div>
-
-      <dl className={styles.regKV}>
-        <dt>{tt('registryResolved')}</dt>
-        <dd>
-          {resolvedLabel}
-          {' · '}
-          <span className={styles.regMono}>{tt('registryModelLocale')} — {currentLanguage.toUpperCase()}</span>
-        </dd>
-      </dl>
-
-      {/* Язык дворца: смена языка и пересчёт баз — одно собранное условие. Выбор здесь
-          ничего не пишет: он только открывает окно, а записывает язык «Выполнить». */}
-      <div className={styles.regGroup}>
-        <span className={styles.regGroupTitle}>{tt('palaceChangeTitle')}</span>
-        <p className={styles.regNote}>{tt('palaceChangeHint', { seconds: windowSec })}</p>
-        <div className={styles.palaceChangeRow}>
-          <select className={`${styles.input} ${styles.regLang}`} value={chosenLanguage}
-            aria-label={tt('palaceChangeTitle')}
-            onChange={event => { pickLanguage(event.target.value) }}>
-            {languageOptions.map(row => (
-              <option key={row.code} value={row.code}>{row.label}</option>
-            ))}
-          </select>
-          <label className={styles.regGuard}>
-            <input type="checkbox" checked={guard === 'on'}
-              onChange={event => { toggleGuard(event.target.checked) }} />
-            <span>{guard === 'on' ? tt('guardArmed') : tt('guardDisarmed', { seconds: left })}</span>
-          </label>
-          <button type="button" className={`${styles.button} ${styles.primary}`}
-            disabled={busy || guard === 'on' || (languageChanged ? (startedAt === null || left <= 0) : todo === 'none')}
-            onClick={applyChange}>
-            {busy ? tt('baseRunBusy') : tt('baseRun')}
-          </button>
-        </div>
-        {languageChanged && (
-          <p className={styles.regNote}>
-            {tt('palaceChangeLeft', { seconds: left })}
-            {' · '}
-            {guard === 'on' ? tt('palaceChangeNeedFuse') : ''}
-          </p>
-        )}
-        {/* Что именно произойдёт — одной строкой рядом с кнопкой: «Выполнить» без
-            объяснения не говорит, что за ним стоит. */}
-        <p className={styles.regActionNote}>
-          {languageChanged ? tt('baseActionConvert') : actionText}
-        </p>
-      </div>
-      {/* Разошлись настройка и живой процесс — говорим об этом прямо: иначе человек
-          решит, что выбор не сработал, хотя он записан и ждёт перезапуска. */}
-      {chosenLanguage !== snapshot.language && (
-        <p className={styles.regNote}>{tt('palacePending', { running: snapshot.language.toUpperCase() })}</p>
-      )}
-      {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
-
-      <div className={styles.regGroup}>
-        <span className={styles.regGroupTitle}>{tt('baseTitle')}</span>
-        {snapshot.bases.length === 0
-          ? <p className={styles.regNote}>{tt('baseNoSchema')}</p>
-          : (
-            <table className={styles.regTable}>
-              <thead>
-                <tr>
-                  <th>{tt('baseColBase')}</th>
-                  <th>{tt('baseColState')}</th>
-                  <th>{tt('baseColRows')}</th>
-                  <th>{tt('baseColMissing')}</th>
-                  <th>{tt('baseColForeign')}</th>
-                  <th>{tt('baseColDims')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snapshot.bases.map(base => (
-                  <tr key={base.file}>
-                    <td className={styles.regMono} title={base.file}>{base.title ?? base.file}</td>
-                    <td>{base.state === null ? tt('baseStateUnchecked') : tt(BASE_STATE_KEY[base.state] ?? 'baseStateUnchecked')}</td>
-                    <td>{base.rows}</td>
-                    <td>{base.missing}</td>
-                    <td>{base.foreign}</td>
-                    <td className={styles.regMono}>{base.dims.length === 0 ? tt('registryNone') : base.dims.join(' · ')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <>
+      {/* Блок первый: язык самой панели и служебных сообщений. Это такой же блок, как
+          «Догрузка» и «Jev», а не вложенная группа в общем разделе: у него своё имя, своя
+          рамка и тот же отступ заголовка, что у соседей по вкладке. Кнопка проверки
+          панели живёт при нём — она про язык панели, а не про базы. */}
+      <section className={styles.section}>
+        <div className={styles.sectionHead}>
+          <h4 className={styles.sectionTitle}>{tt('pluginLanguageTitle')}</h4>
+          {onTestPanel === undefined ? null : (
+            <button type="button" className={`${styles.button} ${styles.sectionAction}`}
+              onClick={onTestPanel}>{tt('panelTestOpen')}</button>
           )}
-        {snapshot.bases.some(base => !base.checked) && (
-          <ul className={styles.regBad}>
-            {snapshot.bases.filter(base => !base.checked).map(base => (
-              <li key={base.file}>
-                {base.file}: {base.problems.map(problem => `${problem.kind} — ${problem.detail}`).join('; ')}
-              </li>
-            ))}
-          </ul>
-        )}
-        {snapshot.pendingBases > 0 && (
-          <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
-        )}
-      </div>
-
-      <div className={styles.regGroup}>
-        <span className={styles.regGroupTitle}>{tt('registryModels')}</span>
-        <table className={styles.regTable}>
-          <thead>
-            <tr>
-              <th>{tt('registryColLabel')}</th>
-              <th>{tt('registryColId')}</th>
-              <th>{tt('registryColDims')}</th>
-              <th>{tt('registryColParams')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {snapshot.models.map(row => (
-              <tr key={row.id} className={row.id === snapshot.resolved?.id ? styles.on : undefined}>
-                <td>{row.label ?? tt('registryNone')}</td>
-                <td className={styles.regMono}>{row.id}</td>
-                <td>{row.dimensions ?? tt('registryNone')}</td>
-                <td>{row.pooling} · {row.dtype}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className={styles.regGroup}>
-        <span className={styles.regGroupTitle}>{tt('registryBindings')}</span>
-        <table className={styles.regTable}>
-          <tbody>
-            {snapshot.bindings.map(row => (
-              <tr key={row.language}>
-                <td className={styles.regMono}>{row.language}</td>
-                <td className={styles.regMono} title={row.model}>{modelLabel(snapshot, row.model)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className={styles.regGroup}>
-        <div className={styles.regGroupHead}>
-          <span className={styles.regGroupTitle}>{tt('registryDictionaries')}</span>
-          <button type="button" className={`${styles.button} ${styles.dictOpen}`}
-            onClick={() => { setDictionaryOpen(true) }}>
-            {tt('dictOpen')}
-          </button>
         </div>
-        {snapshot.dictionaries.map(entry => (
-          <p key={entry.name} className={styles.regNote}>
-            {entry.name === 'panel' ? tt('registryDictionaryPanel') : tt('registryDictionaryMessages')}
-            {' — '}
-            {tt('registryEntries')}: <b>{entry.entries}</b>
-            {entry.files.length > 0 && (
-              <> · {tt('registryFiles')}: <span className={styles.regMono}>{entry.files.map(baseName).join(', ')}</span></>
+        <div className={styles.panelCard}>
+            <div className={styles.palaceChangeRow}>
+              <span className={styles.regLabel}>{tt('pluginLanguageCurrent')}</span>
+              <select className={`${styles.input} ${styles.regLang}`} value={dictLanguage}
+                aria-label={tt('pluginLanguageCurrent')}
+                onChange={event => { setDictLanguage(event.target.value) }}>
+                {pluginLanguageOptions.map(row => (
+                  <option key={row.code} value={row.code}>{row.label}</option>
+                ))}
+              </select>
+              <button type="button" className={styles.button}
+                disabled={!canOpenDictionary}
+                onClick={() => { setDictionaryOpen(true) }}>{tt('dictOpenWord')}</button>
+              {/* Заведение словаря — справа, своим порядком: подпись, выбор языка, кнопка.
+                  Поле — с собственным списком, а не с `<datalist>`: родной список рисует
+                  сам браузер поверх окна, у него нет своей прокрутки, и в невысоком окне
+                  его нижние строки срезаются краем приложения. Свой список живёт в слое
+                  поверх страницы, прокручивается и сам встаёт в свободную сторону.
+                  В списке языки, которые знают модели, у которых ещё нет ни вшитого
+                  набора, ни файла словаря. */}
+              <div className={styles.rowEnd}>
+                <span className={styles.regLabel}>{tt('dictCreateTitle')}</span>
+                <LanguagePicker value={createLanguage} options={createOptions}
+                  placeholder={tt('registryColLanguage')} label={tt('dictCreateTitle')}
+                  empty={tt('dictLangNoMatch')}
+                  onChange={setCreateLanguage} />
+                <button type="button" className={styles.button}
+                  disabled={!canCreateDictionary}
+                  onClick={createDictionary}>{tt('dictCreateNew')}</button>
+              </div>
+            </div>
+            {createOptions.length === 0 && (
+              <p className={styles.regNote}>{tt('dictCreateBlocked')}</p>
             )}
-            {' · '}
-            {tt('registryProblems')}: {entry.problems.length === 0 ? tt('registryNoProblems') : entry.problems.length}
-          </p>
-        ))}
-        {snapshot.problems.length > 0 && (
-          <ul className={styles.regBad}>
-            {snapshot.problems.map((problem, index) => (
-              <li key={`${problem.file}-${String(index)}`}>
-                {baseName(problem.file)}: {problem.kind} — {problem.detail}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+            <div className={styles.regGroup}>
+              {dictError !== null && <p className={styles.regBad}>{dictError}</p>}
+              {dictStats === null
+                ? <p className={styles.regNote}>{tt('registryLoading')}</p>
+                : dictStats.map(stat => {
+                  const total = stat.view.rows.length
+                  const filled = dictFilledOf(stat.view)
+                  return (
+                    <p key={stat.set} className={styles.regNote}>
+                      {tt(stat.label)}
+                      {' — '}
+                      {tt('dictTotal', { total })}
+                      {' · '}
+                      {tt('dictFilled')}{' '}
+                      <b className={filled < total ? styles.regFilledShort : undefined}>{filled}</b>
+                      {' · '}
+                      {tt('registryFiles')}: <span className={styles.regMono}>
+                        {stat.view.files.read.length === 0 ? tt('registryNone') : stat.view.files.read.map(baseName).join(', ')}
+                      </span>
+                      {' · '}
+                      {tt('registryProblems')}: {stat.view.problems.length === 0 ? tt('registryNoProblems') : stat.view.problems.length}
+                    </p>
+                  )
+                })}
+              {dictIncomplete && <p className={styles.regIncomplete}>{tt('dictIncomplete')}</p>}
+            </div>
+        </div>
+      </section>
+
+      {/* Блок второй: язык, на котором думает дворец, и язык, на котором лежат базы.
+          Раньше это были две рамки — «Язык мыслей» и «Язык в базах»; язык у дворца
+          один, и разводить его по двум рамкам значило спрашивать одно и то же дважды. */}
+      <section className={styles.section}>
+        <div className={styles.sectionHead}>
+          <h4 className={styles.sectionTitle}>{tt('palaceLanguageTitle')}</h4>
+        </div>
+        <div className={styles.panelCard}>
+            {/* Верхняя строка — только чтение: чем дворец думает (словом), что стоит в
+                базах (буквами) и что с базами. Действия в ней нет ни одного: выбор языка
+                уехал строкой ниже и стоит справа, а предохранитель — у кнопки. */}
+            <div className={styles.palaceChangeRow}>
+              <span className={styles.regLabel}>{tt('palaceLanguageName')}</span>
+              <span className={styles.regValue}>{palaceLanguageName}</span>
+              <span className={styles.regLabel}>{tt('palaceBasesLine')}</span>
+              <span className={styles.regMono} title={tt('palaceBasesHint')}>{basesLabel}</span>
+              <span className={baseStateClass}>{baseStateText}</span>
+            </div>
+            {/* Ниже первой строки видно только то, что нужно нынешнему состоянию баз.
+                В порядке — ничего: делать нечего, и рамка сжимается до одной строки.
+                Ремонт — таблица баз и кнопка. Конвертация — всё: она одна меняет язык,
+                а он тянет за собой модель, метки и пересчёт. */}
+            {baseKind === 'convert' && (<>
+              <div className={styles.palaceChangeRow}>
+                <span className={`${styles.regLabel} ${styles.regLangPush}`}>
+                  {tt('palaceLanguageChange')}
+                </span>
+                <select className={`${styles.input} ${styles.regLang}`}
+                  value={chosenLanguage} disabled={locked}
+                  aria-label={tt('palaceLanguageChange')}
+                  onChange={event => { pickLanguage(event.target.value) }}>
+                  {languageOptions.map(row => (
+                    <option key={row.code} value={row.code}>{row.label}</option>
+                  ))}
+                </select>
+              </div>
+              <p className={styles.regNote}>{tt('palaceChangeHint', { seconds: windowSec })}</p>
+              <dl className={styles.regKV}>
+                <dt>{tt('palaceThoughtsModelLine')}</dt>
+                <dd>
+                  {currentLanguage.toUpperCase()}
+                  {' · '}
+                  <span className={styles.regMono}>{resolvedLabel}</span>
+                </dd>
+              </dl>
+              <p className={styles.regNote}>{tt('palaceThoughtsModelHint')}</p>
+              <dl className={styles.regKV}>
+                <dt>{tt('palaceDialogueLine')}</dt>
+                <dd>
+                  {dialogueLabel}
+                  <span className={styles.regHint}>{tt('palaceDialogueHint')}</span>
+                </dd>
+              </dl>
+              <table className={styles.regTable}>
+                <thead>
+                  <tr>
+                    <th>{tt('registryColLanguage')}</th>
+                    <th>{tt('registryColLabel')}</th>
+                    <th>{tt('registryColId')}</th>
+                    <th>{tt('registryColDims')}</th>
+                    <th>{tt('registryColParams')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snapshot.models.map(row => (
+                    <tr key={row.id} className={row.id === snapshot.resolved?.id ? styles.on : undefined}>
+                      <td className={styles.regMono}>{languagesOfModel(row.id)}</td>
+                      <td>{row.label ?? tt('registryNone')}</td>
+                      <td className={styles.regMono}>{row.id}</td>
+                      <td>{row.dimensions ?? tt('registryNone')}</td>
+                      <td>{row.pooling} · {row.dtype}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {snapshot.remote && <p className={styles.regNote}>{tt('registryRemote')}</p>}
+              {snapshot.problems.length > 0 && (
+                <ul className={styles.regBad}>
+                  {snapshot.problems.map((problem, index) => (
+                    <li key={`${problem.file}-${String(index)}`}>
+                      {baseName(problem.file)}: {problem.kind} — {problem.detail}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {/* Пустая строка между таблицами: модели и базы — разное, а две таблицы
+                  подряд читаются как одна. */}
+              <div className={styles.tableGap} />
+            </>)}
+            {baseKind !== 'ok' && (<>
+              {snapshot.bases.length === 0
+                ? <p className={styles.regNote}>{tt('baseNoSchema')}</p>
+                : (
+                  <table className={styles.regTable}>
+                    <thead>
+                      <tr>
+                        <th>{tt('baseColBase')}</th>
+                        <th>{tt('baseColState')}</th>
+                        <th>{tt('baseColRows')}</th>
+                        <th>{tt('baseColMissing')}</th>
+                        <th>{tt('baseColForeign')}</th>
+                        <th>{tt('baseColDims')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {snapshot.bases.map(base => (
+                        <tr key={base.file}>
+                          <td className={styles.regMono} title={base.file}>{base.title ?? base.file}</td>
+                          <td>{base.state === null ? tt('baseStateUnchecked') : tt(BASE_STATE_KEY[base.state] ?? 'baseStateUnchecked')}</td>
+                          <td>{base.rows}</td>
+                          <td>{base.missing}</td>
+                          <td>{base.foreign}</td>
+                          <td className={styles.regMono}>{base.dims.length === 0 ? tt('registryNone') : base.dims.join(' · ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              {snapshot.bases.some(base => !base.checked) && (
+                <ul className={styles.regBad}>
+                  {snapshot.bases.filter(base => !base.checked).map(base => (
+                    <li key={base.file}>
+                      {base.file}: {base.problems.map(problem => `${problem.kind} — ${problem.detail}`).join('; ')}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {snapshot.pendingBases > 0 && (
+                <p className={styles.regNote}>{tt('basePending', { n: snapshot.pendingBases })}</p>
+              )}
+            </>)}
+            {/* Кнопка одна, а дел у неё два — по состоянию баз. При ремонте она чинит
+                строки и метки, не трогая ни языка, ни модели, и охраняет её один
+                предохранитель. При конвертации она меняет язык дворца вместе с
+                пересчётом, и там к окну добавляется требование выбранного языка.
+                Предохранитель стоит здесь, перед кнопкой: он охраняет нажатие, и
+                снимают его в ту же секунду, когда собираются нажать. */}
+            {baseKind !== 'ok' && (
+              <div className={styles.baseRunRow}>
+                <label className={styles.regGuard}>
+                  <input type="checkbox" checked={locked}
+                    onChange={event => { toggleLock(event.target.checked) }} />
+                  <span>{tt('baseLock')}</span>
+                </label>
+                <button type="button" className={`${styles.button} ${styles.primary}`}
+                  disabled={busy || locked || (baseKind === 'convert'
+                    && (!languageChanged || startedAt === null || left <= 0))}
+                  onClick={baseKind === 'convert' ? applyChange : repairBases}>
+                  {busy ? tt('baseRunBusy') : tt('baseRun')}
+                </button>
+                <span className={styles.baseRunNote}>
+                  {baseKind === 'convert'
+                    ? (languageChanged ? tt('baseActionConvert') : tt('baseRunNeedLanguage'))
+                    : tt('baseActionRepair')}
+                </span>
+                {/* Оговорка про язык и модель — не продолжение пояснения, а условие
+                    задачи: поэтому она своей строкой и от левого края, а не хвостом
+                    пояснения за кнопкой. */}
+                {baseKind === 'repair' && (
+                  <span className={`${styles.baseRunNote} ${styles.baseRunScope}`}>
+                    {tt('baseActionRepairScope')}
+                  </span>
+                )}
+              </div>
+            )}
+            {/* Перехват: что вызвано и что ответил сервер при последней починке.
+                Строка переживает тост и перезагрузку не переживает — этого хватает,
+                чтобы разобраться, не гоняя по кругу одно и то же нажатие. */}
+            {baseKind === 'repair' && lastRepair !== null && (
+              <p className={styles.baseRunTrace}>{lastRepair}</p>
+            )}
+            {baseKind === 'convert' && languageChanged && (
+              <p className={styles.regNote}>
+                {tt('palaceChangeLeft', { seconds: left })}
+                {locked ? ` · ${tt('palaceChangeNeedAllow')}` : ''}
+              </p>
+            )}
+            {/* Разошлись настройка и живой процесс — говорим об этом прямо: иначе человек
+                решит, что выбор не сработал, хотя он записан и ждёт перезапуска. */}
+            {baseKind === 'convert' && chosenLanguage !== snapshot.language && (
+              <p className={styles.regNote}>{tt('palacePending', { running: snapshot.language.toUpperCase() })}</p>
+            )}
+        </div>
+      </section>
 
       {dictionaryOpen && (
-        <DictionaryEditor tt={tt} host={overlayHost} toast={toast} onClose={() => { setDictionaryOpen(false) }} />
+        <DictionaryEditor tt={tt} host={overlayHost} toast={toast} language={dictLanguage}
+          onClose={() => { setDictionaryOpen(false) }} />
       )}
-    </div>
+    </>
   )
 }
 
 /** Наборы словаря: имена те же, что на сервере (см. src/i18n/dictionary-terms.ts). */
 type DictionarySetName = 'panel' | 'messages'
+
+/** Где на экране встал открытый список языка: считаем от поля, а не от разметки. */
+interface PickerBox {
+  readonly left: number
+  readonly width: number
+  readonly maxHeight: number
+  /** Сверху от поля или снизу: прижат к своей стороне, чтобы расти от поля. */
+  readonly below: boolean
+  readonly top: number
+  readonly bottom: number
+}
+
+/**
+ * Поле выбора языка со своим списком.
+ *
+ * Родной `<datalist>` здесь не годится по двум причинам, обе видны на невысоком окне:
+ * список рисует сам браузер отдельным окном поверх приложения — у него нет своей
+ * прокрутки, и его обрезает край окна DSH. Свой список рисуется в слое поверх страницы
+ * (`position: fixed` + портал в `body`): он не подчиняется прокрутке панели, сам
+ * ограничивает высоту по свободному месту и встаёт над полем, если снизу места нет.
+ *
+ * Поиск — тот же, что был у `datalist`: набранный текст отсеивает строки по подписи и
+ * по коду языка, а пустое поле показывает весь список.
+ */
+function LanguagePicker({ value, options, placeholder, label, empty, onChange }: {
+  readonly value: string
+  readonly options: readonly { readonly code: string, readonly label: string }[]
+  readonly placeholder: string
+  readonly label: string
+  /** Что сказать, когда под набранный текст ничего не подошло. */
+  readonly empty: string
+  readonly onChange: (text: string) => void
+}): React.ReactElement {
+  const fieldRef = useRef<HTMLInputElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const [open, setOpen] = useState(false)
+  /** Строка, на которой стоит клавиатура: −1 — ни на какой. */
+  const [active, setActive] = useState(-1)
+  const [box, setBox] = useState<PickerBox | null>(null)
+
+  const shown = useMemo(() => {
+    const query = value.trim().toLowerCase()
+    if (query === '') return options
+    return options.filter(row => row.label.toLowerCase().includes(query) || row.code.toLowerCase().includes(query))
+  }, [options, value])
+
+  /**
+   * Поставить список у поля.
+   *
+   * Высота — по свободному месту: снизу его больше — список идёт вниз, меньше — вверх.
+   * Совсем тесное окно всё равно оставляет список прокручиваемым (96px), иначе выбор
+   * языка пропадал бы именно там, где он нужнее всего. Ширина — не уже поля, но и не
+   * за краем окна: у правого края список сдвигается влево, а не вылезает наружу.
+   */
+  const place = useCallback((): void => {
+    const field = fieldRef.current
+    if (field === null) return
+    const rect = field.getBoundingClientRect()
+    const viewportW = window.innerWidth
+    const viewportH = window.innerHeight
+    const gap = 6
+    const free = viewportH - rect.bottom - gap - 8
+    const freeAbove = rect.top - gap - 8
+    const below = free >= freeAbove || freeAbove < 160
+    const room = Math.max(96, Math.min(320, below ? free : freeAbove))
+    const width = Math.max(rect.width, 200)
+    const left = Math.max(8, Math.min(rect.left, viewportW - width - 8))
+    setBox({
+      left,
+      width,
+      maxHeight: room,
+      below,
+      top: rect.bottom + gap,
+      bottom: viewportH - rect.top + gap,
+    })
+  }, [])
+
+  // Открытый список следит за полем: прокрутка панели и смена размера окна двигают его,
+  // и список обязан ехать вместе с полем, а не висеть на прежнем месте.
+  useEffect(() => {
+    if (!open) return undefined
+    place()
+    const onMove = (): void => { place() }
+    window.addEventListener('resize', onMove)
+    window.addEventListener('scroll', onMove, true)
+    return () => {
+      window.removeEventListener('resize', onMove)
+      window.removeEventListener('scroll', onMove, true)
+    }
+  }, [open, place])
+
+  // Щелчок мимо поля и мимо списка закрывает список: так же ведёт себя любой выбор.
+  useEffect(() => {
+    if (!open) return undefined
+    const onDown = (event: MouseEvent): void => {
+      const target = event.target as Node
+      if (fieldRef.current?.contains(target) === true) return
+      if (listRef.current?.contains(target) === true) return
+      setOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => { window.removeEventListener('mousedown', onDown) }
+  }, [open])
+
+  // Новая порция строк — клавиатура встаёт на первую: иначе она указывала бы в пустоту.
+  useEffect(() => { setActive(shown.length === 0 ? -1 : 0) }, [shown])
+
+  // Выбранная строка должна быть видна: список прокручивается под клавиатуру.
+  useEffect(() => {
+    if (!open || active < 0) return
+    const node = listRef.current?.querySelector<HTMLElement>(`[data-index='${String(active)}']`)
+    node?.scrollIntoView({ block: 'nearest' })
+  }, [open, active])
+
+  const pick = (code: string): void => {
+    const row = shown.find(item => item.code === code)
+    if (row === undefined) return
+    onChange(row.label)
+    setOpen(false)
+    fieldRef.current?.focus()
+  }
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!open) {
+        setOpen(true)
+        return
+      }
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      const next = Math.min(Math.max(active + step, 0), shown.length - 1)
+      setActive(next)
+      return
+    }
+    if (event.key === 'Enter') {
+      if (!open || active < 0) return
+      const row = shown[active]
+      if (row === undefined) return
+      event.preventDefault()
+      pick(row.code)
+      return
+    }
+    if (event.key === 'Escape' && open) {
+      event.preventDefault()
+      setOpen(false)
+    }
+  }
+
+  const list = open && box !== null
+    ? createPortal(
+      <div ref={listRef} className={styles.dictLangList} role="listbox" aria-label={label}
+        style={{
+          left: box.left,
+          width: box.width,
+          maxHeight: box.maxHeight,
+          ...(box.below ? { top: box.top } : { bottom: box.bottom }),
+        }}>
+        {shown.length === 0
+          ? <p className={styles.dictLangEmpty}>{empty}</p>
+          : shown.map((row, index) => (
+            <button key={row.code} type="button" role="option" aria-selected={index === active}
+              data-index={index} data-active={index === active}
+              className={styles.dictLangOption}
+              onMouseEnter={() => { setActive(index) }}
+              onClick={() => { pick(row.code) }}>
+              <span>{row.label}</span>
+              <span className={styles.dictLangOptionCode}>{row.code}</span>
+            </button>
+          ))}
+      </div>,
+      document.body,
+    )
+    : null
+
+  return (
+    <span className={styles.dictLangField}>
+      <input ref={fieldRef} type="text" className={`${styles.input} ${styles.dictLangInput}`}
+        value={value} placeholder={placeholder} aria-label={label}
+        role="combobox" aria-expanded={open}
+        onChange={event => { onChange(event.target.value); setOpen(true) }}
+        onFocus={() => { setOpen(true) }}
+        onKeyDown={onKeyDown} />
+      {list}
+    </span>
+  )
+}
 
 /** Строка таблицы правки (ответ GET /api/engram/dictionary). */
 interface DictionaryRowView {
@@ -3927,6 +4477,28 @@ interface DictionarySetView {
   readonly rows: readonly DictionaryRowView[]
   readonly files: { readonly delivery: string, readonly user: string, readonly read: readonly string[] }
   readonly problems: readonly { readonly file: string, readonly line: number, readonly kind: string, readonly detail: string }[]
+}
+
+/**
+ * Счётчик одного набора в блоке «Язык Плагина»: набор, ключ его названия и то, что
+ * прочитано с диска. Отдельный вид, потому что название берётся из словаря панели, а
+ * не приходит с сервера: сервер знает имена наборов, а не их подписи.
+ */
+interface DictStatView {
+  readonly set: DictionarySetName
+  readonly label: 'registryDictionaryMessages' | 'registryDictionaryPanel'
+  readonly view: DictionarySetView
+}
+
+/**
+ * Сколько строк набора заполнено: правая клетка непустая.
+ *
+ * Пустая клетка — не «пустой перевод», а «правки нет»: тогда показывается текст
+ * поставки или вшитый набор. Поэтому «заполнено» — это ровно те строки, у которых
+ * перевод есть, и сравнивать их надо с числом терминов набора.
+ */
+function dictFilledOf(view: DictionarySetView): number {
+  return view.rows.filter(row => row.right !== '').length
 }
 
 /**
@@ -3984,7 +4556,7 @@ const DictionaryRow = memo(function DictionaryRow({ left, value, edited, hint, p
  * (а не один запрос на весь словарь) — потому что партия это единица прогресса и то,
  * что можно прервать; повторное нажатие на кнопку останавливает заполнение.
  */
-function DictionaryEditor({ tt, host, toast, onClose }: {
+function DictionaryEditor({ tt, host, toast, onClose, language }: {
   readonly tt: (key: EngramKey, params?: Record<string, string | number>) => string
   /** Якорь оверлея (начало `.panelRoot`): экран уходит туда порталом. Сам он fixed, но якорь
    *  обязан лежать вне `.panel` — иначе собственный контекст наложения панели не даст
@@ -3992,6 +4564,11 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
   readonly host: { readonly current: HTMLDivElement | null }
   readonly toast: ToastController
   readonly onClose: () => void
+  /**
+   * Язык набора: тот, что выбран в блоке «Язык Плагина». Без него таблица показывала бы
+   * словарь текущего языка плагина, и человек правил бы не тот файл, который открыл.
+   */
+  readonly language: string
 }): React.ReactElement {
   const [set, setSet] = useState<DictionarySetName>('panel')
   const [view, setView] = useState<DictionarySetView | null>(null)
@@ -4045,14 +4622,14 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
     setDraft(new Map())
     void (async () => {
       try {
-        const data = await api<DictionarySetView>(`dictionary?set=${set}`)
+        const data = await api<DictionarySetView>(`dictionary?set=${set}&language=${encodeURIComponent(language)}`)
         if (alive) setView(data)
       } catch (cause) {
         if (alive) setError(cause instanceof Error ? cause.message : String(cause))
       }
     })()
     return () => { alive = false }
-  }, [set])
+  }, [set, language])
 
   /** Что стоит в клетке: несохранённая правка, иначе значение слоя. */
   const cell = useCallback((row: DictionaryRowView): string => draft.get(row.left) ?? row.right, [draft])
@@ -4110,7 +4687,7 @@ function DictionaryEditor({ tt, host, toast, onClose }: {
           const answer = await api<DictionarySaveResultView>('dictionary', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ set, entries: chunk }),
+            body: JSON.stringify({ set, language, entries: chunk }),
           })
           last = answer
           for (const row of chunk) sent.push(row[0])
@@ -4734,10 +5311,14 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
       {/* Первый старт: окно выбора языка дворца. Живёт здесь, а не на вкладке «Сегодня»:
           вопрос о языке — не содержимое вкладки, а то, что человек должен увидеть,
           на какой бы вкладке ни открыл панель. */}
-      {panelTest
-        ? <PalaceLanguageAsk t={t} overlayHost={overlayHost} dryRun toast={toast}
-            onClose={() => { setPanelTest(false) }} />
-        : <PalaceLanguageAsk t={t} overlayHost={overlayHost} />}
+      {/* Окно выбора языка дворца открывается только по кнопке «Тест панели».
+          Автоматически при входе в плагин его больше нет: пока язык диалогов не определён,
+          оно выскакивало при каждом открытии и закрывало собой панель. Язык дворца при этом
+          не теряется — его выставляет сама первая реплика человека (observeDialogueLanguage). */}
+      {panelTest && (
+        <PalaceLanguageAsk t={t} overlayHost={overlayHost} dryRun toast={toast}
+          onClose={() => { setPanelTest(false) }} />
+      )}
       {versionMismatch !== null && (
         <div className={styles.versionBanner} role="status">
           {t('versionMismatch', { client: CLIENT_VERSION, server: versionMismatch })}
@@ -5188,11 +5769,6 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
           {/* ops tab 是三件工具的容器，不是独立页面：去掉 PageHeader，让每个 sectionHead
               作为唯一标题层，与 library/corridor 等"单页面"tab 的视觉语言对齐。 */}
           <section className={styles.section}>
-            <div className={styles.panelCard}>
-              <RegistryCard t={t} overlayHost={overlayHost} onTestPanel={() => { setPanelTest(true) }} />
-            </div>
-          </section>
-          <section className={styles.section}>
             <div className={styles.sectionHead}>
               <h4 className={styles.sectionTitle}>{t('tabBackfill')}</h4>
               <span className={styles.sectionHint}>{t('pageHeaderBackfillSubtitle')}</span>
@@ -5201,6 +5777,9 @@ export function EngramSection({ t: hostT, workspaces, sessions }: EngramSectionP
               <HistoryBackfillCard t={t} toast={toast} />
             </div>
           </section>
+          {/* Два блока про язык стоят здесь, между «Догрузкой» и «Jev»: это такие же
+              блоки вкладки, как соседи, и их место — в общем ряду, а не над ним. */}
+          <RegistryCard t={t} overlayHost={overlayHost} lang={lang} onTestPanel={() => { setPanelTest(true) }} />
           <section className={styles.section}>
             <div className={styles.sectionHead}>
               <h4 className={styles.sectionTitle}>{t('tabJev')}</h4>

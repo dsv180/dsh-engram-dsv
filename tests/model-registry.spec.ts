@@ -160,7 +160,7 @@ describe('метка базы: язык и имя модели', () => {
     return {
       models: new Map([[
         'Xenova/m',
-        { id: 'Xenova/m', label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384 },
+        { id: 'Xenova/m', label: 'minilm-l12', pooling: 'mean', dtype: 'q8', dimensions: 384, languages: [] },
       ]]),
       bindings: new Map([['*', 'Xenova/m']]),
       defaultLanguage: 'ru',
