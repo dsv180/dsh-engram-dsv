@@ -15,7 +15,7 @@ import { nextSchedule } from '../review/sm2.ts'
 import { scorePlacard } from '../imagery/score.ts'
 import { message } from '../i18n/messages.ts'
 // 余弦相似度：store 检索与巩固聚类共享 src/vec.ts 的单一实现（维度不匹配告警一次）。
-import { cosine } from '../vec.ts'
+import { cosine, isDimensionMismatch } from '../vec.ts'
 import type {
   DecayOptions, EngramEdgeType, EngramScope, EntityDetail, EntityId, EntityListFilter,
   EntityListResult, EntityMention, EntityRecord, ExportData, FactListFilter, FactListResult,
@@ -502,6 +502,39 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     }
   }
 
+  /**
+   * 库中已有向量的维度（按浮点数个数计，不按字节）。
+   *
+   * 打开时读一次，且两张带向量的表一起读：记忆与信念彼此比较，任何一边对不上
+   * 都会让语义检索失真。库里还没有向量时维度未知——由第一次写入定下来，在那之前
+   * 没有可拒绝的东西。
+   */
+  const storedDimRow = db.prepare(`SELECT LENGTH(embedding) AS bytes FROM nodes WHERE embedding IS NOT NULL
+    UNION ALL SELECT LENGTH(embedding) AS bytes FROM observations WHERE embedding IS NOT NULL LIMIT 1`)
+    .get() as unknown as { bytes: number } | undefined
+  let storedDim = storedDimRow === undefined ? undefined : storedDimRow.bytes / Float32Array.BYTES_PER_ELEMENT
+
+  /** 降级为关键词检索的告警只打一次：同一个进程里重复刷同一句没有信息量。 */
+  let warnedDegradedRead = false
+
+  /**
+   * 放行向量入库，或拒绝并说出两边的维度。
+   *
+   * 严格而不是「能比多少算多少」：截断后的相似度仍是个像样的数字，合并决策却会
+   * 据此做出。空库由第一次写入定维；此后必须一致，换模型就要重建向量。
+   * @throws EngramError(code=EMBEDDER_DIMENSION_MISMATCH) 维度与库中不符。
+   */
+  const guardDimension = (vector: Float32Array | Uint8Array): void => {
+    const length = vector instanceof Float32Array
+      ? vector.length
+      : vector.byteLength / Float32Array.BYTES_PER_ELEMENT
+    const expected = storedDim ?? length
+    if (length !== expected || !Number.isInteger(length)) {
+      throw new EngramError('EMBEDDER_DIMENSION_MISMATCH', message('store.embedderDimensionMismatch', { expected, found: length }))
+    }
+    storedDim = length
+  }
+
   const sqlGet = db.prepare('SELECT * FROM nodes WHERE id = ?')
   const sqlInsert = db.prepare(`INSERT INTO nodes
     (id, scope, kind, content, importance, confidence, status, created_at, last_accessed_at, access_count,
@@ -666,6 +699,8 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
     sourceSessionId: string | null, embedding: Float32Array | Uint8Array | null,
     imagery: ImageryLabel | undefined, op: string,
   ): void => {
+    // 维度不符的向量连落库的机会都不给：截断比较会把两条本不可比的记录当成相似。
+    if (embedding !== null) guardDimension(embedding)
     // Float32Array 不是合法 BLOB 参数，落库前转字节视图；Uint8Array 直传。
     const stored = embedding === null
       ? null
@@ -831,24 +866,38 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       }
 
       // 道 2：向量余弦（active 且带向量的条目全量参与）。
+      // 维度不符时这一路整体降级，而不是把检索打掉：写侧已经拒绝异维向量入库，
+      // 所以走到这里只可能是「换了模型，库里还是旧模型的向量」——关键词一路照常，
+      // 结果里标记 degraded，用户仍能搜到东西，也知道语义一路没参与。
       let degraded = true
       if (queryVector !== undefined) {
-        degraded = false
-        const pool = vectorPool(query.scopes, query.rooms)
-        const ranked = pool
-          .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
-          .filter(entry => entry.sim >= MIN_COSINE)
-          .sort((a, b) => b.sim - a.sim)
-          .slice(0, RANK_POOL)
-        ranked.forEach((entry, index) => {
-          const add = 1 / (RRF_K + index + 1)
-          const existing = scores.get(entry.row.id)
-          if (existing === undefined) {
-            scores.set(entry.row.id, { score: add, via: 'vec' })
-          } else {
-            scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+        try {
+          const pool = vectorPool(query.scopes, query.rooms)
+          const ranked = pool
+            .map(row => ({ row, sim: cosine(queryVector, blobToVec(row.embedding!)) }))
+            .filter(entry => entry.sim >= MIN_COSINE)
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, RANK_POOL)
+          ranked.forEach((entry, index) => {
+            const add = 1 / (RRF_K + index + 1)
+            const existing = scores.get(entry.row.id)
+            if (existing === undefined) {
+              scores.set(entry.row.id, { score: add, via: 'vec' })
+            } else {
+              scores.set(entry.row.id, { score: existing.score + add, via: 'both' })
+            }
+          })
+          degraded = false
+        } catch (error) {
+          if (!isDimensionMismatch(error)) throw error
+          if (!warnedDegradedRead) {
+            warnedDegradedRead = true
+            console.warn(message('store.embedderDimensionMismatch', {
+              expected: storedDim ?? queryVector.length,
+              found: queryVector.length,
+            }))
           }
-        })
+        }
       }
 
       // 排序 boost：RRF 融合分之上乘 recency 与 proof 因子（权重 0 时因子恒 1，退化为纯 RRF）。
@@ -1645,6 +1694,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
       // 证据 id 去重（保留首次出现顺序）；空证据不允许建信念（调用方也应拦截，此处兜底 loud）。
       const sourceIds = [...new Set(input.sourceIds.map(String))].map(asMemoryId)
       if (sourceIds.length === 0) throw new EngramError('BAD_INPUT', message('store.observationEvidenceRequired'))
+      if (input.embedding !== undefined) guardDimension(input.embedding)
       const stored = input.embedding === undefined ? null : vecToBlob(input.embedding)
       withTransaction(() => {
         sqlObservationInsert.run(
@@ -1673,6 +1723,7 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
         ...addSourceIds.map(String),
       ])].map(asMemoryId)
       const now = Date.now()
+      if (embedding !== undefined) guardDimension(embedding)
       const stored = embedding === undefined ? null : vecToBlob(embedding)
       withTransaction(() => {
         sqlObservationUpdate.run(

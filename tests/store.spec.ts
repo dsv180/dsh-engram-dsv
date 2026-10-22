@@ -87,6 +87,23 @@ describe('EngramStore (sqlite)', () => {
     expect(result.hits.length).toBe(1)
   })
 
+  // 维度不一致不该连关键词检索一起打掉（作者对 PR #21 的要求）：旧库配新模型时
+  // 用户仍要能按词搜索，并被明确告知语义一路没参与；写入则照旧被拒绝。
+  it('维度不一致：检索降级为关键词并标记 degraded，写入被拒绝', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: 'alpha 512', embedding: new Float32Array(512).fill(0.1) })
+    const result = await store.search({ text: 'alpha', scopes: ['user'] }, new Float32Array(384).fill(0.1))
+    expect(result.degraded).toBe(true)
+    expect(result.hits).toHaveLength(1)
+    expect(result.hits[0]!.via).toBe('fts')
+
+    await expect(store.write({
+      scope: 'user',
+      kind: 'fact',
+      content: '新模型写旧库',
+      embedding: new Float32Array(384).fill(0.1),
+    })).rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+  })
+
   it('向量道与 FTS 道融合，via=both 且 degraded=false', async () => {
     await store.write({ scope: 'user', kind: 'fact', content: 'alpha 内容说明', embedding: new Float32Array(512).fill(0.1) })
     const vec = new Float32Array(512).fill(0.1)
@@ -101,6 +118,17 @@ describe('EngramStore (sqlite)', () => {
     const vec = new Float32Array(512).fill(-0.4)
     const result = await store.search({ text: '量子纠缠', scopes: ['user'] }, vec)
     expect(result.hits).toHaveLength(0)
+  })
+
+  it('维度由第一次写入定下：异维向量拒收，异维查询也拒收', async () => {
+    await store.write({ scope: 'user', kind: 'fact', content: '第一条带向量的记忆', embedding: new Float32Array(384).fill(0.1) })
+    // 换模型后写进来的向量与库中不可比：拒绝写入，而不是截断之后当成相似。
+    await expect(store.write({ scope: 'user', kind: 'fact', content: '换了模型的向量', embedding: new Float32Array(512).fill(0.1) }))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+    await expect(store.nearestNeighbor(new Float32Array(512).fill(0.1)))
+      .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
+    const same = await store.write({ scope: 'user', kind: 'fact', content: '同维度的写回', embedding: new Float32Array(384).fill(0.1) })
+    expect(same.id).toBeTruthy()
   })
 
   it('update 建立 supersedes 链且旧条目退出检索', async () => {

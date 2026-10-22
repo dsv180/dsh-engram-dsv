@@ -27,7 +27,7 @@ import type { EngramLanguage } from './i18n/language.ts'
 import { message, messageIn, setMessageLanguage } from './i18n/messages.ts'
 import { setExtraRedactWords } from './i18n/patterns.ts'
 import { roomLabel } from './i18n/rooms.ts'
-import { createLocalEmbedder } from './embedder/local.ts'
+import { createEmbedder } from './embedder/select.ts'
 import type { EngramEmbedder } from './embedder/interface.ts'
 import { FINAL_INGEST_TIMEOUT_MS, ensureSessionSummary, ingestFinalTurn, ingestPreviousTurn, ingestWriteRouting, lastTurnNumber, replayPendingIngests } from './ingest/hook.ts'
 import { estimateHistoryBackfill, runHistoryBackfill } from './ingest/history.ts'
@@ -623,7 +623,8 @@ export function apply(ctx: Context, config: EngramConfig = {}): void {
     cwd === undefined ? openStore('project') : openStoreForProjectCwd(cwd)
 
   // 嵌入器可选：下载/加载失败不阻塞插件加载，检索降级纯关键词并在结果中标记。
-  const embedder: Promise<EngramEmbedder | undefined> = createLocalEmbedder(resolved.modelCacheDir, resolved.hfEndpoint)
+  // 后端由配置选择：本地离线模型或 OpenAI 兼容端点。
+  const embedder: Promise<EngramEmbedder | undefined> = createEmbedder(resolved)
     .catch((error: unknown) => {
       console.warn(message('core.warnEmbedderUnavailable'), error)
       return undefined

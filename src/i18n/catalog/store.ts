@@ -54,6 +54,15 @@ export const zh = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': '嵌入模型下载/加载失败；检索已降级为纯关键词模式，可检查网络后重试',
+  'store.embedderDimensionMismatch': '嵌入向量维度不一致：库里是 {expected} 维，嵌入器给出 {found} 维。比较与写入直接拒绝，而不是逐维截断——请把模型改回去，或用新模型重建库中向量',
+
+  // —— embedder/remote.ts ——
+  'store.embedderRemoteUnreachable': '嵌入端点不可达（{baseUrl}，超时 {timeoutMs} 毫秒）',
+  'store.embedderRemoteHttp': '嵌入端点返回 HTTP {status}{detail}',
+  'store.embedderRemoteBody': '嵌入端点的响应不是可解析的 JSON',
+  'store.embedderRemoteCount': '嵌入端点返回 {received} 个向量，而本次请求为 {expected} 个',
+  'store.embedderRemoteCountNa': '非数组',
+  'store.embedderRemoteEmpty': '嵌入端点返回了空向量',
 
   // —— retrieve/budget.ts ——
   'store.budgetDropped': '（另有 {count} 条未展示：缩小查询范围或降低 limit 后重试）',
@@ -105,6 +114,15 @@ export const en = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'embedding model download/load failed; retrieval has degraded to keyword-only mode — check the network and retry',
+  'store.embedderDimensionMismatch': 'embedding dimension mismatch: the store holds {expected}-dimensional vectors, the embedder returned {found}. Comparison and writes are refused instead of being silently truncated — switch the model back, or re-embed the store with the new one',
+
+  // —— embedder/remote.ts ——
+  'store.embedderRemoteUnreachable': 'embedding endpoint unreachable ({baseUrl}, timeout {timeoutMs} ms)',
+  'store.embedderRemoteHttp': 'embedding endpoint returned HTTP {status}{detail}',
+  'store.embedderRemoteBody': 'embedding endpoint returned a body that is not parseable JSON',
+  'store.embedderRemoteCount': 'embedding endpoint returned {received} vectors instead of the requested {expected}',
+  'store.embedderRemoteCountNa': 'not an array',
+  'store.embedderRemoteEmpty': 'embedding endpoint returned an empty vector',
 
   // —— retrieve/budget.ts ——
   'store.budgetDropped': '({count} more not shown: narrow the query or lower the limit and retry)',
@@ -156,6 +174,15 @@ export const ru = {
 
   // —— embedder/local.ts ——
   'store.embedderDownloadFailed': 'Не удалось скачать/загрузить модель эмбеддингов; поиск переведён в режим только по ключевым словам — проверьте сеть и повторите',
+  'store.embedderDimensionMismatch': 'размерность векторов не совпадает: в базе {expected} измерений, эмбеддер вернул {found}. Сравнение и запись отвергаются, а не усекаются молча — верните прежнюю модель или пересчитайте векторы новой',
+
+  // —— embedder/remote.ts ——
+  'store.embedderRemoteUnreachable': 'эндпоинт эмбеддингов недоступен ({baseUrl}, таймаут {timeoutMs} мс)',
+  'store.embedderRemoteHttp': 'эндпоинт эмбеддингов вернул HTTP {status}{detail}',
+  'store.embedderRemoteBody': 'эндпоинт эмбеддингов вернул тело, которое не удалось разобрать как JSON',
+  'store.embedderRemoteCount': 'эндпоинт эмбеддингов вернул {received} векторов вместо запрошенных {expected}',
+  'store.embedderRemoteCountNa': 'не массив',
+  'store.embedderRemoteEmpty': 'эндпоинт эмбеддингов вернул пустой вектор',
 
   // —— retrieve/budget.ts ——
   'store.budgetDropped': '(ещё {count} не показано: сузьте запрос или уменьшите limit и повторите)',
