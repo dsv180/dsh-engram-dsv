@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loadMessageDictionary, readDictionaryLayer } from '../src/i18n/dictionary-file.ts'
-import { applyDictionaryPatch, entriesFromRequest, readDictionarySet, writeDictionarySet } from '../src/i18n/dictionary-edit.ts'
+import { applyDictionaryPatch, entriesFromRequest, layerOverrides, readDictionarySet, writeDictionarySet } from '../src/i18n/dictionary-edit.ts'
 import { splitDictionaryPatch } from '../src/i18n/dictionary-limits.ts'
 import { isDictionarySet, panelTwinTerms } from '../src/i18n/dictionary-terms.ts'
 import { messageVocabulary } from '../src/i18n/messages.ts'
@@ -145,13 +145,18 @@ describe('запись идёт в пользовательский слой и 
     expect(loaded.problems).toEqual([])
   })
 
-  it('пустое значение снимает правку, а не пишет пустую строку', async () => {
+  it('пустая правка снимает строку, а не оставляет её без перевода', async () => {
+    // Пустая клетка панели значит «снять правку»: наложение убирает строку из слоя,
+    // и в файл она уже не попадает. Это и есть отличие от заготовки: там пустая
+    // правая часть — значимая строка (см. отдельный набор проверок ниже).
     const roots = await makeRoots({ user: { 'ru.txt': `${TERM}\tСтарая правка\n` } })
+    const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
+    const current = layerOverrides(readDictionaryLayer(userFile, { keepEmptyRight: true }))
     const result = writeDictionarySet({
       set: 'messages',
       language: 'ru',
       ...roots,
-      entries: new Map([[TERM, '']]),
+      entries: applyDictionaryPatch(current, new Map([[TERM, '']])),
     })
     expect(result.written).toBe(0)
     const written = await readFile(result.file, 'utf8')
@@ -215,7 +220,7 @@ describe('правки накладываются на слой, а не зам�
     const roots = await makeRoots({ user: { 'ru.txt': `${TERM}\tПервая правка\n` } })
     const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
     // Как это делает маршрут: читаем текущий слой, накладываем присланные клетки, пишем.
-    const current = readDictionaryLayer(userFile).entries
+    const current = layerOverrides(readDictionaryLayer(userFile, { keepEmptyRight: true }))
     const written = writeDictionarySet({
       set: 'messages',
       language: 'ru',
@@ -232,7 +237,7 @@ describe('правки накладываются на слой, а не зам�
       user: { 'ru.txt': `${TERM}\tПервая правка\nСтрока которой нет в коде\tВторая правка\n` },
     })
     const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
-    const current = readDictionaryLayer(userFile).entries
+    const current = layerOverrides(readDictionaryLayer(userFile, { keepEmptyRight: true }))
     const written = writeDictionarySet({
       set: 'messages',
       language: 'ru',
@@ -242,6 +247,111 @@ describe('правки накладываются на слой, а не зам�
     const text = await readFile(written.file, 'utf8')
     expect(text).not.toContain(`${TERM}\t`)
     expect(text).toContain('Строка которой нет в коде\tВторая правка')
+  })
+})
+
+/**
+ * Заготовка словаря: файл с ключами и пустыми правыми частями.
+ *
+ * Требование пользователя дословно: «создать файл словаря с ключами и открыть его как
+ * по кнопке открыть». Поэтому проверяется не «файл создан», а «в файле лежат ключи»:
+ * открытая сразу таблица показывает термины программы в обоих случаях, и различить
+ * заготовку от пустого файла можно только по содержимому.
+ */
+describe('заготовка словаря состоит из ключей без переводов', () => {
+  it('строка без перевода пишется в файл и читается обратно как ключ', async () => {
+    const roots = await makeRoots({})
+    const result = writeDictionarySet({ set: 'messages', language: 'ru', ...roots, entries: new Map([[TERM, '']]) })
+    expect(result.written).toBe(1)
+    // Формат: ключ, табуляция, пустая правая часть — строка значимая, а не пустая.
+    expect(await readFile(result.file, 'utf8')).toContain(`${TERM}\t`)
+    // Претензий нет: в слое человека строка без перевода — не дефект файла.
+    const loaded = loadMessageDictionary({ language: 'ru', ...roots })
+    expect(loaded.problems).toEqual([])
+    expect(loaded.keys.has(TERM)).toBe(true)
+    // Показать при этом нечего: сообщение остаётся английским, а не пустым.
+    expect(loaded.entries.has(TERM)).toBe(false)
+  })
+
+  it('заготовка на весь набор: все ключи программы и ни одного перевода', async () => {
+    const roots = await makeRoots({})
+    const terms = messageVocabulary()
+    const blank = new Map(terms.map(term => [term, ''] as const))
+    const result = writeDictionarySet({ set: 'messages', language: 'ru', ...roots, entries: blank })
+    expect(result.written).toBe(new Set(terms).size)
+    const view = readDictionarySet({ set: 'messages', language: 'ru', ...roots })
+    expect(view.problems).toEqual([])
+    // Обе величины сверки считаются независимо и сходятся у заготовки по построению.
+    expect(view.stats.program).toBe(new Set(terms).size)
+    expect(view.stats.file).toBe(new Set(terms).size)
+    // Ни одного перевода: файла поставки в этом каталоге нет, вшитого набора у ru тоже.
+    expect(view.stats.missing).toBe(view.stats.program)
+    expect(view.rows.filter(row => row.right !== '')).toEqual([])
+  })
+
+  it('сохранение одной клетки не выбрасывает из заготовки остальные ключи', async () => {
+    const roots = await makeRoots({})
+    const terms = new Set(messageVocabulary())
+    const some = [...terms].slice(0, 3)
+    writeDictionarySet({ set: 'messages', language: 'ru', ...roots, entries: new Map(some.map(term => [term, ''] as const)) })
+    const userFile = join(roots.dbDir, 'i18n', 'ru.txt')
+    const current = layerOverrides(readDictionaryLayer(userFile, { keepEmptyRight: true }))
+    const written = writeDictionarySet({
+      set: 'messages',
+      language: 'ru',
+      ...roots,
+      entries: applyDictionaryPatch(current, new Map([[some[0] ?? '', 'Перевод']])),
+    })
+    const text = await readFile(written.file, 'utf8')
+    expect(text).toContain(`${some[0] ?? ''}\tПеревод`)
+    // Соседние ключи заготовки остались в файле, хоть переводов у них и нет.
+    for (const term of some.slice(1)) expect(text).toContain(`${term}\t`)
+    expect(written.written).toBe(some.length)
+  })
+})
+
+/**
+ * Сверка ключей программы с ключами файла — то, ради чего словарь открывают.
+ *
+ * Находки считаются по смыслу, а не по числу строк: ключ без перевода уйдёт английским,
+ * строка без ключа осталась от прежней формулировки. Механика у второй находки одна —
+ * левой части нет в программе, — поэтому «ключ изменился» и «ключ удалён» различаются
+ * человеком, а не программой.
+ */
+describe('сверка программы с файлом', () => {
+  it('программа и файл считаются независимо', async () => {
+    const roots = await makeRoots({
+      shipped: { 'ru.txt': `${TERM}\tИз поставки\n` },
+      user: { 'ru.txt': `${TERM}\tИз правки\n` },
+    })
+    const view = readDictionarySet({ set: 'messages', language: 'ru', ...roots })
+    expect(view.stats.program).toBe(new Set(messageVocabulary()).size)
+    expect(view.stats.file).toBe(1)
+    // Перевод есть из правки — находки «без перевода» по этому термину нет.
+    expect(view.stats.missing).toBeLessThan(view.stats.program)
+    expect(view.stats.unkeyed).toBe(0)
+  })
+
+  it('строка файла без ключа в программе — находка, а не потеря', async () => {
+    const roots = await makeRoots({ user: { 'ru.txt': 'Ключ которого нет в коде\tПеревод\n' } })
+    const view = readDictionarySet({ set: 'messages', language: 'ru', ...roots })
+    expect(view.stats.unkeyed).toBe(1)
+    const row = view.rows.find(candidate => candidate.left === 'Ключ которого нет в коде')
+    expect(row?.known).toBe(false)
+    expect(row?.right).toBe('Перевод')
+  })
+
+  it('ключ без перевода и строка без ключа не путаются', async () => {
+    // Строка с табуляцией и пустой правой частью — это ключ без перевода, а не
+    // «строка без табуляции»: претензий к файлу быть не должно.
+    const roots = await makeRoots({ user: { 'ru.txt': 'Ключ которого нет в коде\t\n' } })
+    const view = readDictionarySet({ set: 'messages', language: 'ru', ...roots })
+    expect(view.problems).toEqual([])
+    // Строка без перевода и без ключа: обе находки разом, и обе видны по отдельности.
+    expect(view.stats.unkeyed).toBe(1)
+    const row = view.rows.find(candidate => candidate.left === 'Ключ которого нет в коде')
+    expect(row?.right).toBe('')
+    expect(row?.known).toBe(false)
   })
 })
 

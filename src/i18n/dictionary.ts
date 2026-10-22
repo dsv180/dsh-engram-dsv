@@ -18,6 +18,10 @@
  * либо пропускается. Неполный словарь безопасен — недостающая строка просто
  * не участвует, и сообщение остаётся английским.
  *
+ * Пустая правая часть — не всегда дефект: заготовка словаря состоит из строк
+ * «ключ + пустой перевод». Разбирать так можно только слой, который принадлежит
+ * человеку (см. `ParseDictionaryOptions`); в поставке та же строка — дефект.
+ *
  * @module @kenz1117/dsh-engram/i18n/dictionary
  */
 
@@ -39,10 +43,31 @@ export interface DictionaryIssue {
   readonly detail: string
 }
 
+/**
+ * Как разбирать файл.
+ *
+ * Пользовательский слой вправе хранить строку «ключ + пустой перевод»: так лежит
+ * заготовка словаря, которую пишет кнопка «Создать», и так выглядит строка, в которую
+ * человек ещё не вписал перевод. Поставка так не вправе: там пустая правая часть —
+ * дефект файла, и он обязан быть назван, а не проглочен.
+ */
+export interface ParseDictionaryOptions {
+  /** Принимать строку без перевода как строку с ключом (по умолчанию — претензия). */
+  readonly keepEmptyRight?: boolean
+}
+
 /** Разобранный словарь. */
 export interface ParsedDictionary {
   /** Английский текст → перевод. При повторе побеждает последняя строка. */
   readonly entries: ReadonlyMap<string, string>
+  /**
+   * Левые части всех принятых строк, включая строки без перевода.
+   *
+   * `entries` отвечает на вопрос «какой текст показать», а `keys` — «какая строка
+   * есть в файле». Это разные вопросы: заготовка словаря состоит из ключей без
+   * переводов, и «строки нет» должно отличаться от «строка есть, перевода нет».
+   */
+  readonly keys: ReadonlySet<string>
   /** Дефекты; пустой список — файл чистый. */
   readonly issues: readonly DictionaryIssue[]
   /** Сколько строк данных (не комментариев и не пустых) удалось принять. */
@@ -110,8 +135,10 @@ function unescapeField(field: string): { value: string; bad: readonly string[] }
  * Разобрать файл словаря.
  * Чистый разбор без ввода-вывода: тексты читает вызывающий.
  */
-export function parseDictionary(text: string): ParsedDictionary {
+export function parseDictionary(text: string, options?: ParseDictionaryOptions): ParsedDictionary {
+  const keepEmptyRight = options?.keepEmptyRight === true
   const entries = new Map<string, string>()
+  const keys = new Set<string>()
   const issues: DictionaryIssue[] = []
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
   const rawLines = body.split('\n')
@@ -145,7 +172,15 @@ export function parseDictionary(text: string): ParsedDictionary {
       continue
     }
     if (right.value === '') {
-      issues.push({ line: lineNo, kind: 'emptyRight', detail: left.value.slice(0, 60) })
+      // Строка без перевода: в поставке это дефект, в пользовательском слое — заготовка.
+      if (!keepEmptyRight) {
+        issues.push({ line: lineNo, kind: 'emptyRight', detail: left.value.slice(0, 60) })
+        continue
+      }
+      if (keys.has(left.value)) {
+        issues.push({ line: lineNo, kind: 'duplicate', detail: left.value.slice(0, 60) })
+      }
+      keys.add(left.value)
       continue
     }
     if (placeholders(left.value) !== placeholders(right.value)) {
@@ -155,11 +190,12 @@ export function parseDictionary(text: string): ParsedDictionary {
         detail: `{${placeholders(left.value)}} против {${placeholders(right.value)}}: ${left.value.slice(0, 60)}`,
       })
     }
-    if (entries.has(left.value)) {
+    if (keys.has(left.value)) {
       issues.push({ line: lineNo, kind: 'duplicate', detail: left.value.slice(0, 60) })
     }
+    keys.add(left.value)
     entries.set(left.value, right.value)
   }
 
-  return { entries, issues, accepted: entries.size, seen }
+  return { entries, keys, issues, accepted: keys.size, seen }
 }

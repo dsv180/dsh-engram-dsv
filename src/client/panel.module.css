@@ -975,6 +975,13 @@ select.input { padding-right: 28px; appearance: none; }
 .dictFilter { flex: 0 1 260px; height: 24px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); font-size: var(--fs-body); }
 .dictFilter:focus { outline: none; border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2)); }
 .dictStatus { margin-left: auto; display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+/* Сверка программы с файлом: числа слева, находки — кнопками, потому что находка
+   обязана быть нажимаемой: нажатие показывает те самые строки в таблице. */
+.dictCheck { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; flex: 0 0 auto; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: var(--fs-micro); color: var(--dsw-alias-label-tertiary); }
+.dictChip, .dictChipOn { height: 20px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-tertiary); font-size: var(--fs-micro); line-height: 1; cursor: pointer; }
+.dictChip:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-tertiary); }
+.dictChip:disabled { opacity: .5; cursor: default; }
+.dictChipOn { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-primary); font-weight: 600; }
 .dictBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-4) var(--space-6); }
 .dictRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: center; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 70%, transparent); }
 .dictRow:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, transparent); }

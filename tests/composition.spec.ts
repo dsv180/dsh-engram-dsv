@@ -896,6 +896,31 @@ describe('migration policy through the real Loader and session tools', () => {
       expect(written).not.toContain(`${TERM}\t`)
     })
 
+    it('«Создать» пишет файл с ключами, а не пустую заготовку', { timeout: 60_000 }, async () => {
+      // Требование пользователя дословно: «создать файл словаря с ключами и открыть его
+      // как по кнопке открыть». Пустой файл с заголовком открывался бы так же, но это
+      // было бы отсутствие заготовки, а не заготовка: ключи в таблице шли бы из программы.
+      const loaded = await loadComposition([], undefined, async () => {})
+      const port = loaded.webServer.port
+      const created = await call(port, 'POST', '/api/engram/dictionary-create', { language: 'de' })
+      expect(created.status).toBe(200)
+      const written = (created.json as { written: { set: string, file: string, lines: number }[] }).written
+      expect(written.map(entry => entry.set).sort()).toEqual(['messages', 'panel'])
+      expect(written.every(entry => entry.lines > 0)).toBe(true)
+
+      const text = await readFile(join(root!, 'engram', 'i18n', 'de.txt'), 'utf8')
+      expect(text).toContain(`${TERM}\t`)
+
+      // Сверка считается при открытии: строк в файле столько же, сколько ключей в программе,
+      // и перевода нет ни у одной — поставки для этого языка в пакете нет.
+      const opened = await call(port, 'GET', '/api/engram/dictionary?set=messages&language=de')
+      expect(opened.status).toBe(200)
+      const view = opened.json as { stats: { program: number, file: number, missing: number }, problems: unknown[] }
+      expect(view.problems).toEqual([])
+      expect(view.stats.file).toBe(view.stats.program)
+      expect(view.stats.missing).toBe(view.stats.program)
+    })
+
     it('тело сверх предела — ошибка, а не «снять всё»', { timeout: 60_000 }, async () => {
       const loaded = await loadComposition([], undefined, async (dbDir) => {
         await mkdir(join(dbDir, 'i18n'), { recursive: true })

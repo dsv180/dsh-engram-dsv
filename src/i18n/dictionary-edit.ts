@@ -9,6 +9,11 @@
  * Записываем ровно то, что человек изменил: пустая клетка таблицы снимает правку и
  * возвращает текст поставки. Если бы сохранялся весь словарь целиком, первое же
  * сохранение заморозило бы все переводы и обновление поставки перестало бы доходить.
+ *
+ * Строка файла без перевода — не снятая правка, а заготовка словаря: она читается и
+ * пишется как ключ без текста и переживает сохранения, пока её не переведут. Из-за
+ * этого у пустого значения два разных смысла — «снять правку» при наложении и
+ * «без перевода» при записи (см. `applyDictionaryPatch` и `writeDictionarySet`).
  * Приходящие из панели правки накладываются на текущий слой (`applyDictionaryPatch`),
  * а не заменяют его: не тронутые человеком строки чужим сохранением не стираются.
  *
@@ -41,8 +46,34 @@ export interface DictionaryRow {
   readonly right: string
   /** Откуда взят правый столбец: правка, поставка, вшитый набор или ничего. */
   readonly source: 'user' | 'delivery' | 'builtin' | 'none'
-  /** Значение пользовательского слоя; null — правки нет. */
+  /**
+   * Значение пользовательского слоя; null — правки нет.
+   *
+   * Пустая строка значит «строка в файле есть, перевода в ней нет»: так выглядит
+   * заготовка словаря. Это не то же самое, что `null` — «строки в файле нет».
+   */
   readonly override: string | null
+  /** Есть ли такая левая часть в наборе текстов программы (иначе — строка файла без ключа). */
+  readonly known: boolean
+}
+
+/**
+ * Сверка ключей программы с ключами словаря: то, ради чего словарь открывают.
+ *
+ * Обе величины считаются независимо: `program` — по набору текстов в коде, `file` —
+ * по строкам пользовательского файла. Совпадение чисел ничего не доказывает, поэтому
+ * рядом стоят находки: ключ без перевода (текст уйдёт английским) и строка файла без
+ * ключа (перевод остался от прежней формулировки).
+ */
+export interface DictionaryStats {
+  /** Ключей в наборе текстов программы. */
+  readonly program: number
+  /** Строк в пользовательском файле (включая строки без перевода). */
+  readonly file: number
+  /** Ключей программы, для которых перевода нет ни в одном слое. */
+  readonly missing: number
+  /** Строк файла, чьей левой части нет в наборе программы. */
+  readonly unkeyed: number
 }
 
 /** Набор словаря, каким его видит таблица правки. */
@@ -59,6 +90,8 @@ export interface DictionarySetView {
     readonly read: readonly string[]
   }
   readonly problems: readonly DictionaryProblem[]
+  /** Сверка программы с файлом: считается при каждом открытии, а не по кнопке. */
+  readonly stats: DictionaryStats
 }
 
 /** Итог записи словаря: сколько строк легло и куда. */
@@ -130,7 +163,8 @@ function header(set: DictionarySet, language: EngramLanguage): readonly string[]
     `${what}: ${language}. Правка из панели обслуживания.`,
     `Слева — ровно та строка, что стоит в коде (${where}), справа — перевод.`,
     'Формат: <слева><TAB><справа>. Этот файл главнее поставки; строки нет — берётся поставка,',
-    'пустая клетка в панели снимает правку и возвращает текст поставки.',
+    'строка с пустой правой частью — ключ без перевода (заготовка словаря).',
+    'пустая клетка в панели снимает строку и возвращает текст поставки.',
     '',
   ]
 }
@@ -140,7 +174,12 @@ function header(set: DictionarySet, language: EngramLanguage): readonly string[]
  *
  * Порядок строк — порядок терминов набора (он же порядок таблицы), затем строки,
  * которых в наборе уже нет: потерять их молча нельзя, они могли остаться от прежней
- * версии текстов. Пустое значение — не строка файла, а снятая правка.
+ * версии текстов или от заготовки, созданной для нового языка.
+ *
+ * Значение в карте — это то, что попадёт справа, поэтому пустое значение пишется
+ * строкой «ключ + пустой перевод»: так хранится заготовка словаря. Снять строку
+ * целиком — это убрать её из карты, и это делает `applyDictionaryPatch`, а не
+ * запись: у панели пустая клетка значит «снять правку», у файла — «без перевода».
  * @param input - набор, источники и карта правок «английская строка → перевод».
  * @returns путь файла, число записанных строк и размер.
  */
@@ -150,12 +189,12 @@ export function writeDictionarySet(input: DictionarySources & { readonly entries
   const listed = new Set<string>()
   for (const left of dictionaryTerms(input.set)) {
     const right = input.entries.get(left)
-    if (right === undefined || right === '') continue
+    if (right === undefined) continue
     listed.add(left)
     ordered.push([left, right])
   }
   for (const [left, right] of input.entries) {
-    if (listed.has(left) || left === '' || right === '') continue
+    if (listed.has(left) || left === '') continue
     listed.add(left)
     ordered.push([left, right])
   }
@@ -174,19 +213,25 @@ function layerEntries(layer: LoadedDictionary): ReadonlyMap<string, string> {
   return layer.entries
 }
 
-/** Одна строка таблицы: правка главнее поставки, поставка — вшитого набора. */
+/**
+ * Одна строка таблицы: правка главнее поставки, поставка — вшитого набора.
+ *
+ * Пустая правка показом не считается: она значит «строка в файле есть, перевода нет»,
+ * и текст тогда берётся из поставки — ровно как до появления заготовок. Смысл пустой
+ * клетки для человека от этого не меняется.
+ */
 function row(
   left: string,
   user: ReadonlyMap<string, string>,
   delivery: ReadonlyMap<string, string>,
   builtin: string | undefined,
 ): DictionaryRow {
-  const override = user.get(left)
-  if (override !== undefined) return { left, right: override, source: 'user', override }
+  const override = user.get(left) ?? null
+  if (override !== null && override !== '') return { left, right: override, source: 'user', override, known: true }
   const shipped = delivery.get(left)
-  if (shipped !== undefined) return { left, right: shipped, source: 'delivery', override: null }
-  if (builtin !== undefined) return { left, right: builtin, source: 'builtin', override: null }
-  return { left, right: '', source: 'none', override: null }
+  if (shipped !== undefined) return { left, right: shipped, source: 'delivery', override, known: true }
+  if (builtin !== undefined) return { left, right: builtin, source: 'builtin', override, known: true }
+  return { left, right: '', source: 'none', override, known: true }
 }
 
 /**
@@ -197,17 +242,22 @@ function row(
  */
 export function readDictionarySet(input: DictionarySources): DictionarySetView {
   const paths = dictionaryPaths(input)
+  // Поставка читается строго, файл человека — терпимо: там строка без перевода
+  // нормальна (см. ./dictionary-file). Иначе заготовка словаря считалась бы поломанной.
   const delivery = readDictionaryLayer(paths.delivery)
-  const user = readDictionaryLayer(paths.user)
+  const user = readDictionaryLayer(paths.user, { keepEmptyRight: true })
   const rows: DictionaryRow[] = []
   const listed = new Set<string>()
-  for (const left of dictionaryTerms(input.set)) {
+  const terms = dictionaryTerms(input.set)
+  for (const left of terms) {
     listed.add(left)
     rows.push(row(left, layerEntries(user), layerEntries(delivery), dictionaryBuiltin(input.set, input.language, left)))
   }
-  for (const [left, right] of user.entries) {
+  // Строки файла, которых в программе нет: и переведённые, и заготовки. Потерять их
+  // нельзя — молчание здесь означало бы потерю при первом же сохранении.
+  for (const left of user.keys) {
     if (listed.has(left)) continue
-    rows.push({ left, right, source: 'user', override: right })
+    rows.push({ left, right: user.entries.get(left) ?? '', source: 'user', override: user.entries.get(left) ?? '', known: false })
   }
   return {
     set: input.set,
@@ -215,6 +265,12 @@ export function readDictionarySet(input: DictionarySources): DictionarySetView {
     rows,
     files: { delivery: paths.delivery, user: paths.user, read: [...delivery.files, ...user.files] },
     problems: [...delivery.problems, ...user.problems],
+    stats: {
+      program: terms.length,
+      file: user.keys.size,
+      missing: rows.filter(candidate => candidate.source === 'none').length,
+      unkeyed: rows.filter(candidate => !candidate.known).length,
+    },
   }
 }
 
@@ -259,6 +315,21 @@ export function applyDictionaryPatch(
     else merged.set(left, right)
   }
   return merged
+}
+
+/**
+ * Всё, что лежит в слое, в виде карты «строка → значение» — включая строки без перевода.
+ *
+ * Нужно перед наложением правок: `LoadedDictionary.entries` отвечает «что показать»,
+ * и строки заготовки в него не попадают. Если бы наложение читало `entries`, первое же
+ * сохранение выбросило бы из файла все ключи, которые человек ещё не перевёл.
+ * @param layer - прочитанный слой.
+ * @returns карта, где пустое значение значит «ключ есть, перевода нет».
+ */
+export function layerOverrides(layer: LoadedDictionary): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const left of layer.keys) map.set(left, layer.entries.get(left) ?? '')
+  return map
 }
 
 /** Проверка «строка словаря разбирается» — тем же разбором, что и при чтении. */

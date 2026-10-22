@@ -58,6 +58,22 @@ describe('словарь панели читается своим файлом',
     expect(alone.files).toHaveLength(1)
   })
 
+  it('строка без перевода: в поставке дефект, в слое человека — заготовка', async () => {
+    // Поставка — часть выпуска: пустая правая часть там означает поломку файла.
+    const shipped = await makeRoots({ shipped: { 'panel.ru.txt': 'Model and dictionaries\t\n' } })
+    const broken = loadPanelDictionary({ language: 'ru', ...shipped })
+    expect(broken.problems.map(problem => problem.kind)).toEqual(['emptyRight'])
+    expect(broken.entries.size).toBe(0)
+
+    // Файл человека — заготовка словаря: строка есть, перевода ещё нет, и это не ошибка.
+    const own = await makeRoots({ user: { 'panel.ru.txt': 'Model and dictionaries\t\n' } })
+    const blank = loadPanelDictionary({ language: 'ru', ...own })
+    expect(blank.problems).toEqual([])
+    expect(blank.keys.has('Model and dictionaries')).toBe(true)
+    // Показать при этом нечего: текста нет, и он остаётся английским.
+    expect(blank.entries.has('Model and dictionaries')).toBe(false)
+  })
+
   it('нет файлов — нет словаря: пустая карта без претензий', async () => {
     const roots = await makeRoots({})
     const panel = loadPanelDictionary({ language: 'ru', ...roots })

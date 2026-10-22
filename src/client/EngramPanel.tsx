@@ -4466,17 +4466,39 @@ interface DictionaryRowView {
   readonly right: string
   /** Откуда взят правый столбец: правка, поставка, вшитый набор или ничего. */
   readonly source: 'user' | 'delivery' | 'builtin' | 'none'
-  /** Значение пользовательского слоя; null — правки нет. */
+  /** Значение пользовательского слоя; null — строки в файле нет, '' — строка есть без перевода. */
   readonly override: string | null
+  /** Есть ли такая левая часть в наборе текстов программы: false — строка файла без ключа. */
+  readonly known: boolean
 }
 
-/** Набор словаря, каким его видит таблица: термины, слои файлов и претензии разбора. */
+/**
+ * Сверка программы с файлом (считает сервер при каждом открытии словаря).
+ *
+ * `program` и `file` — две независимые величины: ключи в коде и строки в файле.
+ * Совпадение чисел ничего не доказывает, поэтому рядом стоят находки — ключ без
+ * перевода и строка без ключа.
+ */
+interface DictionaryStatsView {
+  readonly program: number
+  readonly file: number
+  readonly missing: number
+  readonly unkeyed: number
+}
+
+/** Набор словаря, каким его видит таблица: термины, слои файлов, претензии разбора и сверка. */
 interface DictionarySetView {
   readonly set: DictionarySetName
   readonly language: string
   readonly rows: readonly DictionaryRowView[]
   readonly files: { readonly delivery: string, readonly user: string, readonly read: readonly string[] }
   readonly problems: readonly { readonly file: string, readonly line: number, readonly kind: string, readonly detail: string }[]
+  /**
+   * Сверка. Может не прийти: серверная половина старше клиентской (после обновления
+   * плагина до перезапуска DSH). Тогда строка сверки не рисуется — панель не должна
+   * падать из-за того, что сервер ещё не знает про неё.
+   */
+  readonly stats?: DictionaryStatsView
 }
 
 /**
@@ -4574,6 +4596,13 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
   const [view, setView] = useState<DictionarySetView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  /**
+   * Что показать из сверки: все строки, ключи без перевода или строки без ключа.
+   *
+   * Группа — это фильтр таблицы, а не отдельный экран: человек видит находку и тут же
+   * правит клетку, не теряя из виду остальной словарь.
+   */
+  const [group, setGroup] = useState<'all' | 'missing' | 'unkeyed'>('all')
   /** Черновик правок: английская строка → значение клетки ('' — снять правку). */
   const [draft, setDraft] = useState<ReadonlyMap<string, string>>(new Map())
   /** Что сейчас занято: сохранение и заполнение не ходят одновременно. */
@@ -4620,6 +4649,7 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
     setView(null)
     setError(null)
     setDraft(new Map())
+    setGroup('all')
     void (async () => {
       try {
         const data = await api<DictionarySetView>(`dictionary?set=${set}&language=${encodeURIComponent(language)}`)
@@ -4640,11 +4670,19 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
 
   const rows = useMemo(() => {
     if (view === null) return []
+    // Сначала группа сверки, потом поиск: группа — это «что чинить», поиск — «где это».
+    const inGroup = view.rows.filter(row => {
+      if (group === 'missing') return cell(row).trim() === ''
+      // Именно `=== false`: у сервера старше клиента признака нет вовсе, и
+      // «ключа нет» из отсутствия поля не следует.
+      if (group === 'unkeyed') return row.known === false
+      return true
+    })
     const needle = query.trim().toLowerCase()
-    if (needle === '') return view.rows
+    if (needle === '') return inGroup
     // Ищем и по термину, и по переводу: чаще всего ищут «где эта надпись».
-    return view.rows.filter(row => row.left.toLowerCase().includes(needle) || cell(row).toLowerCase().includes(needle))
-  }, [view, query, cell])
+    return inGroup.filter(row => row.left.toLowerCase().includes(needle) || cell(row).toLowerCase().includes(needle))
+  }, [view, query, cell, group])
 
   /**
    * Партия правок — то, что уйдёт в файл: только клетки, отличающиеся от слоя.
@@ -4781,10 +4819,17 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
     })()
   }
 
-  /** Подпись строки: откуда взят правый столбец (в подсказке, не в колонке). */
-  const hintOf = (source: DictionaryRowView['source']): string => source === 'user'
-    ? tt('dictEdited')
-    : source === 'delivery' ? tt('dictShipped') : source === 'builtin' ? tt('dictBuiltin') : tt('dictNoTranslation')
+  /**
+   * Подпись строки (в подсказке, не в колонке): сначала «такого ключа в программе нет» —
+   * это важнее источника текста, потому что такую строку человек не ищет, а находит.
+   */
+  const hintOf = (row: DictionaryRowView): string => row.known === false
+    ? tt('dictRowUnkeyed')
+    : row.source === 'user' ? tt('dictEdited')
+      : row.source === 'delivery' ? tt('dictShipped') : row.source === 'builtin' ? tt('dictBuiltin') : tt('dictNoTranslation')
+
+  /** Сверка либо ничего: сервер старше клиента её не считает (см. `DictionarySetView.stats`). */
+  const stats = view?.stats
 
   // Экран уходит порталом в якорь оверлеев (.overlayHost) вне .panel: сам он fixed, поэтому
   // место якоря не важно, важна лишь чужая область наложения. Якорь ещё не смонтирован —
@@ -4831,6 +4876,33 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
           {view !== null && <> · {tt('dictTarget')} <span className={styles.regMono}>{view.files.user}</span></>}
         </span>
       </div>
+      {/* Сверка программы с файлом: числа независимы и стоят рядом намеренно —
+          совпадение ключей в коде и строк в файле ничего не доказывает, а находки
+          (ключ без перевода, строка без ключа) и есть то, ради чего словарь открывают.
+          Нажатие на находку — фильтр таблицы, а не отдельный экран. */}
+      {stats !== undefined && (
+        <div className={styles.dictCheck}>
+          <span>{tt('dictCheckProgram', { n: stats.program })}</span>
+          <span>{tt('dictCheckFile', { n: stats.file })}</span>
+          <button type="button" className={group === 'missing' ? styles.dictChipOn : styles.dictChip}
+            disabled={stats.missing === 0 && group !== 'missing'}
+            title={tt('dictCheckMissingHint')}
+            onClick={() => { setGroup(group === 'missing' ? 'all' : 'missing') }}>
+            {tt('dictCheckMissing', { n: stats.missing })}
+          </button>
+          <button type="button" className={group === 'unkeyed' ? styles.dictChipOn : styles.dictChip}
+            disabled={stats.unkeyed === 0 && group !== 'unkeyed'}
+            title={tt('dictCheckUnkeyedHint')}
+            onClick={() => { setGroup(group === 'unkeyed' ? 'all' : 'unkeyed') }}>
+            {tt('dictCheckUnkeyed', { n: stats.unkeyed })}
+          </button>
+          {group !== 'all' && (
+            <button type="button" className={styles.dictChip} onClick={() => { setGroup('all') }}>
+              {tt('dictCheckAll')}
+            </button>
+          )}
+        </div>
+      )}
       <div className={styles.dictBody}>
         <p className={styles.regNote}>{tt('dictHint', { file: view?.files.user ?? '' })}</p>
         {error !== null
@@ -4840,7 +4912,7 @@ function DictionaryEditor({ tt, host, toast, onClose, language }: {
             : rows.length === 0
               ? <p className={styles.regNote}>{tt('dictNoRows')}</p>
               : rows.map(row => (
-                <DictionaryRow key={row.left} left={row.left} value={cell(row)} hint={hintOf(row.source)}
+                <DictionaryRow key={row.left} left={row.left} value={cell(row)} hint={hintOf(row)}
                   placeholder={row.source === 'none' ? tt('dictNoTranslation') : ''}
                   edited={draft.get(row.left) !== undefined && draft.get(row.left) !== row.right}
                   onEdit={edit} />

@@ -25,8 +25,8 @@ import { readLanguageSetting, resolveConfig } from './config.ts'
 import type { EngramConfig, ResolvedEngramConfig } from './config.ts'
 import { describeDictionaryProblems, loadMessageDictionary, loadPanelDictionary, readDictionaryLayer } from './i18n/dictionary-file.ts'
 import type { LoadedDictionary } from './i18n/dictionary-file.ts'
-import { applyDictionaryPatch, dictionaryPaths, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
-import { DICTIONARY_SETS, PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
+import { applyDictionaryPatch, dictionaryPaths, layerOverrides, readDictionarySet, writeDictionarySet } from './i18n/dictionary-edit.ts'
+import { DICTIONARY_SETS, dictionaryTerms, PANEL_BUILTIN_LANGUAGES } from './i18n/dictionary-terms.ts'
 import { FILL_MAX_TOKENS, FILL_SPLIT_DEPTH, FILL_TIMEOUT_MS, splitFillBatch } from './i18n/dictionary-limits.ts'
 import { answerSnippet, fillBatch, fillPrompt, glossaryPairs, parseFillAnswer } from './i18n/dictionary-ai.ts'
 import type { FillPair } from './i18n/dictionary-ai.ts'
@@ -1293,21 +1293,26 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
       const sources = { set, language: language ?? resolved.language, dbDir: resolved.dbDir }
       // Панель присылает только изменённые клетки: накладываем их на текущий слой, чтобы
       // не тронутые человеком строки не стёрлись и запрос остался соразмерен правке.
-      const current = readDictionaryLayer(dictionaryPaths(sources).user).entries
+      // Текущий слой берём вместе со строками заготовки: иначе первое же сохранение
+      // выбросило бы из файла все ключи, которые ещё не перевели.
+      const current = layerOverrides(readDictionaryLayer(dictionaryPaths(sources).user, { keepEmptyRight: true }))
       const written = writeDictionarySet({ ...sources, entries: applyDictionaryPatch(current, patch) })
       // Перечитываем словари до снимка набора: панель должна увидеть то, что записали.
       reloadDictionaries()
       return { set, ...written, view: readDictionarySet(sources) }
     },
     /**
-     * Пустой словарь нового языка: оба набора, одни заголовки, ни одной строки.
+     * Заготовка словаря нового языка: оба набора, заголовок и все ключи без переводов.
      *
-     * Пустая карта — именно пустой словарь: формат не хранит строку без перевода
-     * (пустая клетка означает «снять правку»), поэтому заготовка — это файл с
-     * заголовком, который панель затем заполняет терминами и переводами.
+     * Файл с одним заголовком был бы пустым местом: человек открыл бы таблицу и увидел
+     * ключи программы, которых в файле нет, — то есть не заготовку, а её отсутствие.
+     * Поэтому в файл ложатся ровно термины набора с пустой правой частью, в порядке
+     * таблицы: файл можно править и вне панели, и он же — мера полноты словаря.
      */
     create: language => DICTIONARY_SETS.map(set => {
-      const written = writeDictionarySet({ set, language, dbDir: resolved.dbDir, entries: new Map<string, string>() })
+      const blank = new Map<string, string>()
+      for (const left of dictionaryTerms(set)) blank.set(left, '')
+      const written = writeDictionarySet({ set, language, dbDir: resolved.dbDir, entries: blank })
       return { set, file: written.file, lines: written.written, bytes: written.bytes }
     }),
   }

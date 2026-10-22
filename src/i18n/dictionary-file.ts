@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { packageRoot } from '../registry/root.ts'
 import { parseDictionary } from './dictionary.ts'
-import type { DictionaryIssueKind, ParsedDictionary } from './dictionary.ts'
+import type { DictionaryIssueKind, ParseDictionaryOptions, ParsedDictionary } from './dictionary.ts'
 import type { EngramLanguage } from './language.ts'
 
 /** Претензия к файлу словаря: где и что именно. */
@@ -33,6 +33,13 @@ export interface DictionaryProblem {
 export interface LoadedDictionary {
   /** Английский текст → перевод; пустая карта, если слоёв нет. */
   readonly entries: ReadonlyMap<string, string>
+  /**
+   * Левые части всех строк файла, включая строки без перевода.
+   *
+   * Нужны там, где важен сам файл, а не видимый перевод: заготовка словаря — это
+   * ключи без переводов, и «ключа в файле нет» нельзя выдать за «в файле пусто».
+   */
+  readonly keys: ReadonlySet<string>
   readonly problems: readonly DictionaryProblem[]
   /** Прочитанные файлы, в порядке наложения: поставка, затем пользователь. */
   readonly files: readonly string[]
@@ -47,8 +54,14 @@ export interface DictionarySources {
   readonly packageRoot?: string
 }
 
-/** Прочитать один файл словаря; отсутствие файла — не претензия. */
-function readDictionary(path: string, problems: DictionaryProblem[]): ParsedDictionary | undefined {
+/**
+ * Прочитать один файл словаря; отсутствие файла — не претензия.
+ * @param path - путь к файлу.
+ * @param problems - куда сложить претензии разбора.
+ * @param options - как разбирать (см. `ParseDictionaryOptions`): строгой бывает
+ *   поставка, терпимой — слой, который принадлежит человеку.
+ */
+function readDictionary(path: string, problems: DictionaryProblem[], options?: ParseDictionaryOptions): ParsedDictionary | undefined {
   let text: string
   try {
     text = readFileSync(path, 'utf8')
@@ -60,7 +73,7 @@ function readDictionary(path: string, problems: DictionaryProblem[]): ParsedDict
     }
     return undefined
   }
-  const parsed = parseDictionary(text)
+  const parsed = parseDictionary(text, options)
   for (const issue of parsed.issues) {
     problems.push({ file: path, line: issue.line, kind: issue.kind, detail: issue.detail })
   }
@@ -97,32 +110,44 @@ export function loadPanelDictionary(sources: DictionarySources): LoadedDictionar
  * @param path - путь к файлу; отсутствие файла — пустой слой без претензий.
  * @returns прочитанное: карта, претензии и список файлов (пустой, если файла нет).
  */
-export function readDictionaryLayer(path: string): LoadedDictionary {
+export function readDictionaryLayer(path: string, options?: ParseDictionaryOptions): LoadedDictionary {
   const problems: DictionaryProblem[] = []
-  const parsed = readDictionary(path, problems)
+  const parsed = readDictionary(path, problems, options)
   return {
     entries: parsed?.entries ?? new Map<string, string>(),
+    keys: parsed?.keys ?? new Set<string>(),
     problems,
     files: parsed === undefined ? [] : [path],
   }
 }
 
-/** Прочитать словарь по имени файла: поставка, затем пользовательский слой. */
+/**
+ * Прочитать словарь по имени файла: поставка, затем пользовательский слой.
+ *
+ * Строгость разная намеренно: файл поставки — часть выпуска, и пустая правая часть
+ * там дефект, о котором надо сказать; файл человека — заготовка, в которой строка
+ * без перевода нормальна и молчать о ней значит стирать её при первом сохранении.
+ */
 function loadDictionary(sources: DictionarySources, name: string): LoadedDictionary {
   const root = sources.packageRoot ?? packageRoot()
   const entries = new Map<string, string>()
+  const keys = new Set<string>()
   const problems: DictionaryProblem[] = []
   const files: string[] = []
 
-  for (const path of [join(root, 'i18n', name), join(sources.dbDir, 'i18n', name)]) {
-    const parsed = readDictionary(path, problems)
+  for (const [path, options] of [
+    [join(root, 'i18n', name), undefined],
+    [join(sources.dbDir, 'i18n', name), { keepEmptyRight: true }],
+  ] as const) {
+    const parsed = readDictionary(path, problems, options)
     if (parsed === undefined) continue
     files.push(path)
     // Повтор той же левой части побеждает: пользовательский слой правит поставку.
     for (const [left, right] of parsed.entries) entries.set(left, right)
+    for (const left of parsed.keys) keys.add(left)
   }
 
-  return { entries, problems, files }
+  return { entries, keys, problems, files }
 }
 
 /** Короткая сводка претензий для одного предупреждения. */
