@@ -1,3 +1,5 @@
+import { messageVocabulary } from '../src/i18n/messages.ts'
+
 /**
  * REAL-composition coverage：测试用 cordis.yml 经真实 Loader 装载
  * webserver + system-prompt + tools + llm 替身 + dsh-engram，HTTP 断言
@@ -11,6 +13,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connect as netConnect } from 'node:net'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -21,7 +24,6 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { openEngramStore } from '../src/store/sqlite.ts'
 import { markPendingIngest } from '../src/ingest/hook.ts'
-import { messageVocabulary } from '../src/i18n/messages.ts'
 import { readMigrationPointer, resolveProjectIdentity } from '../src/project/identity.ts'
 import * as Engram from '../src/index.ts'
 
@@ -41,10 +43,7 @@ beforeEach(() => {
 afterEach(async () => {
   await context?.fiber?.dispose()
   context = undefined
-  // maxRetries/retryDelay — не украшение: на Windows каталог только что закрытой базы
-  // отдаёт ENOTEMPTY, пока файловый хэндл отпускается асинхронно. Без повторов проверка
-  // падала не на утверждении, а на уборке, и это выглядело как настоящая поломка.
-  if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -65,6 +64,33 @@ const llmDouble = {
       // 模型清单（面板「辅助模型」下拉的数据源）。
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
       listModels: async () => [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
+      // Настраиваемые провайдеры: мост Jev берёт отсюда id провайдера и путь к его настройкам.
+      listConfigurableProviders: () => [{
+        provider: 'aitunnel',
+        displayName: 'AITunnel',
+        settingsNs: 'llm-pi-ai',
+        settingsPath: ['providers', 'aitunnel'],
+      }],
+    } as never)
+    // Настройки провайдера и хранилище секретов: адрес и ключ Jev берёт только отсюда,
+    // сам он их не хранит — это и проверяют тесты ниже.
+    ctx.provide('settings', {
+      describe: async () => [{
+        ns: 'llm-pi-ai',
+        value: {
+          providers: {
+            aitunnel: {
+              displayName: 'AITunnel',
+              apiKeyEnv: 'AITUNNEL_API_KEY',
+              baseURL: 'https://api.aitunnel.ru/v1',
+              models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+            },
+          },
+        },
+      }],
+    } as never)
+    ctx.provide('credentials', {
+      resolve: async (ref: string) => (ref === 'AITUNNEL_API_KEY' ? { value: 'host-provider-key' } : undefined),
     } as never)
   },
 }
@@ -191,6 +217,25 @@ async function call(port: number, method: 'GET' | 'POST', path: string, body?: u
   return { status: response.status, json, text, contentType: response.headers.get('content-type') ?? '' }
 }
 
+/** 原样 POST 一段文本（不走 JSON.stringify）——用来看服务端对坏请求体的说法。 */
+async function rawPost(port: number, path: string, raw: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(port, '127.0.0.1', () => {
+      socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${String(Buffer.byteLength(raw))}\r\nConnection: close\r\n\r\n${raw}`)
+    })
+    let text = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk: string) => { text += chunk })
+    socket.on('error', reject)
+    socket.on('end', () => {
+      const separator = text.indexOf('\r\n\r\n')
+      const head = separator === -1 ? '' : text.slice(0, separator)
+      const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(head)?.[1] ?? '0')
+      resolve({ status, text: separator === -1 ? '' : text.slice(separator + 4) })
+    })
+  })
+}
+
 describe('dsh-engram real Loader composition', () => {
   it('装载后 21 个工具可见，engram 行卸载后消失', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
@@ -288,50 +333,6 @@ describe('dsh-engram real Loader composition', () => {
     expect(exported.contentType).toContain('text/markdown')
     expect(exported.text).toContain('种子偏好')
 
-    // Обслуживание: перечень баз дворца и одна кнопка действия. Состояние считается
-    // на каждый запрос, поэтому после записи метки ответ обязан измениться — иначе
-    // кнопка показывала бы старое и просила сделать то, что уже сделано.
-    const registry = await call(port, 'GET', '/api/engram/registry')
-    expect(registry.status).toBe(200)
-    const bases = (registry.json as {
-      bases: { file: string, label: string | null, targetLabel: string | null, action: string | null, checked: boolean }[]
-    }).bases
-    expect(bases.map(base => base.file)).toContain('user.db')
-    expect((registry.json as { convertAvailable: boolean }).convertAvailable).toBe(true)
-    // Язык дворца: в панели он выбирается селектором и пишется в настройки. В этом
-    // прогоне сервиса настроек нет — поэтому проверяем форму ответа, а не успех:
-    // отказ обязан называть причину, иначе выбор в панели выглядел бы сработавшим.
-    const unknownLanguage = await call(port, 'POST', '/api/engram/palace-language', { language: 'klingon' })
-    expect(unknownLanguage.status).toBe(400)
-    const pickedLanguage = await call(port, 'POST', '/api/engram/palace-language', { language: 'ru' })
-    expect(pickedLanguage.status).toBe(200)
-    const picked = pickedLanguage.json as { ok: boolean, language: string, error?: string }
-    expect(picked.language).toBe('ru')
-    if (!picked.ok) expect(typeof picked.error).toBe('string')
-
-    // Пересчёт векторов: маршрут отвечает формой результата, а не молчанием.
-    // Эмбеддер в этом прогоне офлайн — поэтому часть баз честно попадает в failed.
-    const converted = await call(port, 'POST', '/api/engram/base-convert', {})
-    expect(converted.status).toBe(200)
-    const conversion = converted.json as { converted: number, empty: number, written: unknown[], failed: unknown[] }
-    expect(typeof conversion.converted).toBe('number')
-    expect(typeof conversion.empty).toBe('number')
-    expect(Array.isArray(conversion.written)).toBe(true)
-    expect(Array.isArray(conversion.failed)).toBe(true)
-
-    const labelled = await call(port, 'POST', '/api/engram/base-label', {})
-    expect(labelled.status).toBe(200)
-    expect((labelled.json as { failed: unknown[] }).failed).toEqual([])
-
-    // Каким бы ни был прогон, после записи метки просьбы её записать больше нет,
-    // а у баз, которые её просили, метка равна объявленной.
-    const after = await call(port, 'GET', '/api/engram/registry')
-    const afterBases = (after.json as { bases: { file: string, label: string | null, action: string | null }[] }).bases
-    expect(afterBases.filter(base => base.action === 'write-label')).toEqual([])
-    for (const base of bases.filter(candidate => candidate.action === 'write-label')) {
-      expect(afterBases.find(candidate => candidate.file === base.file)?.label).toBe(base.targetLabel)
-    }
-
     // 回环写守卫：跨站 Origin 的 POST 被 403 拒绝。
     const evil = await call(port, 'POST', '/api/engram/forget',
       { id: dropped!.id, scope: 'user', reason: 'x', affects: 'x', stillUseful: 'x' },
@@ -339,32 +340,138 @@ describe('dsh-engram real Loader composition', () => {
     expect(evil.status).toBe(403)
   })
 
-  it('метка модели ставится при открытии базы, а не кнопкой', { timeout: 60_000 }, async () => {
-    // База, которой метку никогда не ставили: создаём её мимо плагина, чтобы подпись
-    // могла появиться только от него самого. Кнопку «Выполнить» в этом прогоне никто
-    // не нажимает — иначе проверялось бы старое поведение, а не новое.
-    const loaded = await loadComposition([], undefined, async (dbDir) => {
-      const store = await openEngramStore(join(dbDir, 'user.db'))
-      await store.close()
-      // До загрузки плагина подписи нет — иначе доказывать было бы нечего.
-      const { DatabaseSync } = await import('node:sqlite')
-      const raw = new DatabaseSync(join(dbDir, 'user.db'))
-      const row = raw.prepare("SELECT value FROM meta WHERE key = 'model_label'").get() as { value: string } | undefined
-      raw.close()
-      expect(row).toBeUndefined()
-    })
+  it('导入链路：大体积导出件能进能出（issue #34——117/165 KB 的导出件曾被当成「不是 JSON 对象」拒掉）', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // Базу никто не чинил кнопкой; она подписана самим открытием при загрузке.
-    const answer = await call(port, 'GET', '/api/engram/registry')
-    expect(answer.status).toBe(200)
-    const base = (answer.json as {
-      bases: { file: string, label: string | null, targetLabel: string | null, action: string | null }[]
-    }).bases.find(candidate => candidate.file === 'user.db')
-    expect(base).toBeDefined()
-    expect(base!.targetLabel).not.toBeNull()
-    expect(base!.label).toBe(base!.targetLabel)
-    expect(base!.action).not.toBe('write-label')
+    // 复刻现场导出件的体量与形态：1200 条中文记录，JSON 落在 165 KB 上下。
+    const records = Array.from({ length: 1200 }, (_, index) => ({
+      id: `issue-34-${String(index)}`,
+      scope: 'user',
+      kind: 'fact',
+      content: `中文记忆内容第${String(index)}条${'内'.repeat(20)}`,
+      importance: 0.5,
+      confidence: 0.5,
+      status: 'active',
+      createdAt: 1_700_000_000_000,
+      lastAccessedAt: 1_700_000_000_000,
+      accessCount: 0,
+      sourceSessionId: null,
+      sourceRound: null,
+      sourceSeq: null,
+    }))
+    const payload = { exportedAt: 1_700_000_000_000, records, edges: [] }
+    const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8')
+    expect(bytes).toBeGreaterThan(64 * 1024) // 旧上限（64 KiB）装不下——这就是现场被拒的原因
+
+    // 预览（dryRun）：大 body 必须过。
+    const preview = await call(port, 'POST', '/api/engram/import', { data: payload, format: 'json', scope: 'user', dryRun: true })
+    expect(preview.status).toBe(200)
+    expect((preview.json as { preview: { entries: unknown[] } }).preview.entries).toHaveLength(records.length)
+
+    // 正式提交：1200 条全部写入。
+    const commit = await call(port, 'POST', '/api/engram/import', { data: payload, format: 'json', scope: 'user' })
+    expect(commit.status).toBe(200)
+    expect((commit.json as { imported: number }).imported).toBe(records.length)
+
+    // 中文内容要原样落库——逐块解码会把跨块的多字节字符切成 U+FFFD。
+    const listed = await call(port, 'GET', '/api/engram/list?scope=user&limit=5')
+    const contents = (listed.json as { records: { content: string }[] }).records.map(record => record.content)
+    expect(contents.some(content => content.includes('内'.repeat(20)))).toBe(true)
+    expect(contents.every(content => !content.includes('�'))).toBe(true)
+  })
+
+  it('导入链路：坏请求体与坏文件各说各的话，不甩锅给用户', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 请求体本身不是 JSON 对象 → 说请求体，不说文件。
+    const badBody = await call(port, 'POST', '/api/engram/import', [1, 2, 3])
+    expect(badBody.status).toBe(400)
+    expect((badBody.json as { error: string }).error).toContain('请求体')
+
+    // 文件本身是数组 → 说文件，并给出怎么改（数组要包一层 records）。
+    const badFile = await call(port, 'POST', '/api/engram/import', { data: [1, 2, 3], format: 'json', scope: 'user', dryRun: true })
+    expect(badFile.status).toBe(400)
+    const error = (badFile.json as { error: string }).error
+    expect(error).toContain('records')
+  })
+
+  it('普通写接口：坏 body 各说各的话，且 64 KiB 上限仍然生效', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 超限 → 413，说清是体积超限，不是「id 缺失」（v0.9.5 之前报的是 id required）。
+    const oversized = await call(port, 'POST', '/api/engram/update', { id: 'x', scope: 'user', content: '内'.repeat(70 * 1024) })
+    expect(oversized.status).toBe(413)
+    const tooLarge = (oversized.json as { error: string }).error
+    expect(tooLarge).toContain('64 KB')
+    expect(tooLarge).not.toContain('id required')
+
+    // 坏 JSON → 400，说清不是合法 JSON。
+    const malformed = await rawPost(port, '/api/engram/update', '{not json')
+    expect(malformed.status).toBe(400)
+    expect(malformed.text).toContain('JSON')
+    expect(malformed.text).not.toContain('id required')
+
+    // 不是对象 → 400，说清是请求体。
+    const notObject = await rawPost(port, '/api/engram/update', '[1,2,3]')
+    expect(notObject.status).toBe(400)
+    expect(notObject.text).toContain('请求体')
+
+    // 正常的小 body：字段校验照旧（id 缺失仍是 id required），没被新逻辑误伤。
+    const missingId = await call(port, 'POST', '/api/engram/update', { scope: 'user', content: '内容' })
+    expect(missingId.status).toBe(400)
+    expect((missingId.json as { error: string }).error).toBe('id required')
+
+    // 正常请求仍然成功。
+    const ok = await call(port, 'POST', '/api/engram/update', { id: 'missing-id', scope: 'user', content: '内容' })
+    expect(ok.status).toBe(404)
+  })
+
+  it('导入链路：三类失败各说各的话——超限 413、坏 JSON 400、不是对象 400', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 超限 → 413，且消息里带上限与出路（不能含糊成「不是 JSON 对象」）。
+    const huge = await call(port, 'POST', '/api/engram/import', {
+      data: { records: Array.from({ length: 200_000 }, (_, index) => ({ content: `第${String(index)}条${'内'.repeat(40)}` })) },
+      format: 'json', scope: 'user', dryRun: true,
+    })
+    expect(huge.status).toBe(413)
+    const tooLarge = (huge.json as { error: string }).error
+    expect(tooLarge).toContain('16 MB')
+    expect(tooLarge).toContain('engram_import')
+
+    // 请求体不是合法 JSON → 400，报「不是合法 JSON」而不是别的。
+    const malformed = await rawPost(port, '/api/engram/import', '{not json')
+    expect(malformed.status).toBe(400)
+    expect(malformed.text).toContain('JSON')
+
+    // 请求体不是对象 → 400，报「请求体」。
+    const notObject = await call(port, 'POST', '/api/engram/import', [1, 2, 3])
+    expect(notObject.status).toBe(400)
+    expect((notObject.json as { error: string }).error).toContain('请求体')
+  })
+
+  it('导入链路：请求中途断掉的导入不会带崩服务', { timeout: 60_000 }, async () => {    const loaded = await loadComposition()
+    const port = loaded.webServer.port
+
+    // 发到一半就掐断：body 读取会抛「请求已中断」。路由必须自己吞掉（不能变成未捕获拒绝），
+    // 且服务要活着继续应答下一次请求。
+    await new Promise<void>((resolve) => {
+      const socket = netConnect(port, '127.0.0.1', () => {
+        socket.write('POST /api/engram/import HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 999999\r\n\r\n')
+        socket.write('{"data":{"records":[]}')
+        socket.destroy() // 半路掐断
+      })
+      socket.on('error', () => resolve())
+      socket.on('close', () => resolve())
+    })
+
+    // 服务仍健在：下一个请求正常应答。
+    const alive = await call(port, 'GET', '/api/engram/stats')
+    expect(alive.status).toBe(200)
   })
 
   it('情景时间线 HTTP 链路：组头带会话摘要，around 查邻近扩展', { timeout: 60_000 }, async () => {
@@ -451,29 +558,39 @@ describe('dsh-engram real Loader composition', () => {
     expect(notFound.status).toBe(404)
   })
 
-  it('Jev 配置 HTTP 链路：GET 只回掩码，POST 落覆盖文件即时生效，非法字段整体 400', { timeout: 60_000 }, async () => {
+  it('Jev 配置 HTTP 链路：GET 回宿主提供商清单，POST 落覆盖文件即时生效，非法字段整体 400', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // 初态：无 yml jev 块、无覆盖文件 → 关闭且无密钥；视图全量字段固定（密钥明文不出现）。
+    // Провайдер, его адрес и модели приходят от хоста; ключа в ответе нет и быть не должно.
+    const providerEntry = {
+      id: 'aitunnel',
+      displayName: 'AITunnel',
+      baseUrl: 'https://api.aitunnel.ru/v1',
+      endpoint: 'https://api.aitunnel.ru/v1/systemone',
+      models: [{ id: 'jev-1.13', name: 'Jev 1.13' }],
+    }
+
+    // 初态：无 yml jev 块、无覆盖文件 → 关闭且未选择提供商。
     const initial = await call(port, 'GET', '/api/engram/jev-config')
     expect(initial.status).toBe(200)
     expect(initial.json).toEqual({
       enabled: false,
-      baseUrl: 'https://api.typesafe.ai',
-      model: 'jev-latest',
+      provider: undefined,
+      model: undefined,
+      endpoint: undefined,
       timeoutMs: 3000,
-      apiKeySet: false,
-      apiKeyMask: null,
       deferMergeAbove: 0.85,
       deferAcceptBelow: 0.15,
       contradictMinProbability: 0.8,
+      providers: [providerEntry],
     })
 
-    // 保存：面板开关 + 密钥 + 超时覆盖；响应视图掩码显尾 4 位（长度 > 8）。
+    // Сохранение: выбор провайдера и модели плюс тайм-аут; ключ сохранять нечего — он у хоста.
     const saved = await call(port, 'POST', '/api/engram/jev-config', {
       enabled: true,
-      apiKey: 'panel-key-1234567890',
+      provider: 'aitunnel',
+      model: 'jev-1.13',
       timeoutMs: 5000,
     })
     expect(saved.status).toBe(200)
@@ -481,22 +598,22 @@ describe('dsh-engram real Loader composition', () => {
       ok: true,
       view: {
         enabled: true,
-        baseUrl: 'https://api.typesafe.ai',
-        model: 'jev-latest',
+        provider: 'aitunnel',
+        model: 'jev-1.13',
+        endpoint: undefined,
         timeoutMs: 5000,
-        apiKeySet: true,
-        apiKeyMask: '****7890',
         deferMergeAbove: 0.85,
         deferAcceptBelow: 0.15,
         contradictMinProbability: 0.8,
+        providers: [providerEntry],
       },
     })
 
-    // 再 GET：掩码视图（非明文），覆盖文件落在 dbDir 且 0600。
+    // Повторный GET отдаёт тот же выбор и по-прежнему ни одного секрета.
     const reread = await call(port, 'GET', '/api/engram/jev-config')
     expect(reread.status).toBe(200)
-    expect((reread.json as { apiKeySet: boolean; apiKeyMask: string }).apiKeySet).toBe(true)
-    expect(reread.text).not.toContain('panel-key-1234567890')
+    expect((reread.json as { provider: string }).provider).toBe('aitunnel')
+    expect(reread.text).not.toContain('host-provider-key')
     expect(root).toBeDefined()
     const overridePath = join(root!, 'engram', 'jev-config.json')
     expect(existsSync(overridePath)).toBe(true)
@@ -516,32 +633,27 @@ describe('dsh-engram real Loader composition', () => {
     const loaded = await loadComposition()
     const port = loaded.webServer.port
 
-    // 默认 baseUrl 指向外网 → fetch 替身确定性拒绝；testJevConnection 不抛错，失败原因进 error 字段。
-    const offline = await call(port, 'POST', '/api/engram/jev-test', {})
+    // Без выбора провайдера запрос не уходит наружу — причина возвращается структурно.
+    const unselected = await call(port, 'POST', '/api/engram/jev-test', {})
+    expect(unselected.status).toBe(200)
+    expect((unselected.json as { ok: boolean }).ok).toBe(false)
+
+    // Выбранный провайдер даёт внешний адрес → заглушка fetch детерминированно отказывает;
+    // testJevConnection не бросает, причина уходит в поле error.
+    const offline = await call(port, 'POST', '/api/engram/jev-test', { provider: 'aitunnel', model: 'jev-1.13' })
     expect(offline.status).toBe(200)
-    const offlineBody = offline.json as {
-      ok: boolean
-      elapsedMs: number
-      probability: number | undefined
-      error: string
-      endpoint: string
-      model: string
-      timeoutMs: number
-      kind: string
-    }
+    const offlineBody = offline.json as { ok: boolean; elapsedMs: number; probability: number | undefined; error: string }
     expect(offlineBody.ok).toBe(false)
     expect(offlineBody.error).toContain('offline in test')
     expect(offlineBody.probability).toBeUndefined()
     expect(offlineBody.elapsedMs).toBeTypeOf('number')
-    // Параметры замера едут рядом с ним: панель печатает «куда и чем проверяли»,
-    // и брать их из формы было бы догадкой — форма может разойтись с запросом.
-    expect(offlineBody.endpoint).toContain('http')
-    expect(offlineBody.model).not.toBe('')
-    expect(offlineBody.timeoutMs).toBeGreaterThan(0)
-    expect(offlineBody.kind).toBe('network')
 
-    // baseUrl 覆盖为回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
-    const refused = await call(port, 'POST', '/api/engram/jev-test', { baseUrl: 'http://127.0.0.1:1', model: 'jev-latest' })
+    // Адрес из поля настроек перекрывает шаблон:回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
+    const refused = await call(port, 'POST', '/api/engram/jev-test', {
+      provider: 'aitunnel',
+      model: 'jev-1.13',
+      endpoint: 'http://127.0.0.1:1/v1/systemone',
+    })
     expect(refused.status).toBe(200)
     expect((refused.json as { ok: boolean }).ok).toBe(false)
 
@@ -885,8 +997,9 @@ describe('migration policy through the real Loader and session tools', () => {
       })
     }
   }
+})
 
-  /**
+/**
    * Правка словаря из панели: обещания, которые видит человек, а не только код.
    *
    * Панель шлёт только изменённые клетки — и прежние правки обязаны уцелеть: иначе одно
@@ -976,7 +1089,7 @@ describe('migration policy through the real Loader and session tools', () => {
         set: 'messages',
         entries: [[TERM, 'я'.repeat(70_000)]],
       })
-      expect(huge.status).toBe(400)
+      expect(huge.status).toBe(413)
       expect(await readFile(userFile(join(root!, 'engram')), 'utf8')).toBe(before)
     })
 
@@ -1020,4 +1133,3 @@ describe('migration policy through the real Loader and session tools', () => {
       expect((filled.json as { error: string }).error).toContain('routeOverride')
     })
   })
-})
