@@ -1,10 +1,11 @@
 # Theses for the author — what we did and why
 
-> **Prepared against version 0.9.3.** Everything below was done and verified on the author's release
-> `v0.9.3` (commit `1aa2e82`). The lift to the author's current version (`v0.9.8`) has not been done yet; once it
-> is done, the theses will be updated — file names, line numbers and some of the arguments may change,
-> because the lift will expose what has diverged between the two versions. The update will appear in this same place,
-> with a date and a list of changes, not retroactively.
+> **Written against 0.9.3; the rebase is done.** The theses were written and verified on the
+> author’s release `v0.9.3` (commit `1aa2e82`). On 23 October 2026 the branch was lifted onto his
+> current version — `v0.9.8`, pull request [#36](https://github.com/kenz1117/dsh-engram/pull/36).
+> What changed: Jev is assembled from the DSH provider and model (his version of that part is newer),
+> and the request body is read by his `http-body` module (byte limit, 413/400), which now also covers
+> our routes. The arguments below were not rolled back: how it is done changed, not what.
 
 Why this file: the arguments for describing our work to the author are collected **as we go**, not
 reconstructed at the end. What the author needs is not a changelog but the reason behind each change — otherwise

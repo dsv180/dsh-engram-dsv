@@ -74,8 +74,8 @@ dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
   <div class="meta">Draft of 23 October 2026 · plugin version 0.9.3-dsv.26 · based on the author's release v0.9.3 (<span class="mono">1aa2e82</span>)</div>
 </header>
 
-<div class="warnbox"><b>This document was prepared against version 0.9.3</b>
-Everything described here was done on the author's release <b>v0.9.3</b> (commit <span class="mono">1aa2e82</span>) and verified on it. The rebase onto the author's current version (v0.9.8) has not been done yet: when it is done, this document will be updated — file names, line numbers, the composition of the registries and some of the decisions may change, because the rebase exposes what diverged between the two versions. The update will be visible right here, not retroactively: this paragraph will be replaced with the date of the rebase and a list of what changed with it.</div>
+<div class="warnbox"><b>This document was written against 0.9.3; the rebase is done</b>
+Everything described here was done and verified on the author’s release <b>v0.9.3</b> (commit <span class="mono">1aa2e82</span>). <b>On 23 October 2026 the branch was lifted onto the author’s current version — v0.9.8, pull request <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>.</b> What changed in the rebase: Jev is assembled from the DSH provider and model (the author’s version of that part is newer than ours, so ours was not carried over); reading the request body moved into his <span class="mono">http-body</span> module with a byte limit and 413/400 answers — which now also covers our routes; the code dictionaries keep en and zh, Russian arrives as a file. Nothing described below was rolled back: the rebase changed <i>how</i> it is done, not <i>what</i> is done.</div>
 
 <div id="toc">
 <h2>Table of contents</h2>
