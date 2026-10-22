@@ -12,6 +12,14 @@ import type { EngramStore } from './store/interface.ts'
 import { recordJevObservation } from './jev/observe.ts'
 import { message } from './i18n/messages.ts'
 
+/**
+ * Поставщик судьи: спрашивается в момент операции и читает действующую конфигурацию.
+ * Благодаря ему включение Jev и выбор провайдера, модели или адреса в панели действуют
+ * без перезапуска — в том числе в инструментах, где судья иначе собирался бы один раз
+ * при загрузке плагина. `undefined` = Jev сейчас выключен, работать по чистым правилам.
+ */
+export type JudgeProvider = () => MemoryJudge | undefined
+
 /** 写入处置四态。 */
 export type WriteDisposition = 'accept' | 'merge' | 'drop' | 'defer'
 
