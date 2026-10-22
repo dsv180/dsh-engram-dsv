@@ -14,6 +14,41 @@ interface JevAnswerBody {
   noul?: unknown
 }
 
+/** Вид отказа связи: панель показывает его словом, чтобы «ключ не принят» не путать с «молчит». */
+export type JevFailureKind = 'http' | 'network' | 'timeout' | 'shape'
+
+/**
+ * Отказ вызова Jev с разобранной причиной.
+ *
+ * Класс, а не строка: панель показывает не только текст ошибки, но и вид отказа и
+ * HTTP-код — по ним видно, чинить ключ, сеть или протокол. Раньше всё это приходилось
+ * угадывать по тексту сообщения.
+ */
+export class JevCallError extends Error {
+  readonly kind: JevFailureKind
+  /** HTTP-код ответа; у сетевого отказа и тайм-аута кода нет. */
+  readonly status: number | undefined
+
+  constructor(kind: JevFailureKind, message: string, status?: number) {
+    super(message)
+    this.name = 'JevCallError'
+    this.kind = kind
+    this.status = status
+  }
+}
+
+/**
+ * Причина отказа из брошенного значения: тайм-аут отличается от сети по имени ошибки,
+ * всё остальное — сеть (fetch отверг соединение, DNS, TLS).
+ * @param error - то, что попало в catch.
+ * @returns вид отказа для панели.
+ */
+function failureKind(error: unknown): JevFailureKind {
+  if (error instanceof JevCallError) return error.kind
+  const name = error instanceof Error ? error.name : ''
+  return name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network'
+}
+
 /**
  * 调用 Jev /v1/systemone 端点并行回答 Noul 问题。
  * @param config - 已解析的 Jev 子配置（调用方先判 enabled）。
@@ -21,7 +56,7 @@ interface JevAnswerBody {
  * @param questions - Noul 问题列表；空列表直接返回空结果，不发请求。
  * @param signal - 外部取消信号；与配置超时信号合并监听，超时按配置 timeoutMs 兜底。
  * @returns 问题 id → Noul 概率（0-1，数字即信念）。
- * @throws 网络、非 2xx、响应缺 answers、答案缺失或非 0-1 数字时抛错。
+ * @throws {JevCallError} 网络、非 2xx、响应缺 answers、答案缺失或非 0-1 数字时抛错。
  */
 export async function askNoul(
   config: ResolvedJevConfig,
@@ -30,34 +65,39 @@ export async function askNoul(
   signal: AbortSignal = new AbortController().signal,
 ): Promise<JudgeAnswers> {
   if (questions.length === 0) return {}
-  const response = await fetch(new URL('/v1/systemone', config.baseUrl), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey ?? ''}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      state,
-      questions: Object.fromEntries(questions.map(question => [question.id, {
-        type: 'noul',
-        instructions: question.instructions,
-      }])),
-    }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
-  })
+  let response: Response
+  try {
+    response = await fetch(new URL('/v1/systemone', config.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey ?? ''}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        state,
+        questions: Object.fromEntries(questions.map(question => [question.id, {
+          type: 'noul',
+          instructions: question.instructions,
+        }])),
+      }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
+    })
+  } catch (error) {
+    throw new JevCallError(failureKind(error), error instanceof Error ? error.message : String(error))
+  }
   if (!response.ok) {
-    throw new Error(`jev: HTTP ${response.status} from ${config.baseUrl}`)
+    throw new JevCallError('http', `jev: HTTP ${response.status} from ${config.baseUrl}`, response.status)
   }
   const payload = (await response.json()) as { answers?: Record<string, JevAnswerBody> | null }
   if (payload.answers === undefined || payload.answers === null) {
-    throw new Error('jev: response missing answers')
+    throw new JevCallError('shape', 'jev: response missing answers')
   }
   const result: Record<string, number> = {}
   for (const question of questions) {
     const noul = payload.answers[question.id]?.noul
     if (typeof noul !== 'number' || !Number.isFinite(noul) || noul < 0 || noul > 1) {
-      throw new Error(`jev: answer "${question.id}" is not a noul probability`)
+      throw new JevCallError('shape', `jev: answer "${question.id}" is not a noul probability`)
     }
     result[question.id] = noul
   }
@@ -78,12 +118,16 @@ export function createMemoryJudge(config: ResolvedJevConfig): MemoryJudge {
   }
 }
 
-/** 连接测试结果：ok = 端点可达且返回了合法 Noul 概率；失败时 error 给原因。 */
+/** Соединение проверено: параметры замера, которые панель показывает строкой состояния. */
 export interface JevConnectionTestResult {
   readonly ok: boolean
   readonly elapsedMs: number
   readonly probability: number | undefined
   readonly error: string | undefined
+  /** HTTP-код ответа; у сетевого отказа и тайм-аута его нет. */
+  readonly status: number | undefined
+  /** Вид отказа: http / network / timeout / shape; удачная проверка — undefined. */
+  readonly kind: JevFailureKind | undefined
 }
 
 /**
@@ -98,13 +142,22 @@ export async function testJevConnection(config: ResolvedJevConfig): Promise<JevC
       id: 'ping',
       instructions: 'This is a connectivity test. Return any probability between 0 and 1.',
     }])
-    return { ok: true, elapsedMs: Date.now() - startedAt, probability: answers['ping'], error: undefined }
+    return {
+      ok: true,
+      elapsedMs: Date.now() - startedAt,
+      probability: answers['ping'],
+      error: undefined,
+      status: 200,
+      kind: undefined,
+    }
   } catch (error) {
     return {
       ok: false,
       elapsedMs: Date.now() - startedAt,
       probability: undefined,
       error: error instanceof Error ? error.message : String(error),
+      status: error instanceof JevCallError ? error.status : undefined,
+      kind: failureKind(error),
     }
   }
 }

@@ -249,3 +249,30 @@ function countForeign(dims: readonly DimCount[], expected: number | undefined): 
   }
   return dims.slice(1).reduce((sum, row) => sum + row.rows, 0)
 }
+
+/**
+ * Какую метку поставить базе при открытии — молча, без человека и без кнопки.
+ *
+ * Без этого подписывала только починка, и любая новая база жила без метки до первого
+ * нажатия «Выполнить», а карточка всё это время честно называла её «требует ремонта»
+ * (решение 22.10: база подписывается при создании).
+ *
+ * Пустая база получает метку сразу: писать в неё будет та самая модель, и спорить
+ * не с чем. У непустой базы решает то же правило, что у кнопки (`judgeBase`):
+ * подпись ставится только когда данные уже лежат на целевой модели. Чужая модель или
+ * пересортица векторов метки не получают — там нужен пересчёт, а подпись соврала бы.
+ * @param input - свежие факты о базе (до записи) и ожидание по метке.
+ * @returns метка для `meta`; undefined — подписывать нечего.
+ */
+export function labelToStamp(input: {
+  readonly facts: BaseFacts
+  readonly target: BaseTarget
+  readonly language: string
+  readonly catalog: readonly CatalogModel[]
+}): string | undefined {
+  const { facts, target } = input
+  if (!facts.exists || target.label === undefined) return undefined
+  if (facts.label !== undefined && facts.label !== '') return undefined
+  if (facts.rows === 0) return target.label
+  return judgeBase(input).action === 'write-label' ? target.label : undefined
+}

@@ -56,7 +56,7 @@ import { parseJsonArray, routeFromEvents, streamText } from './llm/client.ts'
 import type { LlmRoute, SessionEventLike } from './llm/client.ts'
 import { registerEngramRoutes } from './routes.ts'
 import type { BaseConvertResult, BaseLabelResult, BaseView, DictionarySaveResult, ProjectPalaceView, RegistryView, RouteDeps } from './routes.ts'
-import { judgeBase, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
+import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from './registry/base-state.ts'
 import type { CatalogModel } from './registry/base-state.ts'
 import { readBaseCensus } from './registry/base-census.ts'
 import { planBaseVectors, runVectorConvert } from './registry/convert.ts'
@@ -860,6 +860,41 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
   // 分库懒打开：按分库文件名缓存连接（user / shared / project-<hash>；项目库按标识命名，同仓库跨会话共享）。
   const stores = new Map<string, Promise<EngramStore>>()
 
+  /**
+   * Подписать базу меткой модели при открытии.
+   *
+   * Метку ставила только починка — и всякая новая база жила без неё до нажатия кнопки,
+   * а карточка честно звала это «база требует ремонта» (решение 22.10: подписывать при
+   * создании). Правило то же, что у кнопки — `labelToStamp`, чтобы второй правды о
+   * метке не завелось. Пустой базе метка тоже пишется: писать в неё будет эта модель.
+   *
+   * Ошибка чтения или записи метки не мешает открытию: база просто останется без метки,
+   * как было до этой строки, и о том говорится в журнал.
+   * @param dbName - имя файла базы в каталоге данных.
+   * @param store - уже открытое хранилище этой базы (метку пишем через него).
+   */
+  const stampLabelOnOpen = async (dbName: string, store: EngramStore): Promise<void> => {
+    const target = baseTargetNow()
+    if (target.label === undefined) return
+    try {
+      const census = await readBaseCensus({
+        path: join(resolved.dbDir, dbName),
+        specs: vectorSchema.specs,
+        schemaVersion: vectorSchema.schemaVersion,
+      })
+      if (!census.checkable) return
+      // Читать не удалось (битый файл, таблицы нет, база заперта писателем) — фактов
+      // нет, и подписывать «на всякий случай» нельзя: пустая на вид база может
+      // оказаться чужой, просто нечитаемой в этот момент.
+      if (census.problems.length > 0) return
+      const label = labelToStamp({ facts: census.facts, target, language: basesLanguage, catalog: catalogModels })
+      if (label === undefined) return
+      await store.writeMeta(MODEL_LABEL_KEY, label)
+    } catch (error) {
+      console.warn(message('core.warnLabelStampFailed', { file: dbName }), error)
+    }
+  }
+
   /** 打开（或复用）一个分库文件；首次打开时幂等补齐存量排桩。 */
   const openDb = (dbName: string): Promise<EngramStore> => {
     const existing = stores.get(dbName)
@@ -875,6 +910,7 @@ export async function apply(ctx: Context, config: EngramConfig = {}): Promise<vo
           console.warn(message('core.warnRoomFull', { room }))
         })
         if (assigned > 0) console.warn(message('core.warnSlotsBackfilled', { count: assigned, path }))
+        await stampLabelOnOpen(dbName, store)
         return store
       })
     // 审计 F17：打开失败（SCHEMA_INCOMPATIBLE / 迁移中断 / 文件损坏）不缓存 rejection——

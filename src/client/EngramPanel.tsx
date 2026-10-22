@@ -3041,6 +3041,60 @@ interface JevPanelView {
 }
 
 /**
+ * Замер связи Jev: то, что печатает строка состояния под переключателем.
+ *
+ * Хранится у человека (localStorage), а не в процессе сервера: «когда проверяли и чем
+ * кончилось» — это наблюдение панели, и после перезапуска DSH оно остаётся правдой,
+ * пока не устареет по времени. Поэтому в записи лежат и параметры замера: строка
+ * говорит, чем мерили, а не чем померили бы сейчас.
+ */
+interface JevCheckView {
+  readonly at: number
+  readonly ok: boolean
+  readonly elapsedMs: number
+  readonly probability: number | undefined
+  readonly status: number | undefined
+  readonly kind: 'http' | 'network' | 'timeout' | 'shape' | undefined
+  readonly error: string | undefined
+  readonly endpoint: string
+  readonly model: string
+  readonly timeoutMs: number
+}
+
+/** Разбор сохранённого замера: битое значение — «не проверялось», а не падение панели. */
+function readJevCheck(raw: string): JevCheckView | null {
+  if (raw === '') return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<JevCheckView>
+    if (typeof parsed.at !== 'number' || typeof parsed.ok !== 'boolean') return null
+    const kind = parsed.kind
+    return {
+      at: parsed.at,
+      ok: parsed.ok,
+      elapsedMs: typeof parsed.elapsedMs === 'number' ? parsed.elapsedMs : 0,
+      probability: typeof parsed.probability === 'number' ? parsed.probability : undefined,
+      status: typeof parsed.status === 'number' ? parsed.status : undefined,
+      kind: kind === 'http' || kind === 'network' || kind === 'timeout' || kind === 'shape' ? kind : undefined,
+      error: typeof parsed.error === 'string' ? parsed.error : undefined,
+      endpoint: typeof parsed.endpoint === 'string' ? parsed.endpoint : '',
+      model: typeof parsed.model === 'string' ? parsed.model : '',
+      timeoutMs: typeof parsed.timeoutMs === 'number' ? parsed.timeoutMs : 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Хост из адреса: строка состояния печатает «куда проверяли», а не URL с путём. */
+function hostOf(endpoint: string): string {
+  try {
+    return new URL(endpoint).host
+  } catch {
+    return endpoint
+  }
+}
+
+/**
  * Jev 裁决配置：面板覆盖 cordis.yml 的连接字段（开关 / 密钥 / 端点 / 模型 / 超时），
  * 保存进 `<dbDir>/jev-config.json`（0600）后立即生效，无需重启。密钥输入框只进不出
  * （placeholder 回显掩码）；留空 = 保留现有覆盖，清除走「清除已存密钥」。
@@ -3054,6 +3108,13 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   const [timeoutMs, setTimeoutMs] = useState('3000')
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
+  /**
+   * Последний замер связи — в localStorage, а не в состоянии процесса: строка «когда
+   * проверяли и чем кончилось» остаётся правдой после перезагрузки панели, пока её
+   * не перезапишет новая проверка.
+   */
+  const [lastRaw, setLastRaw] = usePersistedString('jevCheck', '')
+  const last = useMemo(() => readJevCheck(lastRaw), [lastRaw])
 
   // 初载：视图只读展示 + 表单初始值；密钥不回填输入框（保持空 = 不改动）。
   useEffect(() => {
@@ -3108,9 +3169,21 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   }
 
   // 连接测试：用当前输入值（不落覆盖文件）发最小 ping 问题；密钥留空 = 测已存值。
+  // Рядом с тостом кладём замер в состояние строки: тост живёт секунды, а «чем кончилась
+  // проверка» должно оставаться на экране — иначе кнопка выглядит как «ничего не произошло».
   const testConnection = (): void => {
     setTesting(true)
-    api<{ ok: boolean; elapsedMs: number; probability: number | undefined; error: string | undefined }>('jev-test', {
+    api<{
+      ok: boolean
+      elapsedMs: number
+      probability: number | undefined
+      error: string | undefined
+      status?: number
+      kind?: JevCheckView['kind']
+      endpoint?: string
+      model?: string
+      timeoutMs?: number
+    }>('jev-test', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3120,6 +3193,19 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
       }),
     })
       .then((result) => {
+        setLastRaw(JSON.stringify({
+          at: Date.now(),
+          ok: result.ok,
+          elapsedMs: result.elapsedMs,
+          probability: result.probability,
+          status: result.status,
+          kind: result.kind,
+          error: result.error,
+          // Сервер старше панели параметров замера не отдаёт — тогда честно берём форму.
+          endpoint: result.endpoint ?? baseUrl.trim(),
+          model: result.model ?? model.trim(),
+          timeoutMs: result.timeoutMs ?? Number(timeoutMs),
+        } satisfies JevCheckView))
         if (result.ok) toast.push('success', t('jevTestOk', { ms: result.elapsedMs, p: result.probability }))
         else toast.push('error', t('jevTestFail', { error: result.error ?? '' }))
       })
@@ -3128,6 +3214,26 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   }
 
   if (view === null) return <span className={styles.jevMuted}>{t('loading')}</span>
+
+  /** Слово отказа: по нему видно, что чинить — ключ, сеть, тайм-аут или протокол. */
+  const kindWord = (kind: JevCheckView['kind']): string => kind === 'http'
+    ? t('jevKindHttp')
+    : kind === 'network' ? t('jevKindNetwork')
+      : kind === 'timeout' ? t('jevKindTimeout')
+        : kind === 'shape' ? t('jevKindShape') : t('jevKindUnknown')
+  const lastLine = last === null
+    ? t('jevCheckNever')
+    : last.ok
+      ? t('jevCheckOk', {
+        time: new Date(last.at).toLocaleString(),
+        ms: last.elapsedMs,
+        p: last.probability === undefined ? '—' : last.probability.toFixed(2),
+        status: last.status ?? 200,
+      })
+      : t('jevCheckFail', { time: new Date(last.at).toLocaleString(), kind: kindWord(last.kind), ms: last.elapsedMs })
+  const keyWord = apiKey.trim() !== ''
+    ? t('jevKeyTyped')
+    : view.apiKeySet ? t('jevKeySaved') : t('jevKeyNone')
 
   return (
     <div className={styles.jev}>
@@ -3138,6 +3244,19 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
           {t('jevEnabled')}
         </label>
         <span className={styles.jevStatus}>{view.enabled ? t('jevStatusOn') : t('jevStatusOff')}</span>
+      </div>
+      {/* Параметры проверки и последний замер: то же, что делает кнопка «Проверить
+          соединение», но видно без нажатия — строка отвечает «куда, чем и когда», а
+          тост живёт секунды. Полный текст отказа — в подсказке, чтобы строка не разъезжалась. */}
+      <div className={styles.jevCheck}>
+        <span>{t('jevCheckParams', {
+          endpoint: hostOf(baseUrl.trim()),
+          model: model.trim() === '' ? '—' : model.trim(),
+          timeout: timeoutMs,
+          key: keyWord,
+        })}</span>
+        <span className={last !== null && !last.ok ? styles.jevCheckBad : undefined}
+          title={last?.error ?? undefined}>{lastLine}</span>
       </div>
       <div className={styles.jevForm}>
         <label className={styles.jevField}>

@@ -1491,7 +1491,15 @@ export function registerEngramRoutes(ctx: Context, deps: RouteDeps): void {
               ...(typeof body?.model === 'string' && body.model.trim() !== '' ? { model: body.model.trim() } : {}),
               ...(typeof body?.apiKey === 'string' && body.apiKey !== '' ? { apiKey: body.apiKey } : {}),
             }
-            json(res, 200, await testJevConnection(tested))
+            // Рядом с замером отдаём то, чем мерили: панель печатает параметры проверки
+            // строкой состояния, и брать их из формы было бы враньём — форма может
+            // разойтись с тем, что реально ушло в запрос.
+            json(res, 200, {
+              ...await testJevConnection(tested),
+              endpoint: tested.baseUrl,
+              model: tested.model,
+              timeoutMs: tested.timeoutMs,
+            })
             return
           }
           if (req.method === 'GET' && route === 'jev-observations') {

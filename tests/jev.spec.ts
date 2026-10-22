@@ -303,4 +303,37 @@ describe('testJevConnection', () => {
     expect(result.probability).toBeUndefined()
     expect(result.error).toContain('HTTP 401')
   })
+
+  // Вид отказа панель показывает словом: «ключ не принят» (http), «молчит» (network),
+  // «не уложились в тайм-аут» (timeout) и «ответ не по протоколу» (shape) требуют разных
+  // действий, а по тексту ошибки это приходилось угадывать.
+  it('отказ по HTTP разбирается кодом: kind=http, status=401', async () => {
+    stubFetch({}, 401)
+    const result = await testJevConnection(jevConfig)
+    expect(result.kind).toBe('http')
+    expect(result.status).toBe(401)
+  })
+
+  it('сетевой отказ: kind=network, кода нет', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const result = await testJevConnection(jevConfig)
+    expect(result.kind).toBe('network')
+    expect(result.status).toBeUndefined()
+  })
+
+  it('тайм-аут отличается от сети по имени ошибки', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    }))
+    const result = await testJevConnection(jevConfig)
+    expect(result.kind).toBe('timeout')
+    expect(result.status).toBeUndefined()
+  })
+
+  it('ответ не по протоколу: kind=shape', async () => {
+    stubFetch({ answers: null })
+    const result = await testJevConnection(jevConfig)
+    expect(result.kind).toBe('shape')
+    expect(result.error).toContain('missing answers')
+  })
 })

@@ -227,6 +227,38 @@ describe('engram tools', () => {
     expect((blocks[0] as { text: string }).text).toContain('1 条失败：#2 kind 无效')
   })
 
+  it('engram_distill 无嵌入器时把 vectors-missing 写进日志', async () => {
+    // Случай 22.10: дистилляция прошла «зелёной», а продукт лёг без вектора — и база
+    // через день просила ремонта без объяснения. Теперь журнал называет причину сам.
+    const a = await store.write({ scope: 'user', kind: 'fact', content: '构建用 pnpm', confidence: 0.6 })
+    const b = await store.write({ scope: 'user', kind: 'fact', content: '装依赖也走 pnpm', confidence: 0.4 })
+    const distillTools = new Map<string, ExecutableTool>(
+      createEngramTools({
+    language: 'zh',
+        openStore: async () => store,
+        resolveProjectStore: async () => store,
+        embedder: Promise.resolve(undefined),
+        call: async () => JSON.stringify([
+          { content: '统一用 pnpm', kind: 'skill', importance: 0.8, supersedes: [String(a.id), String(b.id)] },
+        ]),
+        routeOverride: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+        queryRewrite: false,
+        exportDir: join(dir, 'exports'),
+      }).map(tool => [tool.name, tool]),
+    )
+    await distillTools.get('engram_distill')!.execute({ scope: 'user' }, fakeExec)
+    // Запись в журнал не ждут (аудит не должен ломать дистилляцию) — ищем её в пределах
+    // разумного окна, а не по фиксированной паузе.
+    let audits: string[] = []
+    for (let attempt = 0; attempt < 50 && audits.length === 0; attempt += 1) {
+      audits = await store.listAuditDetails('vectors-missing')
+      if (audits.length === 0) await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toContain('"count":1')
+    expect(audits[0]).toContain('"scope":"user"')
+  })
+
   it('engram_export 脱敏视图二次清洗并截断预览', async () => {
     await tools.get('engram_save')!.execute(
       { content: 'sk-abc123def456ghi789jklmn 用于生产部署，完整路径 /srv/app/config/settings.yaml/extra/long/path', kind: 'fact', scope: 'user' },

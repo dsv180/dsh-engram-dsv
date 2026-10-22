@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { judgeBase, languageOfLabels, MODEL_LABEL_KEY } from '../src/registry/base-state.ts'
+import { judgeBase, labelToStamp, languageOfLabels, MODEL_LABEL_KEY } from '../src/registry/base-state.ts'
 import type { BaseFacts, BaseTarget, CatalogModel } from '../src/registry/base-state.ts'
 import { readBaseCensus } from '../src/registry/base-census.ts'
 import type { VectorTableSpec } from '../src/registry/vector-schema.ts'
@@ -196,5 +196,42 @@ describe('язык баз по меткам (решение 21.10)', () => {
 
   it('подтег языка срезается до основного кода: zh-Hans-… — это zh', () => {
     expect(languageOfLabels(['zh-Hans-minilm-l12'])).toBe('zh')
+  })
+})
+
+/**
+ * Подпись при открытии (решение 22.10): метку ставит не только кнопка.
+ *
+ * Отличие от `judgeBase` ровно в пустой базе: правило карточки говорит «ставить не на
+ * чем» — и это верно для кнопки, которой нечего чинить. При открытии наоборот: в пустую
+ * базу сейчас пойдёт запись этой моделью, и без метки она до первой починки числилась бы
+ * «требует ремонта». Всё остальное решает то же правило, что у кнопки.
+ */
+describe('метка при открытии базы', () => {
+  const stamp = (patch: Partial<BaseFacts> = {}, target: BaseTarget = TARGET): string | undefined =>
+    labelToStamp({ facts: facts(patch), target, language: 'ru', catalog: CATALOG })
+
+  it('пустая база подписывается сразу — в неё будет писать эта модель', () => {
+    expect(stamp({ rows: 0, dims: [] })).toBe('ru-minilm-l12')
+  })
+
+  it('непустая база на целевой модели подписывается', () => {
+    expect(stamp()).toBe('ru-minilm-l12')
+  })
+
+  it('чужая модель — это перевод, а не подпись', () => {
+    expect(stamp({ dims: [{ dims: 512, rows: 10 }] })).toBeUndefined()
+  })
+
+  it('уже подписанная база не трогается', () => {
+    expect(stamp({ label: 'ru-minilm-l12' })).toBeUndefined()
+  })
+
+  it('базы нет — подписывать нечего', () => {
+    expect(stamp({ exists: false, rows: 0, dims: [] })).toBeUndefined()
+  })
+
+  it('метки для выбранной модели нет — подписывать нечем', () => {
+    expect(stamp({}, { label: undefined, model: undefined })).toBeUndefined()
   })
 })

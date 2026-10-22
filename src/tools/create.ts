@@ -1715,7 +1715,21 @@ export function createEngramTools(baseDeps: ToolDeps): ToolDefinition[] {
         route,
         signal: exec.signal,
       })
-      return { text: message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded }) }
+      // Наблюдение за векторами: продукт дистилляции без вектора — это будущее «база
+      // требует ремонта» (так и вышло 22.10). Пишем это и в ответ модели, и в журнал
+      // операций: молчаливое «дистилляция прошла» скрывает причину от человека.
+      if (outcome.vectorsWithout > 0) {
+        void (async () => {
+          const auditStore = await deps.openStore(scope)
+          await auditStore.audit('vectors-missing', 'AUX', JSON.stringify({ count: outcome.vectorsWithout, scope }))
+        })().catch(() => { /* журнал не влияет на дистилляцию */ })
+      }
+      const done = message('tool.distillDone', { input: outcome.input, distilled: outcome.distilled, superseded: outcome.superseded })
+      return {
+        text: outcome.vectorsWithout === 0
+          ? done
+          : `${done}\n${message('tool.distillNoVectors', { count: outcome.vectorsWithout })}`,
+      }
     },
   })
 

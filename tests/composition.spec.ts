@@ -339,6 +339,34 @@ describe('dsh-engram real Loader composition', () => {
     expect(evil.status).toBe(403)
   })
 
+  it('метка модели ставится при открытии базы, а не кнопкой', { timeout: 60_000 }, async () => {
+    // База, которой метку никогда не ставили: создаём её мимо плагина, чтобы подпись
+    // могла появиться только от него самого. Кнопку «Выполнить» в этом прогоне никто
+    // не нажимает — иначе проверялось бы старое поведение, а не новое.
+    const loaded = await loadComposition([], undefined, async (dbDir) => {
+      const store = await openEngramStore(join(dbDir, 'user.db'))
+      await store.close()
+      // До загрузки плагина подписи нет — иначе доказывать было бы нечего.
+      const { DatabaseSync } = await import('node:sqlite')
+      const raw = new DatabaseSync(join(dbDir, 'user.db'))
+      const row = raw.prepare("SELECT value FROM meta WHERE key = 'model_label'").get() as { value: string } | undefined
+      raw.close()
+      expect(row).toBeUndefined()
+    })
+    const port = loaded.webServer.port
+
+    // Базу никто не чинил кнопкой; она подписана самим открытием при загрузке.
+    const answer = await call(port, 'GET', '/api/engram/registry')
+    expect(answer.status).toBe(200)
+    const base = (answer.json as {
+      bases: { file: string, label: string | null, targetLabel: string | null, action: string | null }[]
+    }).bases.find(candidate => candidate.file === 'user.db')
+    expect(base).toBeDefined()
+    expect(base!.targetLabel).not.toBeNull()
+    expect(base!.label).toBe(base!.targetLabel)
+    expect(base!.action).not.toBe('write-label')
+  })
+
   it('情景时间线 HTTP 链路：组头带会话摘要，around 查邻近扩展', { timeout: 60_000 }, async () => {
     let anchorId = ''
     const loaded = await loadComposition([], undefined, async (dbDir) => {
@@ -491,11 +519,26 @@ describe('dsh-engram real Loader composition', () => {
     // 默认 baseUrl 指向外网 → fetch 替身确定性拒绝；testJevConnection 不抛错，失败原因进 error 字段。
     const offline = await call(port, 'POST', '/api/engram/jev-test', {})
     expect(offline.status).toBe(200)
-    const offlineBody = offline.json as { ok: boolean; elapsedMs: number; probability: number | undefined; error: string }
+    const offlineBody = offline.json as {
+      ok: boolean
+      elapsedMs: number
+      probability: number | undefined
+      error: string
+      endpoint: string
+      model: string
+      timeoutMs: number
+      kind: string
+    }
     expect(offlineBody.ok).toBe(false)
     expect(offlineBody.error).toContain('offline in test')
     expect(offlineBody.probability).toBeUndefined()
     expect(offlineBody.elapsedMs).toBeTypeOf('number')
+    // Параметры замера едут рядом с ним: панель печатает «куда и чем проверяли»,
+    // и брать их из формы было бы догадкой — форма может разойтись с запросом.
+    expect(offlineBody.endpoint).toContain('http')
+    expect(offlineBody.model).not.toBe('')
+    expect(offlineBody.timeoutMs).toBeGreaterThan(0)
+    expect(offlineBody.kind).toBe('network')
 
     // baseUrl 覆盖为回环地址 → 放行给真实 fetch，连接被拒同样结构化返回（不落覆盖文件）。
     const refused = await call(port, 'POST', '/api/engram/jev-test', { baseUrl: 'http://127.0.0.1:1', model: 'jev-latest' })
