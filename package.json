@@ -33,7 +33,8 @@
     "icon.svg",
     "icon-256.svg",
     "i18n/",
-    "registry/"
+    "registry/",
+    "docs/agent-language-guide.ru.md"
   ],
   "dsh": {
     "bundle": {
