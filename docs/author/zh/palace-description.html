@@ -68,14 +68,14 @@ dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
 <body>
 <div class="page">
 <header class="doc">
-  <div class="kicker">dsh-engram · dsv180 衍生版 · 分支 work/dsv</div>
+  <div class="kicker">dsh-engram · dsv180 衍生版 · 分支 pr/upstream-lift</div>
   <h1>记忆宫殿：做了什么</h1>
   <p class="lead">多语言、数据注册表、数据库处理、联锁保险以及顺带的修复——放在同一份说明里，附决策原因与示意图。</p>
-  <div class="meta">2026 年 10 月 23 日的草稿 · 插件版本 0.9.3-dsv.26 · 基线 — 作者发行版 v0.9.3（<span class="mono">1aa2e82</span>）</div>
+  <div class="meta">2026 年 10 月 23 日的草稿 · 插件版本 0.9.8-dsv.27 · 按作者 v0.9.3 发行版（<span class="mono">1aa2e82</span>）写成，已升级到 v0.9.8（<span class="mono">9ee94b0</span>）</div>
 </header>
 
 <div class="warnbox"><b>本文按 0.9.3 写成，升级已完成</b>
-以下内容都是在作者的 <b>v0.9.3</b> 发行版（提交 <span class="mono">1aa2e82</span>）上完成并验证的。<b>2026 年 10 月 23 日，分支已升级到作者当前版本——v0.9.8，合并请求 <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>。</b>升级带来的变化：Jev 按 DSH 的提供商与模型组装（这部分作者的版本比我们新，我们的没有搬过去）；请求体的读取改用他的 <span class="mono">http-body</span> 模块，有字节上限与 413/400 应答——现在也作用于我们新增的路由；代码中的词典保留 en 与 zh，俄语以文件形式提供。下面描述的内容没有任何回退：升级改的是<i>做法</i>，不是<i>做了什么</i>。</div>
+以下内容都是在作者的 <b>v0.9.3</b> 发行版（提交 <span class="mono">1aa2e82</span>）上完成并验证的。<b>2026 年 10 月 23 日，分支已升级到作者当前版本——v0.9.8，合并请求 <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>。</b>升级带来的变化：Jev 按 DSH 的提供商与模型组装（这部分作者的版本比我们新，我们的没有搬过去）；请求体的读取改用他的 <span class="mono">http-body</span> 模块，有字节上限与 413/400 应答——现在也作用于我们新增的路由；代码中的词典保留 en 与 zh，俄语以文件形式提供。下面描述的内容没有任何回退：升级改的是<i>做法</i>，不是<i>做了什么</i>。你评审后推上来的两个修复（<span class="mono">0694dc5</span>、<span class="mono">70682fe</span>）原样保留；第四个提交（<span class="mono">b3df0d7</span>）补回了升级时丢掉的东西：我们构建的版本标记、文件语言的客户端一半、Jev 检查里的失败种类与 HTTP 码。</div>
 
 <div id="toc">
 <h2>目录</h2>
@@ -824,7 +824,7 @@ value = ru-minilm-l12</code></pre>
 </ul>
 
 <h3>交付方式</h3>
-<p>构建两个文件——服务端和客户端包——并放入 DSH 档案（<code>node_modules/@kenz1117/dsh-engram/lib/</code>），与词典和注册表放在一起。版本号是 <code>package.json</code> 里的一行；目前是 <code>0.9.3-dsv.26</code>。服务端那一半只有在重启 DSH 之后才会被加载，客户端那一半在页面刷新之后：它们是交付物的两半，版本不一致时面板会用横幅提示，而不是崩溃。现用记忆宫殿位于 <code>C:Usersdsv.dshengram</code>，模型位于 <code>...engrammodels</code>。</p>
+<p>构建两个文件——服务端和客户端包——并放入 DSH 档案（<code>node_modules/@kenz1117/dsh-engram/lib/</code>），与词典和注册表放在一起。版本号是 <code>package.json</code> 里的一行；目前是 <code>0.9.8-dsv.27</code>。服务端那一半只有在重启 DSH 之后才会被加载，客户端那一半在页面刷新之后：它们是交付物的两半，版本不一致时面板会用横幅提示，而不是崩溃。现用记忆宫殿位于 <code>C:Usersdsv.dshengram</code>，模型位于 <code>...engrammodels</code>。</p>
 
 <h3>在真实数据上验证，而不只是测试</h3>
 <p>重算之前用 <code>VACUUM INTO</code> 命令对库做快照，快照会成为可复现的证据：从它可以看到当时的样子。第一次真实重算在 10 月 20 日进行：<code>user.db</code> 中修复了 10 条记忆，错误为零，运行之后全部六个库都是干净的——也就是标记与向量一致，且没有被遗漏向量的记忆。「之前」的快照位于 <code>_ops/fixtures/before-convert-2026-10-19</code>，至今仍能复现那 10 条损坏的记忆。到 10.23，<code>user.db</code> 中又出现了六条没有向量的记忆（95 条活跃，6 条无向量）：它们是 10.22 的观察项归并留下的——也就是说「干净」并非永久，正因如此状态才显示在卡片里，而原因则以 <code>vectors-missing</code> 行的形式出现在日志中。</p>
@@ -913,9 +913,15 @@ value = ru-minilm-l12</code></pre>
 <p class="totop"><a class="btn" href="#toc">↑ 返回目录</a></p>
 
 <h2 id="appA"><span class="num">A.</span>提交编年史</h2>
-<p class="small">只限我们这条线——从作者的标签 <code>v0.9.3</code>（<code>1aa2e82</code>）到分支 <code>work/dsv</code> 的当前状态。新的在上面。</p>
+<p class="small">下面部分是我们从作者的标签 <code>v0.9.3</code>（<code>1aa2e82</code>）起的提交；上面部分是升级到 <code>v0.9.8</code> 的提交。新的在上面。</p>
 <table>
 <tr><th>提交</th><th>做了什么</th></tr>
+<tr><td><code>b3df0d7</code></td><td>补回第一轮丢掉的内容：0.9.8-dsv.27 标记、文件语言的客户端一半、Jev 失败种类、我们的断言、docs/author</td></tr>
+<tr><td><code>70682fe</code></td><td>语言说明文件未进仓库——你的修复</td></tr>
+<tr><td><code>0694dc5</code></td><td>打包（i18n、registry、说明文件）与两个类型错误——你的修复</td></tr>
+<tr><td><code>223c122</code></td><td>注册表、数据库状态、词典与宫殿语言的检查</td></tr>
+<tr><td><code>a815123</code></td><td>数据库维护、宫殿语言切换与面板词典</td></tr>
+<tr><td><code>26f8e71</code></td><td>词典改为文件、数据注册表、按语言选择模型</td></tr>
 <tr><td><code>33c40af</code></td><td>维护检查结果在日志中以俄语显式呈现</td></tr>
 <tr><td><code>d733ed6</code></td><td>Jev 决策失败会在操作日志里留下痕迹</td></tr>
 <tr><td><code>49d2b81</code></td><td>Jev 检查行、打开时的库标记，以及丢失向量的日志</td></tr>

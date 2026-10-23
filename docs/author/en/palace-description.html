@@ -68,14 +68,14 @@ dl.terms dd { margin: 4px 0 0; color: var(--ink2); }
 <body>
 <div class="page">
 <header class="doc">
-  <div class="kicker">dsh-engram · dsv180 fork · work/dsv branch</div>
+  <div class="kicker">dsh-engram · dsv180 fork · pr/upstream-lift branch</div>
   <h1>The memory palace: what was done</h1>
   <p class="lead">Multilingual support, data registries, base handling, interlock guards and incidental fixes — in a single description, with the reasons behind the decisions and the diagrams.</p>
-  <div class="meta">Draft of 23 October 2026 · plugin version 0.9.3-dsv.26 · based on the author's release v0.9.3 (<span class="mono">1aa2e82</span>)</div>
+  <div class="meta">Draft of 23 October 2026 · plugin version 0.9.8-dsv.27 · written against the author's release v0.9.3 (<span class="mono">1aa2e82</span>), lifted onto v0.9.8 (<span class="mono">9ee94b0</span>)</div>
 </header>
 
 <div class="warnbox"><b>This document was written against 0.9.3; the rebase is done</b>
-Everything described here was done and verified on the author’s release <b>v0.9.3</b> (commit <span class="mono">1aa2e82</span>). <b>On 23 October 2026 the branch was lifted onto the author’s current version — v0.9.8, pull request <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>.</b> What changed in the rebase: Jev is assembled from the DSH provider and model (the author’s version of that part is newer than ours, so ours was not carried over); reading the request body moved into his <span class="mono">http-body</span> module with a byte limit and 413/400 answers — which now also covers our routes; the code dictionaries keep en and zh, Russian arrives as a file. Nothing described below was rolled back: the rebase changed <i>how</i> it is done, not <i>what</i> is done.</div>
+Everything described here was done and verified on the author’s release <b>v0.9.3</b> (commit <span class="mono">1aa2e82</span>). <b>On 23 October 2026 the branch was lifted onto the author’s current version — v0.9.8, pull request <a href="https://github.com/kenz1117/dsh-engram/pull/36">#36</a>.</b> What changed in the rebase: Jev is assembled from the DSH provider and model (the author’s version of that part is newer than ours, so ours was not carried over); reading the request body moved into his <span class="mono">http-body</span> module with a byte limit and 413/400 answers — which now also covers our routes; the code dictionaries keep en and zh, Russian arrives as a file. Nothing described below was rolled back: the rebase changed <i>how</i> it is done, not <i>what</i> is done. Your two fixes after review (<span class="mono">0694dc5</span>, <span class="mono">70682fe</span>) are kept as they are; the fourth commit (<span class="mono">b3df0d7</span>) put back what the rebase had dropped: the fork's build marker, the client half of file-provided languages, and the failure kind and HTTP code in the Jev check line.</div>
 
 <div id="toc">
 <h2>Table of contents</h2>
@@ -824,7 +824,7 @@ Because half of these fixes change behaviour that the author considers their own
 </ul>
 
 <h3>How it is shipped</h3>
-<p>Two files are built — the server and client bundles — and placed in the DSH profile (<code>node_modules/@kenz1117/dsh-engram/lib/</code>), next to the dictionaries and registries. The version number is a single line in <code>package.json</code>; right now it is <code>0.9.3-dsv.26</code>. The server half is picked up only after DSH restarts, the client half after the page is refreshed: they are different halves of the shipment, and the panel shows their version divergence as a banner rather than crashing. The live palace lives in <code>C:Usersdsv.dshengram</code>, the models in <code>...engrammodels</code>.</p>
+<p>Two files are built — the server and client bundles — and placed in the DSH profile (<code>node_modules/@kenz1117/dsh-engram/lib/</code>), next to the dictionaries and registries. The version number is a single line in <code>package.json</code>; right now it is <code>0.9.8-dsv.27</code>. The server half is picked up only after DSH restarts, the client half after the page is refreshed: they are different halves of the shipment, and the panel shows their version divergence as a banner rather than crashing. The live palace lives in <code>C:Usersdsv.dshengram</code>, the models in <code>...engrammodels</code>.</p>
 
 <h3>Verification on live data, not only by tests</h3>
 <p>Before a recompute the bases are snapshotted with <code>VACUUM INTO</code>, and the snapshot remains reproducible evidence: it shows what was there. The first real recompute ran on 20 October: 10 memories were fixed in <code>user.db</code>, zero errors, and after the run all six bases were clean — that is, the label matched the vectors and there were no memories without a vector. The “before” snapshot sits in <code>_ops/fixtures/before-convert-2026-10-19</code> and still reproduces those very 10 broken memories. As of 23.10 <code>user.db</code> again has six memories without a vector (95 active, 6 without a vector): they were left by the observation consolidation of 22.10 — that is, “clean” is not forever, and that is exactly why the state is visible in the card, and the reason is visible as the <code>vectors-missing</code> line in the log.</p>
@@ -913,9 +913,15 @@ The plan is not a constant. It is a snapshot of knowledge at the moment it was w
 <p class="totop"><a class="btn" href="#toc">↑ Back to contents</a></p>
 
 <h2 id="appA"><span class="num">A.</span>Commit timeline</h2>
-<p class="small">Our line only — from the author's tag <code>v0.9.3</code> (<code>1aa2e82</code>) to the current state of the <code>work/dsv</code> branch. Newest on top.</p>
+<p class="small">The lower part is our line from the author's tag <code>v0.9.3</code> (<code>1aa2e82</code>); the upper part is the lift onto <code>v0.9.8</code>. Newest on top.</p>
 <table>
 <tr><th>Commit</th><th>What was done</th></tr>
+<tr><td><code>b3df0d7</code></td><td>What the first pass had dropped: the 0.9.8-dsv.27 marker, the client half of file languages, the Jev failure kind, our assertions, docs/author</td></tr>
+<tr><td><code>70682fe</code></td><td>The language guide was not in the repository — your fix</td></tr>
+<tr><td><code>0694dc5</code></td><td>Packaging (i18n, registry, the guide) and two types — your fix</td></tr>
+<tr><td><code>223c122</code></td><td>Tests for the registries, base states, dictionaries and palace language</td></tr>
+<tr><td><code>a815123</code></td><td>Base maintenance, palace-language change and the dictionary screen</td></tr>
+<tr><td><code>26f8e71</code></td><td>Dictionaries as files, data registries, model chosen by language</td></tr>
 <tr><td><code>33c40af</code></td><td>Maintenance findings are read in the log in Russian</td></tr>
 <tr><td><code>d733ed6</code></td><td>A failure of the Jev decision leaves a trace in the operations log</td></tr>
 <tr><td><code>49d2b81</code></td><td>Jev check line, base label on open and log of missing vectors</td></tr>
