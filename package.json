@@ -31,7 +31,9 @@
     "scripts/",
     "cordis.patch.yml",
     "icon.svg",
-    "icon-256.svg"
+    "icon-256.svg",
+    "i18n/",
+    "registry/"
   ],
   "dsh": {
     "bundle": {

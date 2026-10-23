@@ -330,7 +330,7 @@ export const Config: z<EngramConfig> = z.object({
   }) as unknown as z<EmbedderConfig>,
   // volatile: язык дворца меняется на ходу, без перемонтирования плагина
   // (загрузчик коммитит новое значение в живую ссылку и шлёт loader/volatile-update).
-  language: z.string().volatile() as unknown as z<LanguageSetting>,
+  language: z.string().volatile() as unknown as z<LanguageSetting | { get(): LanguageSetting }>,
   redactWords: z.array(z.string()),
 })
 

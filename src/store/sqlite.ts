@@ -518,12 +518,15 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
    * 长度不是 4 的倍数的 BLOB 跳过：那是损坏的行，按它定维会得到 153.25 这样的
    * 小数，此后每一次写入都被拒绝，而真正的原因（一行坏数据）却看不见。
    */
-  const vectorDims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
+  const computeStoredDim = (): number | undefined => {
+    const dims = db.prepare(`SELECT dim, COUNT(*) AS rows FROM (
       SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM nodes WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
       UNION ALL
       SELECT LENGTH(embedding) / ${Float32Array.BYTES_PER_ELEMENT} AS dim FROM observations WHERE embedding IS NOT NULL AND LENGTH(embedding) % ${Float32Array.BYTES_PER_ELEMENT} = 0
     ) GROUP BY dim ORDER BY rows DESC, dim ASC`).all() as unknown as { dim: number; rows: number }[]
-  let storedDim = vectorDims.length === 0 ? undefined : vectorDims[0]!.dim
+    return dims.length === 0 ? undefined : dims[0]!.dim
+  }
+  let storedDim = computeStoredDim()
 
   /** 维度不符导致读取降级时只提醒一次：检索是高频路径，逐次告警会淹掉日志。 */
   let warnedDegradedRead = false
@@ -1529,6 +1532,9 @@ export async function openEngramStore(path: string, rankBoost: RankBoostOptions 
           written += Number(result.changes)
         }
       })
+      // 转换后库里已经是新维度：缓存必须跟着重算，否则后续写入会拿旧维度去对，
+      // 把「刚转成 384 维的库」判成 512 维的库并拒绝写入（EMBEDDER_DIMENSION_MISMATCH）。
+      storedDim = computeStoredDim()
       return written
     },
 

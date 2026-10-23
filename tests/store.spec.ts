@@ -151,6 +151,16 @@ describe('EngramStore (sqlite)', () => {
       .rejects.toMatchObject({ code: 'EMBEDDER_DIMENSION_MISMATCH' })
   })
 
+  it('转换向量后维度缓存跟着重算：新维度的写入不再被旧维度挡住', async () => {
+    // 转换（rewriteVectors）把库里向量换成新维度后，维度缓存必须跟着重算。
+    // 否则缓存里还是旧维度，后续写入会以「库里是 512 维」为由拒掉 384 维的写入——
+    // 错误信息还会说反话：库里其实已经是 384 维了。
+    const before = await store.write({ scope: 'user', kind: 'fact', content: '转换前', embedding: new Float32Array(512).fill(0.5) })
+    await store.rewriteVectors([{ table: 'nodes', vector: 'embedding', id: before.id, embedding: new Float32Array(384).fill(0.5) }])
+    const after = await store.write({ scope: 'user', kind: 'fact', content: '转换后', embedding: new Float32Array(384).fill(0.5) })
+    expect(after.id).toBeTruthy()
+  })
+
   it('update 建立 supersedes 链且旧条目退出检索', async () => {
     const old = await store.write({ scope: 'user', kind: 'fact', content: '端口是 3000' })
     const next = await store.update({ id: old.id, scope: 'user', kind: 'fact', content: '端口改为 4000' })

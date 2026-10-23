@@ -3,3 +3,6 @@ lib/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# 构建产物（发布用的 tarball 不进仓库）
+dist/
