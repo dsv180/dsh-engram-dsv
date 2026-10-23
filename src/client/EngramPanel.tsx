@@ -2340,7 +2340,7 @@ function usePalaceOverview(scope: 'user' | 'project' | 'shared', project: string
     ])
       .then(([statRes, tele, health]) => {
         if (cancelled) return
-        const stats = statRes.parts.find(part => part.scope === scope)?.stats ?? null
+        const stats = (statRes.parts ?? []).find(part => part.scope === scope)?.stats ?? null
         setState({ stats, byKind: stats?.byKind ?? {}, telemetry: tele, health, failed: null })
       })
       .catch((error: Error) => {
@@ -3079,7 +3079,13 @@ interface JevPanelView {
   readonly deferMergeAbove: number
   readonly deferAcceptBelow: number
   readonly contradictMinProbability: number
-  readonly providers: readonly JevProviderOption[]
+  /**
+   * Каталог провайдеров и их моделей. Приходит от сервера и может отсутствовать:
+   * после обновления панель бывает новее запущенной половины сервера, а старый
+   * сервер этого поля не отдаёт — тогда раздел обязан остаться на ногах, а не падать
+   * на `undefined.find`.
+   */
+  readonly providers?: readonly JevProviderOption[]
 }
 
 /**
@@ -3184,7 +3190,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
   /** Choose a provider and pre-fill the endpoint from its template (the field stays editable). */
   const chooseProvider = (id: string): void => {
     setProvider(id)
-    const chosen = view?.providers.find(item => item.id === id)
+    const chosen = (view?.providers ?? []).find(item => item.id === id)
     setEndpoint(chosen?.endpoint ?? '')
     setLiveModels([])
     setLiveFiltered(false)
@@ -3282,7 +3288,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
 
   if (view === null) return <span className={styles.jevMuted}>{t('loading')}</span>
 
-  const selected = view.providers.find(item => item.id === provider)
+  const selected = (view.providers ?? []).find(item => item.id === provider)
   // Suggestions: the provider's live list once loaded, otherwise the models from its DSH settings.
   const suggestions: readonly string[] = liveModels.length > 0
     ? liveModels
@@ -3334,7 +3340,7 @@ function JevConfigCard({ t, toast }: { t: T; toast: ToastController }): React.Re
           <span>{t('jevProvider')}</span>
           <select className={styles.input} value={provider} onChange={event => chooseProvider(event.target.value)}>
             <option value="">{t('jevProviderUnset')}</option>
-            {view.providers.map(item => (
+            {(view.providers ?? []).map(item => (
               <option key={item.id} value={item.id}>{`${item.displayName} (${item.id})`}</option>
             ))}
           </select>
@@ -4134,7 +4140,7 @@ function RegistryCard({ t, overlayHost, onTestPanel, lang }: {
   const createOptions = ((): readonly { readonly code: string, readonly label: string }[] => {
     const builtin = new Set(languages.filter(row => row.builtin).map(row => row.code))
     const known = new Set(snapshot.dictionaryLanguages ?? [])
-    return [...new Set(snapshot.models.flatMap(row => row.languages ?? []))]
+    return [...new Set((snapshot.models ?? []).flatMap(row => row.languages ?? []))]
       .filter(code => !builtin.has(code) && !known.has(code))
       .map(code => ({ code, label: languageLabel(code, languages, lang) }))
       .sort((left, right) => left.label.localeCompare(right.label, lang))
